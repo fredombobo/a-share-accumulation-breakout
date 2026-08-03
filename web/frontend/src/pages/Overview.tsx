@@ -1,9 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp, SetupStatus } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from '../components/EChart'
 import SectorFlowPanel from '../components/SectorFlowPanel'
+import {
+  loadOverviewCache,
+  loadParams,
+  loadPoolPref,
+  saveOverviewCache,
+  saveParams,
+} from '../scanCache'
 import type { EChartsOption } from 'echarts'
 
 function tierBadge(tier?: string, pool?: string, tradeable?: boolean) {
@@ -18,49 +25,197 @@ function tierBadge(tier?: string, pool?: string, tradeable?: boolean) {
 
 export default function Overview() {
   const nav = useNavigate()
-  const [data, setData] = useState<OverviewResp | null>(null)
+  const cached = loadOverviewCache()
+  const prefPool = loadPoolPref()
+  const prefParams = loadParams()
+  const [data, setData] = useState<OverviewResp | null>(cached?.data ?? null)
   const [health, setHealth] = useState<HealthResp | null>(null)
   const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [sector, setSector] = useState<SectorFlowResp | null>(null)
   const [sectorDays, setSectorDays] = useState(10)
-  const [pool, setPool] = useState<'A' | 'B' | 'ALL'>('A')
+  const [pool, setPool] = useState<'A' | 'B' | 'ALL'>(prefPool || cached?.pool || 'A')
   const [err, setErr] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [cacheNote, setCacheNote] = useState(
+    cached?.data?.items?.length
+      ? `已恢复上次扫描（${cached.savedAt?.slice(0, 19).replace('T', ' ') || ''}），再次扫描前会一直保留`
+      : '',
+  )
   const [scanning, setScanning] = useState(false)
   const [scanTask, setScanTask] = useState<string | null>(null)
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
-  const [topN, setTopN] = useState(15)
-  const [days, setDays] = useState(160)
+  const [topN, setTopN] = useState(prefParams?.topN ?? 20)
+  const [days, setDays] = useState(prefParams?.days ?? 160)
   const c = useChartColors()
 
-  const load = () => {
-    api.health().then(setHealth).catch(() => setHealth(null))
-    api.setupStatus().then(setSetup).catch(() => setSetup(null))
-    api.overview(pool).then(setData).catch((e) => setErr(String(e)))
-    api.sectorFlow(sectorDays).then(setSector).catch(() => setSector(null))
-  }
-  useEffect(load, [sectorDays, pool])
+  // A5 竞态守卫：序号 + AbortController，保证只有最新一次请求用于渲染
+  const overviewSeq = useRef(0)
+  const overviewReqRef = useRef<AbortController | null>(null)
+  const sectorReqRef = useRef<AbortController | null>(null)
+
+  // B13 解耦：板块资金流与个股列表（overview）相互独立，切换 sectorDays 只重拉板块层
+  const loadOverview = useCallback((opts?: { keepOnFail?: boolean }) => {
+    const keepOnFail = opts?.keepOnFail !== false
+    const seq = ++overviewSeq.current
+    overviewReqRef.current?.abort()
+    const ac = new AbortController()
+    overviewReqRef.current = ac
+    const signal = ac.signal
+
+    setLoading(true)
+    api.health({ signal }).then(setHealth).catch(() => setHealth(null))
+    api.setupStatus({ signal }).then(setSetup).catch(() => setSetup(null))
+    api.overview(pool, { signal, timeoutMs: 60_000 })
+      .then((resp) => {
+        setLoading(false)
+        if (overviewSeq.current !== seq) return
+        // 服务端空列表时：若本地有缓存且非刚扫完，优先保留缓存，避免「进详情返回变空」
+        if ((!resp.items || resp.items.length === 0) && keepOnFail) {
+          const c2 = loadOverviewCache()
+          if (c2?.data?.items?.length) {
+            setData(c2.data)
+            setCacheNote('服务端暂无新列表，已继续显示上次扫描结果')
+            setErr('')
+            return
+          }
+        }
+        setData(resp)
+        if (resp.items?.length) {
+          saveOverviewCache(pool, resp)
+          setCacheNote('')
+        }
+        if (resp.empty_reason && !resp.items?.length) {
+          setErr(resp.empty_reason)
+        } else {
+          setErr('')
+        }
+      })
+      .catch((e: unknown) => {
+        setLoading(false)
+        if (overviewSeq.current !== seq) return // 切池等新请求已接管，忽略旧失败
+        const isAbort = (e as { name?: string })?.name === 'AbortError'
+        if (keepOnFail) {
+          const c2 = loadOverviewCache()
+          if (c2?.data?.items?.length) {
+            setData(c2.data)
+            setCacheNote(isAbort ? '请求超时（后端计算较慢），已显示上次扫描缓存' : '网络/接口异常，已显示上次扫描缓存')
+            setErr('')
+            return
+          }
+        }
+        if (isAbort) return // 被新请求中止且无可显示缓存
+        setErr(String(e))
+      })
+  }, [pool])
+
+  const loadSector = useCallback(() => {
+    sectorReqRef.current?.abort()
+    const ac = new AbortController()
+    sectorReqRef.current = ac
+    api.sectorFlow(sectorDays, { signal: ac.signal })
+      .then(setSector)
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === 'AbortError') return
+        setSector(null)
+      })
+  }, [sectorDays])
 
   useEffect(() => {
+    loadOverview({ keepOnFail: true })
+  }, [loadOverview])
+
+  // 挂载时恢复扫描状态：切走页面组件卸载后状态丢失，但后端扫描线程仍在跑——
+  // 回来时发现 running/pending 任务就重新对接轮询（后台扫描不中断）。
+  useEffect(() => {
+    let mounted = true
+    api.scanStatus()
+      .then((st) => {
+        if (!mounted) return
+        if (st && (st.status === 'running' || st.status === 'pending') && st.id) {
+          setScanning(true)
+          setScanTask(st.id)
+          setScanStatus(st)
+          setCacheNote('检测到后台扫描进行中，已恢复进度显示')
+        } else if (st && st.status === 'done') {
+          setCacheNote('上次后台扫描已完成，列表已可查看')
+        }
+      })
+      .catch(() => undefined)
+    return () => { mounted = false }
+  }, [])
+
+  useEffect(() => {
+    loadSector()
+  }, [loadSector])
+
+  useEffect(() => {
+    return () => {
+      overviewReqRef.current?.abort()
+      sectorReqRef.current?.abort()
+    }
+  }, [])
+
+  useEffect(() => {
+    saveParams(topN, days)
+  }, [topN, days])
+
+  // 扫描进度轮询：in-flight 防重叠 + 失败指数退避（成功复位）
+  useEffect(() => {
     if (!scanning || !scanTask) return
-    const timer = setInterval(async () => {
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let interval = 2000
+    let inflight = false
+
+    const finish = (st: ScanStatus) => {
+      setScanning(false)
+      setScanTask(null)
+      if (st.status === 'done') {
+        // 先缓存 ALL 池全量，避免只看 A 时缓存被空列表覆盖
+        api.overview('ALL')
+          .then((all) => {
+            if (all.items?.length) saveOverviewCache('ALL', all)
+          })
+          .finally(() => {
+            loadOverview({ keepOnFail: false })
+            setCacheNote('扫描完成，列表已更新（进详情返回仍会保留）')
+          })
+      } else if (st.status === 'error') {
+        setErr(`扫描失败: ${st.error || ''}`)
+      }
+    }
+
+    const tick = async () => {
+      if (inflight) return
+      inflight = true
       try {
         const st = await api.scanStatus(scanTask)
+        if (stopped) return
+        interval = 2000 // 成功：间隔复位
         setScanStatus(st)
         if (st.status === 'done' || st.status === 'error' || st.status === 'cancelled') {
-          setScanning(false)
-          setScanTask(null)
-          clearInterval(timer)
-          if (st.status === 'done') load()
-          else if (st.status === 'error') setErr(`扫描失败: ${st.error || ''}`)
+          finish(st)
+          return
         }
-      } catch { /* ignore */ }
-    }, 2000)
-    return () => clearInterval(timer)
-  }, [scanning, scanTask])
+      } catch {
+        interval = Math.min(interval * 2, 30_000) // 失败：指数退避
+      } finally {
+        inflight = false
+      }
+      if (!stopped) timer = setTimeout(tick, interval)
+    }
+
+    timer = setTimeout(tick, interval)
+    return () => {
+      stopped = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [scanning, scanTask, loadOverview])
 
   const onScan = async () => {
     setScanning(true)
     setErr('')
+    setCacheNote('扫描中…完成后将替换列表；取消/失败则保留上次结果')
     setScanStatus({ id: '', status: 'pending', stage: '排队中', progress: 0, cancel_requested: false })
     try {
       const resp = await api.scan(topN, days, false)
@@ -119,7 +274,7 @@ export default function Overview() {
   }
 
   if (err && !data) return <div className="err">加载失败：{err}</div>
-  if (!data) return <div className="loading">加载中…</div>
+  if (!data) return <div className="loading">加载中…（若刚扫过，请稍候或点扫描后的列表缓存）</div>
 
   const avgScore = data.items.length ? data.items.reduce((s, x) => s + x.score, 0) / data.items.length : 0
   const totalFlow = data.items.reduce((s, x) => s + (x.fund_net_wan || 0), 0)
@@ -135,8 +290,13 @@ export default function Overview() {
         <div style={{ fontWeight: 700, marginBottom: 6 }}>新手 3 步</div>
         <div className="muted" style={{ lineHeight: 1.7 }}>
           ① 双击 <b>一键启动.bat</b> 同步数据（日常约 2～10 分钟）→
-          ② 点下方 <b>扫描</b>（约 5～15 分钟）→
+          ② 点下方 <b>扫描</b>（约 5～15 分钟；横盘优先 6 个月，不够再降到 5/4/… 凑满约 20 只）→
           ③ 只看 <b>A 池</b>（可交易）；B 池仅观察。
+          <br />
+          进详情再返回：<b>会保留上次扫描结果</b>，直到你再次扫描成功。
+          {cacheNote && (
+            <span style={{ color: 'var(--accent)', marginLeft: 6 }}>（{cacheNote}）</span>
+          )}
           {defense && (
             <span style={{ color: 'var(--up)' }}> 当前防守环境，A 池可能为空，属正常风控。</span>
           )}
@@ -194,6 +354,7 @@ export default function Overview() {
               {p === 'A' ? 'A 可交易' : p === 'B' ? 'B 观察' : '全部'}
             </button>
           ))}
+          {loading && <span className="muted">⏳ 加载中…</span>}
           <span><b>A池 Top</b></span>
           <input type="number" value={topN} min={5} max={30} step={1}
             onChange={(e) => setTopN(Number(e.target.value))}

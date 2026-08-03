@@ -69,50 +69,57 @@ def run_backtest(
     cal = store.distinct_dates("daily")
     cal = [d for d in cal if start <= d <= end]
     sample_days = cal[:: max(1, step)]
+    if not sample_days:
+        return {"error": "no sample days"}
+    cal_index = {d: i for i, d in enumerate(cal)}
     trades = []
 
     print(f"回测区间 {start}-{end} 采样日 {len(sample_days)} 股票 {len(codes)}")
-    for di, day in enumerate(sample_days):
-        # 取 day 及之前 horizon 日
-        day_i = cal.index(day) if day in cal else -1
-        if day_i < 60:
+
+    # 性能：每只股票一次性加载全区间日线，之后内存切片复用。
+    # 原实现「采样日 × 股票」各发 2 次 load_daily（窗口+未来），100日×400股≈8万次查询。
+    dfs_by_code: dict[str, pd.DataFrame] = {}
+    for code in codes:
+        df = store.load_daily(ts_codes=[code], start=start, end=end)
+        if df is None or len(df) < 60:
             continue
-        win_dates = cal[max(0, day_i - horizon): day_i + 1]
-        # 批量加载这些股票这段 daily（按 ts 循环，轻量可接受）
-        hits_today = 0
-        for code in codes:
-            df = store.load_daily(ts_codes=[code], start=win_dates[0], end=win_dates[-1])
-            if df is None or len(df) < 60:
+        df = df.sort_values("trade_date").reset_index(drop=True)
+        df["date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+        for col in ("open", "high", "low", "close"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["vol"] = pd.to_numeric(df.get("vol", df.get("volume")), errors="coerce")
+        dfs_by_code[code] = df
+    print(f"加载日线 {len(dfs_by_code)}/{len(codes)} 只")
+
+    processed = 0
+    for code, df in dfs_by_code.items():
+        processed += 1
+        dts = df["trade_date"].astype(str).tolist()
+        dts_set = set(dts)
+        for day in sample_days:
+            day_i = cal_index.get(day, -1)
+            if day_i < 60:
                 continue
-            df = df.sort_values("trade_date")
-            g2 = df.copy()
-            g2["date"] = pd.to_datetime(g2["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
-            g2["open"] = pd.to_numeric(g2["open"], errors="coerce")
-            g2["high"] = pd.to_numeric(g2["high"], errors="coerce")
-            g2["low"] = pd.to_numeric(g2["low"], errors="coerce")
-            g2["close"] = pd.to_numeric(g2["close"], errors="coerce")
-            g2["vol"] = pd.to_numeric(g2.get("vol", g2.get("volume")), errors="coerce")
-            sig = detect_accumulation_breakout(g2)
+            # 取 day 及之前 horizon 日（内存切片，不再查库）
+            win_start = cal[max(0, day_i - horizon)]
+            win = df[(df["trade_date"] >= win_start) & (df["trade_date"] <= day)]
+            if len(win) < 60:
+                continue
+            sig = detect_accumulation_breakout(win)
             if not sig.get("is_breakout"):
                 continue
-            # 突破日落在采样日附近 5 个交易日内即可
-            bd = str(sig.get("breakout_date") or "").replace("-", "").replace(" ", "")[:8]
-            recent = set(str(x) for x in win_dates[-6:])
-            if bd and bd not in recent and bd[:8] not in recent:
-                # 兼容 date 列带时间
-                bd2 = "".join(ch for ch in bd if ch.isdigit())[:8]
-                if bd2 not in recent:
-                    continue
-            fut = store.load_daily(ts_codes=[code], start=day, end=end)
-            if fut is None or len(fut) < 3:
+            # 突破日必须落在采样日附近 5 个交易日内
+            bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
+            recent = set(str(x) for x in cal[max(0, day_i - 5): day_i + 1])
+            if not bd or bd not in recent or bd not in dts_set:
                 continue
-            fut = fut.sort_values("trade_date").reset_index(drop=True)
-            for col in ("open", "high", "low", "close"):
-                fut[col] = pd.to_numeric(fut[col], errors="coerce")
-            sim = _simulate_trade(fut, 0)
+            # 正确性：锚定突破日后一交易日入场（原实现误用「采样日+1」，突破早于采样日时收益口径偏）
+            entry_i = dts.index(bd) + 1
+            if entry_i >= len(df):
+                continue
+            sim = _simulate_trade(df, entry_i)
             if not sim.get("ok"):
                 continue
-            hits_today += 1
             trades.append({
                 "date": day,
                 "ts_code": code,
@@ -121,8 +128,8 @@ def run_backtest(
                 "exit": sim["exit"],
                 "win": sim["win"],
             })
-        if (di + 1) % 10 == 0:
-            print(f"  … {di+1}/{len(sample_days)} 累计交易 {len(trades)}")
+        if processed % 50 == 0:
+            print(f"  … {processed}/{len(dfs_by_code)} 累计交易 {len(trades)}")
 
     if not trades:
         summary = {"n_trades": 0, "win_rate": None, "avg_ret": None, "msg": "无交易样本"}

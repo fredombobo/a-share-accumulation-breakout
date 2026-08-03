@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +15,9 @@ from typing import Any
 from config import _BASE_DIR
 
 PORTFOLIO_PATH = Path(_BASE_DIR) / "runtime" / "portfolio.json"
+
+# 模块级锁：同一进程内并发读写互斥；配合临时文件 + os.replace 原子替换
+_SAVE_LOCK = threading.Lock()
 
 
 def _default() -> dict[str, Any]:
@@ -36,7 +41,13 @@ def save_portfolio(data: dict[str, Any], path: Path | None = None) -> Path:
     p = path or PORTFOLIO_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     data["updated_at"] = datetime.now().isoformat(timespec="seconds")
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    # 原子写：先写同目录临时文件，再 os.replace 覆盖目标，
+    # 避免多进程并发直接 write_text 造成丢更新/写坏文件。
+    with _SAVE_LOCK:
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_bytes(payload)
+        os.replace(tmp, p)
     return p
 
 

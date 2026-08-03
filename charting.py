@@ -84,18 +84,30 @@ def plot_kline(
         # 箱体上沿/下沿：转换为数据坐标的横线
         box_high = sig["box_high"]
         box_low = sig["box_low"]
-        # 箱体时间范围（用 df 索引位置估算）
+        # 箱体时间区间：起点按 box_days 估算，终点为突破日前一日（无突破则到图末）
         n = len(ohlcv)
+        idx = ohlcv.index
         box_days = sig.get("box_days") or 40
         start_pos = max(0, n - box_days - 5)
-        # 上沿/下沿水平线（横跨整个图）
+        end_pos = n - 1
+        if sig.get("breakout_date"):
+            try:
+                bpos = idx.get_loc(pd.to_datetime(sig["breakout_date"]))
+                end_pos = max(start_pos, bpos - 1)
+            except (KeyError, TypeError, ValueError):
+                pass
+        # 上沿/下沿线段只覆盖箱体区间（区间外置 NaN，避免画满整图）
+        hi_line = pd.Series(float("nan"), index=idx)
+        lo_line = pd.Series(float("nan"), index=idx)
+        hi_line.iloc[start_pos:end_pos + 1] = box_high
+        lo_line.iloc[start_pos:end_pos + 1] = box_low
         apds.append(mpf.make_addplot(
-            pd.Series(box_high, index=ohlcv.index), color="#e74c3c",
+            hi_line, color="#e74c3c",
             width=0.8, linestyle="--", label="箱体上沿"))
         apds.append(mpf.make_addplot(
-            pd.Series(box_low, index=ohlcv.index), color="#27ae60",
+            lo_line, color="#27ae60",
             width=0.8, linestyle="--", label="箱体下沿"))
-        box_patch = (start_pos, n, box_low, box_high)
+        box_patch = (start_pos, end_pos + 1, box_low, box_high)
 
     # 突破日竖线
     if sig and sig.get("breakout_date"):

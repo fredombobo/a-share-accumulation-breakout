@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Iterable
 
 import pandas as pd
@@ -103,9 +104,15 @@ _NAME_STRONG: dict[str, tuple[str, ...]] = {
 
 
 def match_themes(industry: str | None, name: str | None) -> list[str]:
-    """返回该股命中的主题列表（按 THEME_FILL_ORDER 排序）。"""
-    ind = str(industry or "").strip()
-    nm = str(name or "").strip()
+    """返回该股命中的主题列表（按 THEME_FILL_ORDER 排序）。
+
+    同一 (industry, name) 结果由 lru_cache 复用，避免 5000 行逐行重复计算。
+    """
+    return list(_match_themes_cached(str(industry or "").strip(), str(name or "").strip()))
+
+
+@lru_cache(maxsize=16384)
+def _match_themes_cached(ind: str, nm: str) -> tuple[str, ...]:
     nm_u = nm.upper()
     hits: list[str] = []
 
@@ -167,12 +174,26 @@ def match_themes(industry: str | None, name: str | None) -> list[str]:
             ok = True
         if ok:
             hits.append(theme)
-    return hits
+    return tuple(hits)
 
 
 def primary_theme(industry: str | None, name: str | None) -> str:
     themes = match_themes(industry, name)
     return themes[0] if themes else "其他"
+
+
+def _dedup_themes_map(industry: pd.Series, name: pd.Series) -> dict[tuple[str, str], list[str]]:
+    """对 (industry, name) 去重后批量计算主题，返回 {(ind, name): [themes]}。
+
+    避免对数千行逐行重复跑 match_themes；唯一组合数通常远小于行数。
+    """
+    ind = industry.map(lambda v: str(v or "").strip())
+    nm = name.map(lambda v: str(v or "").strip())
+    uniq = pd.DataFrame({"ind": ind, "nm": nm}).drop_duplicates()
+    return {
+        (r["ind"], r["nm"]): match_themes(r["ind"], r["nm"])
+        for _, r in uniq.iterrows()
+    }
 
 
 def annotate_themes(
@@ -187,10 +208,10 @@ def annotate_themes(
     if name_col not in out.columns and "name" in out.columns:
         name_col = "name"
 
-    themes_list = [
-        match_themes(r.get(industry_col), r.get(name_col))
-        for _, r in out.iterrows()
-    ]
+    lookup = _dedup_themes_map(out[industry_col], out[name_col])
+    ind = out[industry_col].map(lambda v: str(v or "").strip())
+    nm = out[name_col].map(lambda v: str(v or "").strip())
+    themes_list = [lookup[(i, n)] for i, n in zip(ind, nm)]
     out["主题列表"] = [",".join(t) if t else "其他" for t in themes_list]
     out["主题板块"] = [t[0] if t else "其他" for t in themes_list]
     return out
@@ -225,9 +246,11 @@ def select_with_sector_quota(
         return df.iloc[0:0].copy() if df is not None else pd.DataFrame(), empty_report
 
     min_counts = dict(min_counts or THEME_MIN_COUNT)
-    score_col = score_col if score_col in df.columns else (
-        "total_score" if "total_score" in df.columns else df.columns[-1]
-    )
+    if score_col not in df.columns:
+        if "total_score" in df.columns:
+            score_col = "total_score"
+        else:
+            raise KeyError(f"结果表缺少排序分列：{score_col}/total_score")
     if code_col not in df.columns:
         if "代码" in df.columns:
             code_col = "代码"
@@ -263,12 +286,7 @@ def select_with_sector_quota(
                 continue
             if theme not in _themes_of(row):
                 continue
-            # 半导体：优先要「非芯片关键词」的纯半导体，避免与芯片池抢光后虚满足
-            if theme == "半导体":
-                nm = str(row.get("名称") or row.get("name") or "")
-                chipish = any(k in nm for k in ("芯片", "集成电路", "封测", "MCU", "GPU"))
-                # 若仍有非芯片味的半导体可选则跳过强芯片名；不够时仍接受
-                pass  # 独占占坑已保证与已选芯片不重复
+            # 半导体：独占占坑已保证与已选芯片不重复，无需再按名称过滤
             selected_idx.append(int(i))
             selected_codes.add(code)
             assigned_theme[code] = theme

@@ -9,7 +9,7 @@ Windows 兼容：spawn；worker 为模块顶层函数，可 pickle。
 from __future__ import annotations
 
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
 from typing import Any, Callable, Iterable
 
 import numpy as np
@@ -17,6 +17,34 @@ import pandas as pd
 
 # 单进程兜底阈值：Windows spawn 有固定开销，票太少时多进程更慢
 _MIN_CODES_FOR_POOL = 200
+
+_WATCHDOG_STARTED = False
+
+
+def _watch_parent_or_exit(interval: float = 5.0) -> None:
+    """spawn 子进程看门狗：父进程死亡（强杀/异常退出）时自动退出，防止孤儿 worker 永久挂机。
+
+    实测复现：父进程被 taskkill 后，worker 卡在任务队列等待、PID/内存不再变化、永不退出。
+    在 worker 首次执行时启动 daemon 线程，每 interval 秒探测父进程存活，父死即 os._exit。
+    """
+    global _WATCHDOG_STARTED
+    if _WATCHDOG_STARTED:
+        return
+    _WATCHDOG_STARTED = True
+    import threading
+    import time
+
+    ppid = os.getppid()
+
+    def _watch() -> None:
+        while True:
+            try:
+                os.kill(ppid, 0)  # sig=0 仅探测存活（Windows 下 OpenProcess 检测）
+            except OSError:
+                os._exit(0)  # 父进程已死：立即退出（worker 无共享状态，无需清理）
+            time.sleep(interval)
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 def resolve_workers(workers: int | None = None) -> int:
@@ -50,6 +78,7 @@ def _ensure_date_col(df: pd.DataFrame) -> pd.DataFrame:
 
 def _worker_detect_chunk(payload: tuple[list[str], pd.DataFrame, dict[str, Any]]) -> list[tuple[str, dict]]:
     """子进程：对一批代码做信号检测。"""
+    _watch_parent_or_exit()  # 父死自退，防孤儿挂机
     codes, chunk_df, kwargs = payload
     # 子进程内再 import，避免 Windows spawn 循环导入问题
     from signals import detect_accumulation_breakout
@@ -72,6 +101,23 @@ def _worker_detect_chunk(payload: tuple[list[str], pd.DataFrame, dict[str, Any]]
     return out
 
 
+def _terminate_pool(pool: ProcessPoolExecutor) -> None:
+    """尽力立即终止 ProcessPoolExecutor 的 worker 进程（不等当前分片跑完）。
+
+    cancel 场景：用户点取消需要立即响应，不能等 worker 把 1000 只分片算完。
+    worker 被 terminate 后对应 future 抛 BrokenProcessPool，由调用方按取消处理。
+    """
+    try:
+        procs = getattr(pool, "_processes", None) or {}
+        for p in procs.values():
+            try:
+                p.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def detect_many(
     codes: Iterable[str],
     daily: pd.DataFrame,
@@ -79,11 +125,13 @@ def detect_many(
     kwargs: dict[str, Any] | None = None,
     workers: int | None = None,
     progress_cb: Callable[[str, int, str], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
     label: str = "信号检测",
 ) -> dict[str, dict]:
     """对多只股票并行检测，返回 {ts_code: sig}。
 
     workers=1 或代码数很少时走单进程（便于调试/小样本）。
+    cancel_check：返回 True 时停止派发并释放进程池（当前分片跑完后退出）。
     """
     code_list = [str(c) for c in codes]
     if not code_list:
@@ -119,18 +167,38 @@ def detect_many(
 
     _prog(f"多进程×{len(tasks)} 扫描 {len(code_list)} 只…", 25)
     results: dict[str, dict] = {}
-    done = 0
-    # Windows 下 spawn；调用方须在 if __name__ 保护下启动主流程
-    with ProcessPoolExecutor(max_workers=len(tasks)) as pool:
-        futs = {pool.submit(_worker_detect_chunk, t): i for i, t in enumerate(tasks)}
-        for fut in as_completed(futs):
-            pairs = fut.result()
-            for c, s in pairs:
-                results[c] = s
-            done += 1
-            pct = 25 + int(70 * done / max(len(tasks), 1))
-            _prog(f"完成分片 {done}/{len(tasks)}（累计 {len(results)} 只）", pct)
+    cancelled = False
+    pool = ProcessPoolExecutor(max_workers=len(tasks))
+    futs = {pool.submit(_worker_detect_chunk, t): i for i, t in enumerate(tasks)}
+    pending = set(futs)
+    try:
+        done = 0
+        # wait(timeout=2) 轮询：每 2 秒检查一次取消（不再等整个分片完成才响应 cancel）
+        while pending:
+            finished, pending = wait(pending, timeout=2.0, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                try:
+                    pairs = fut.result()
+                except Exception:  # noqa: BLE001  # worker 被终止/异常的分片跳过
+                    pairs = []
+                for c, s in pairs:
+                    results[c] = s
+                done += 1
+                pct = 25 + int(70 * done / max(len(tasks), 1))
+                _prog(f"完成分片 {done}/{len(tasks)}（累计 {len(results)} 只）", pct)
+            if cancel_check is not None and cancel_check():
+                cancelled = True
+                _prog("已请求取消，正在停止…", 90)
+                break
+    finally:
+        if cancelled:
+            _terminate_pool(pool)  # 立即停 worker（不等当前分片）
+            pool.shutdown(wait=False, cancel_futures=True)
+        else:
+            pool.shutdown(wait=True)
 
+    if cancelled:
+        _prog("扫描已取消", 100)
     return results
 
 
@@ -138,6 +206,7 @@ def _worker_prefilter_chunk(
     payload: tuple[list[str], pd.DataFrame, int, float, float],
 ) -> list[str]:
     """子进程：量能/近高点粗筛。"""
+    _watch_parent_or_exit()  # 父死自退，防孤儿挂机
     codes, chunk_df, lookback, vol_ratio_min, near_high_pct = payload
     if chunk_df is None or chunk_df.empty or not codes:
         return []
@@ -180,6 +249,7 @@ def prefilter_volume_parallel(
     vol_ratio_min: float = 1.15,
     near_high_pct: float = 0.08,
     workers: int | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> set[str]:
     """并行量能/近高点预筛。"""
     code_list = [str(c) for c in codes]
@@ -205,8 +275,25 @@ def prefilter_volume_parallel(
         tasks.append((ch, cdf, lookback, vol_ratio_min, near_high_pct))
 
     keep: set[str] = set()
-    with ProcessPoolExecutor(max_workers=len(tasks)) as pool:
-        futs = [pool.submit(_worker_prefilter_chunk, t) for t in tasks]
-        for fut in as_completed(futs):
-            keep.update(fut.result())
+    cancelled = False
+    pool = ProcessPoolExecutor(max_workers=len(tasks))
+    futs = [pool.submit(_worker_prefilter_chunk, t) for t in tasks]
+    pending = set(futs)
+    try:
+        while pending:
+            finished, pending = wait(pending, timeout=2.0, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                try:
+                    keep.update(fut.result())
+                except Exception:  # noqa: BLE001
+                    pass
+            if cancel_check is not None and cancel_check():
+                cancelled = True
+                break
+    finally:
+        if cancelled:
+            _terminate_pool(pool)
+            pool.shutdown(wait=False, cancel_futures=True)
+        else:
+            pool.shutdown(wait=True)
     return keep

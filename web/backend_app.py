@@ -61,10 +61,14 @@ app.add_middleware(
 # ── 模块级单例（schema 初始化只做一次） ──
 _store = LocalStore()
 _SECTOR_FLOW_CACHE: dict = {}  # {(days, data_version): (dates, pivot_df)}
+_SIG_CACHE: dict = {}          # {(ts_code, as_of): sig} 个股信号缓存，避免每次 overview 重算
 
 # ── 异步扫描任务管理 ──
 _SCAN_TASKS: dict[str, dict] = {}
+_SCAN_CANCEL_EVENTS: dict[str, threading.Event] = {}
 _SCAN_LOCK = threading.Lock()
+_SCAN_TASKS_MAX = 20          # 历史任务保留上限，防止字典无限增长
+_SECTOR_FLOW_CACHE_MAX = 6    # 板块资金流缓存条目上限
 
 
 def _new_task(top: int, days: int) -> str:
@@ -84,7 +88,33 @@ def _new_task(top: int, days: int) -> str:
             "error": None,
             "log": [],
         }
+        _SCAN_CANCEL_EVENTS[task_id] = threading.Event()
     return task_id
+
+
+def _running_task_id() -> str | None:
+    """当前是否有排队/运行中的扫描；有则返回其 task_id。"""
+    with _SCAN_LOCK:
+        for tid, t in _SCAN_TASKS.items():
+            if t.get("status") in ("pending", "running"):
+                return tid
+    return None
+
+
+def _prune_scan_tasks() -> None:
+    """清理已完成任务，仅保留最近 _SCAN_TASKS_MAX 条（防字典无限增长）。"""
+    with _SCAN_LOCK:
+        if len(_SCAN_TASKS) <= _SCAN_TASKS_MAX:
+            return
+        overflow = len(_SCAN_TASKS) - _SCAN_TASKS_MAX
+        # 优先删最旧的已完成任务（done/error/cancelled）
+        done = sorted(
+            (tid for tid, t in _SCAN_TASKS.items() if t.get("status") in ("done", "error", "cancelled")),
+            key=lambda x: str(_SCAN_TASKS[x].get("finished_at") or ""),
+        )
+        for tid in done[:overflow]:
+            _SCAN_TASKS.pop(tid, None)
+            _SCAN_CANCEL_EVENTS.pop(tid, None)
 
 
 def _log(task: dict, msg: str) -> None:
@@ -94,11 +124,19 @@ def _log(task: dict, msg: str) -> None:
 
 
 def _run_scan_worker(task_id: str, top: int, days: int) -> None:
-    """后台线程：A 池可交易 + B 池观察。"""
+    """后台线程：A 池可交易 + B 池观察（支持取消）。"""
     with _SCAN_LOCK:
         task = _SCAN_TASKS.get(task_id)
+        cancel_ev = _SCAN_CANCEL_EVENTS.get(task_id)
     if task is None:
         return
+    if cancel_ev is None:
+        cancel_ev = threading.Event()
+        with _SCAN_LOCK:
+            _SCAN_CANCEL_EVENTS[task_id] = cancel_ev
+
+    def cancel_requested() -> bool:
+        return cancel_ev.is_set() if cancel_ev is not None else False
 
     def report(stage: str, progress: int, msg: str = "") -> None:
         with _SCAN_LOCK:
@@ -112,7 +150,26 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
                 _log(t, msg)
 
     try:
-        import run_screener
+        import importlib
+        import sys
+
+        # 长驻后端可能缓存旧 config（无 SCAN_WORKERS 等字段），扫描前强制重载
+        for mod_name in (
+            "config",
+            "parallel_scan",
+            "signals",
+            "scoring",
+            "pool_select",
+            "market_regime",
+            "run_screener",
+        ):
+            if mod_name in sys.modules:
+                try:
+                    importlib.reload(sys.modules[mod_name])
+                except Exception:  # noqa: BLE001
+                    pass
+        import run_screener  # noqa: E402
+        run_screener = importlib.reload(run_screener)
 
         task["started_at"] = datetime.now().isoformat()
         report("数据准备", 5, f"扫描 A池top={top} days={days}（多核并行）")
@@ -128,7 +185,17 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             report(stage, pct, msg)
 
         # workers=None → config.SCAN_WORKERS（0=自动 cpu-1）
-        result = run_screener.run_scan(top=top, days=days, force=False, progress_cb=progress_cb)
+        result = run_screener.run_scan(
+            top=top, days=days, force=False,
+            progress_cb=progress_cb, cancel_check=cancel_requested,
+        )
+        if cancel_requested():
+            report("已取消", 0, "扫描已取消（当前分片结束后停止）")
+            with _SCAN_LOCK:
+                task["status"] = "cancelled"
+                task["finished_at"] = datetime.now().isoformat()
+            _prune_scan_tasks()
+            return
         df_a = result.get("df_a")
         df_b = result.get("df_b")
         count_a = 0 if df_a is None or getattr(df_a, "empty", True) else len(df_a)
@@ -165,6 +232,8 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
                 t["status"] = "error"
                 t["error"] = str(e)
                 t["finished_at"] = datetime.now().isoformat()
+    finally:
+        _prune_scan_tasks()
 
 # ── 数据读取（SQLite） ──
 
@@ -188,12 +257,24 @@ def _kline_series_for(code: str) -> list[dict]:
 
 
 def _sig_for(code: str) -> dict:
+    """个股信号（带缓存）：每次 overview 对每只重算 detect_accumulation_breakout 很贵，
+    以 (code, 最新交易日) 为键缓存；新扫描/新数据后日期变化自动失效。"""
+    as_of = _store.max_trade_date("daily") or ""
+    key = (code, as_of)
+    cached = _SIG_CACHE.get(key)
+    if cached is not None:
+        return cached
     df = _store.load_daily(ts_codes=[code])
     if df.empty:
         return {}
     df = df.sort_values("trade_date").copy()
     df["date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
-    return detect_accumulation_breakout(df)
+    sig = detect_accumulation_breakout(df)
+    _SIG_CACHE[key] = sig
+    # 缓存上限：防止内存无限增长（一只约数 KB）
+    while len(_SIG_CACHE) > 300:
+        _SIG_CACHE.pop(next(iter(_SIG_CACHE)))
+    return sig
 
 
 def _fina_for(code: str, limit: int = 4) -> list[dict]:
@@ -253,6 +334,9 @@ def _load_sector_flow(days: int = 10, force: bool = False) -> tuple[list[str], p
     pivot = grp.pivot(index="trade_date", columns="industry", values="net").fillna(0)
     dates = [str(x) for x in pivot.index.tolist()]
     _SECTOR_FLOW_CACHE[cache_key] = (dates, pivot)
+    # 缓存上限：只保留最新 N 条，防止按日期无限增长
+    while len(_SECTOR_FLOW_CACHE) > _SECTOR_FLOW_CACHE_MAX:
+        _SECTOR_FLOW_CACHE.pop(next(iter(_SECTOR_FLOW_CACHE)))
     return dates, pivot
 
 
@@ -283,11 +367,15 @@ def cancel_scan(task_id: str):
         if task["status"] in ("done", "error", "cancelled"):
             return {"status": task["status"], "stage": task["stage"]}
         task["cancel_requested"] = True
-        return {"status": "cancelling", "stage": task["stage"]}
+        ev = _SCAN_CANCEL_EVENTS.get(task_id)
+    # 真正触发取消：通知扫描线程，分片粒度停止并释放进程池
+    if ev is not None:
+        ev.set()
+    return {"status": "cancelling", "stage": task["stage"], "task_id": task_id}
 
 
 class ScanRequest(BaseModel):
-    top: int = 15  # A 池默认可交易数量
+    top: int = 20  # A 池默认可交易数量（与箱体阶梯目标一致）
     days: int = 160
     force: bool = False
 
@@ -311,7 +399,16 @@ def _parse_pool_tier(reasons: str) -> tuple[str, str]:
 
 @app.post("/api/scan")
 def start_scan(req: ScanRequest):
-    """触发异步扫描，立即返回 task_id"""
+    """触发异步扫描，立即返回 task_id。
+
+    并发互斥：已有排队/运行中的扫描时返回 409，避免多线程×多进程把 CPU/内存打爆。
+    """
+    running = _running_task_id()
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"已有扫描正在进行（task_id={running}），请先等待完成或取消后再发起",
+        )
     top = max(5, min(req.top, 50))
     days = max(30, min(req.days, 250))
     task_id = _new_task(top, days)
@@ -342,13 +439,33 @@ def health():
 
 @app.get("/api/overview")
 def overview(pool: str = "A"):
-    """最新扫描结果。pool=A|B|ALL"""
+    """最新扫描结果。pool=A|B|ALL。
+
+    无结果时返回 200 + 空列表（不再 404），便于前端保留缓存/提示扫一次。
+    """
     from market_regime import data_freshness, detect_regime
     from trade_plan import build_trade_card
 
     df = _store.load_scan_result()
-    if df.empty:
-        raise HTTPException(status_code=404, detail="暂无扫描结果，请先运行扫描")
+    if df is None or getattr(df, "empty", True):
+        as_of = _store.max_trade_date("daily") or ""
+        try:
+            fresh = data_freshness(as_of, store=_store)
+        except Exception:  # noqa: BLE001
+            fresh = {"label": "未知", "is_stale": True}
+        try:
+            regime = detect_regime(store=_store).to_dict()
+        except Exception:  # noqa: BLE001
+            regime = {"regime": "neutral", "label": "中性"}
+        return {
+            "as_of": as_of,
+            "count": 0,
+            "pool": pool.upper(),
+            "items": [],
+            "freshness": fresh,
+            "regime": regime,
+            "empty_reason": "暂无扫描结果，请先运行扫描",
+        }
 
     latest = str(df["trade_date"].iloc[0]) if "trade_date" in df.columns else ""
     # 交易日滞后（排除周末/节假日）
@@ -359,10 +476,15 @@ def overview(pool: str = "A"):
         regime = {"regime": "neutral", "label": "中性"}
 
     items = []
+    n_a = n_b = 0
     for _, row in df.iterrows():
         code = row["ts_code"]
         reasons = str(row.get("reasons") or "")
         pool_tag, tier = _parse_pool_tier(reasons)
+        if pool_tag == "A":
+            n_a += 1
+        elif pool_tag == "B":
+            n_b += 1
         if pool.upper() == "A" and pool_tag != "A":
             continue
         if pool.upper() == "B" and pool_tag != "B":
@@ -411,12 +533,20 @@ def overview(pool: str = "A"):
 
     # A 池按分数排序
     items.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    empty_reason = None
+    if not items and (n_a + n_b) > 0:
+        if pool.upper() == "A" and n_b > 0:
+            empty_reason = f"当前 A 池为空（库内 B 池 {n_b} 只，可切换到 B 或全部）"
+        elif pool.upper() == "B" and n_a > 0:
+            empty_reason = f"当前 B 池为空（库内 A 池 {n_a} 只，可切换到 A 或全部）"
     return {
         "as_of": latest,
         "count": len(items),
         "pool": pool.upper(),
         "freshness": fresh,
         "regime": regime,
+        "pool_totals": {"A": n_a, "B": n_b},
+        "empty_reason": empty_reason,
         "items": items,
     }
 
@@ -692,7 +822,16 @@ if _HAS_DIST:
         # API 已由上方路由处理；其余走静态或 SPA
         if full_path.startswith("api/") or full_path == "api":
             raise HTTPException(status_code=404, detail="Not Found")
+        # 防路径穿越：显式拒绝 .. 与编码变体；解析后必须仍位于 dist 目录内
+        if ".." in full_path:
+            raise HTTPException(status_code=404, detail="Not Found")
         candidate = _DIST / full_path
+        try:
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(_DIST.resolve()):
+                raise HTTPException(status_code=404, detail="Not Found")
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404, detail="Not Found")
         if candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(_DIST / "index.html")

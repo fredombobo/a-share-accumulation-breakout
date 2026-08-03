@@ -31,6 +31,7 @@ for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy",
 
 import data_fetch  # noqa: E402
 from charting import plot_top_kline_batch  # noqa: E402
+import config as _cfg  # noqa: E402
 from config import (  # noqa: E402
     BUILD_WATCH_POOL,
     CACHE_DIR as CACHE_DIR_STR,
@@ -41,18 +42,23 @@ from config import (  # noqa: E402
     INCLUDE_RELAXED_IN_A,
     OUT_DIR as OUT_DIR_STR,
     RELAXED_BOX_MAX_AMP,
+    RELAXED_BOX_MAX_MID_DRAWDOWN,
     RELAXED_BREAKOUT_CHG_MAX,
     RELAXED_BREAKOUT_CHG_MIN,
     RELAXED_BREAKOUT_VOL_RATIO,
     RELAXED_BREAKOUT_WINDOW_DAYS,
     RELAXED_FUND_FLOW_MIN_RATIO,
     REQUIRED_THEMES,
-    SCAN_WORKERS,
     THEME_MIN_PER_SECTOR,
     TOP_N,
     TOP_N_TRADE,
     TOP_N_WATCH,
 )
+
+# 兼容旧进程缓存的 config（热更新前无此字段）
+SCAN_WORKERS = int(getattr(_cfg, "SCAN_WORKERS", 0) or 0)
+BOX_LADDER_DAYS = tuple(getattr(_cfg, "BOX_LADDER_DAYS", (125, 105, 84, 63, 42, 20)))
+TARGET_SELECT_COUNT = int(getattr(_cfg, "TARGET_SELECT_COUNT", 20) or 20)
 from market_regime import data_freshness, detect_regime  # noqa: E402
 from pool_select import (  # noqa: E402
     breakout_freshness_bonus,
@@ -115,6 +121,63 @@ def load_market_data(days: int, force: bool = False) -> tuple[pd.DataFrame, list
         pd.to_pickle(payload, f)
     print(f"[cache] 已保存: {cache_path}")
     return payload
+
+
+def apply_box_ladder(
+    rows: list[dict],
+    *,
+    target: int | None = None,
+    ladder: tuple[int, ...] | None = None,
+) -> tuple[list[dict], dict]:
+    """横盘时长阶梯：优先 ≥6 个月，不足 target 只则 5→4→…→1 月。
+
+    返回 (筛选后的 rows, 报告)。
+    """
+    target = int(target if target is not None else TARGET_SELECT_COUNT)
+    ladder = tuple(ladder or BOX_LADDER_DAYS)
+    if not rows:
+        return [], {"ladder_min_days": None, "kept": 0, "target": target, "step": "empty"}
+
+    def _days(r: dict) -> int:
+        try:
+            return int(r.get("箱体天数") or r.get("box_days") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _score(r: dict) -> float:
+        try:
+            return float(r.get("综合分") or r.get("total_score") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    report: dict = {"target": target, "ladder": list(ladder), "tried": []}
+    chosen: list[dict] = []
+    chosen_min = ladder[-1] if ladder else 20
+    for min_d in ladder:
+        kept = [r for r in rows if _days(r) >= min_d]
+        report["tried"].append({"min_days": min_d, "count": len(kept)})
+        if len(kept) >= target:
+            chosen = kept
+            chosen_min = min_d
+            break
+        # 记录当前最宽可用集，若最终仍不足则用最宽松一档
+        if not chosen or len(kept) >= len(chosen):
+            chosen = kept
+            chosen_min = min_d
+
+    if not chosen:
+        chosen = list(rows)
+        chosen_min = 0
+
+    # 同档内：分高优先，其次箱体更长
+    chosen = sorted(chosen, key=lambda r: (_score(r), _days(r)), reverse=True)
+    report.update({
+        "ladder_min_days": chosen_min,
+        "kept": len(chosen),
+        "months_approx": round(chosen_min / 21, 1) if chosen_min else 0,
+        "step": f">={chosen_min}d",
+    })
+    return chosen, report
 
 
 def prefilter(basic: pd.DataFrame, dbbasic: pd.DataFrame) -> pd.DataFrame:
@@ -457,6 +520,7 @@ def _detect_on_codes(
     relaxed: bool = False,
     workers: int | None = None,
     progress_cb=None,
+    cancel_check=None,
 ) -> list[str]:
     """对给定代码集合做信号检测（多进程），写回 sig_by_code，返回新命中列表。"""
     if not codes:
@@ -485,6 +549,7 @@ def _detect_on_codes(
             "breakout_chg_min": RELAXED_BREAKOUT_CHG_MIN,
             "breakout_chg_max": RELAXED_BREAKOUT_CHG_MAX,
             "breakout_window_days": RELAXED_BREAKOUT_WINDOW_DAYS,
+            "box_max_mid_drawdown": RELAXED_BOX_MAX_MID_DRAWDOWN,  # 位置约束放宽但仍约束下跌中继
             "require_structure": False,  # B 池放宽结构，A 池仍要求完整箱体
         }
 
@@ -495,6 +560,7 @@ def _detect_on_codes(
         kwargs=kwargs,
         workers=workers,
         progress_cb=progress_cb,
+        cancel_check=cancel_check,
         label=label,
     )
     for code, sig in found.items():
@@ -518,10 +584,12 @@ def run_scan(
     build_watch: bool | None = None,
     include_relaxed_in_a: bool | None = None,
     workers: int | None = None,
+    cancel_check=None,
 ) -> dict:
     """主扫描：A 池(strict 可交易) + B 池(观察，可选 theme_fill)。
 
     默认 top = A 池数量（15）。theme_fill 永不混入 A 池。
+    cancel_check：返回 True 时在阶段间停止扫描（在不可中断的并行阶段内于分片粒度生效）。
     """
     def _prog(stage: str, pct: int, msg: str = "") -> None:
         if progress_cb:
@@ -531,6 +599,36 @@ def run_scan(
                 pass
         if msg:
             print(f"[{stage}] {msg}")
+
+    def _cancelled() -> bool:
+        return bool(cancel_check and cancel_check())
+
+    def _stop_if_cancelled(stage: str) -> bool:
+        """返回 True 表示已取消，调用方应立即 return。"""
+        if _cancelled():
+            _prog(stage, 0, "扫描已取消")
+            return True
+        return False
+
+    def _cancelled_result(regime_obj) -> dict:
+        return {
+            "latest_date": "",
+            "total_candidates": 0,
+            "hits": [],
+            "df": pd.DataFrame(),
+            "df_a": pd.DataFrame(),
+            "df_b": pd.DataFrame(),
+            "sig": {},
+            "kline_dfs": {},
+            "chart_paths": {},
+            "elapsed_sec": round(time.time() - t0, 1),
+            "out_xlsx": "",
+            "quota_report": {},
+            "regime": regime_obj.to_dict() if hasattr(regime_obj, "to_dict") else {},
+            "freshness": {},
+            "pool_report": {},
+            "workers": n_workers,
+        }
 
     build_watch = BUILD_WATCH_POOL if build_watch is None else build_watch
     include_relaxed_in_a = INCLUDE_RELAXED_IN_A if include_relaxed_in_a is None else include_relaxed_in_a
@@ -586,7 +684,9 @@ def run_scan(
 
     # 量能预筛：多进程粗筛，加速 strict 全市场扫描
     _prog("预筛", 18, f"量能/近高点粗筛 {len(all_codes)} 只（workers={n_workers}）…")
-    fast_codes = prefilter_volume_parallel(daily_sorted, all_codes, workers=n_workers)
+    fast_codes = prefilter_volume_parallel(daily_sorted, all_codes, workers=n_workers, cancel_check=cancel_check)
+    if _stop_if_cancelled("预筛"):
+        return _cancelled_result(regime)
     if len(fast_codes) < 50:
         # 预筛过狠则回退全量
         fast_codes = all_codes
@@ -597,13 +697,17 @@ def run_scan(
     _prog("信号检测", 22, f"严格参数扫描 {len(fast_codes)} 只 ×{n_workers} 核…")
     hit_codes = _detect_on_codes(
         fast_codes, daily_sorted, sig_by_code,
-        relaxed=False, workers=n_workers, progress_cb=progress_cb,
+        relaxed=False, workers=n_workers, progress_cb=progress_cb, cancel_check=cancel_check,
     )
+    if _stop_if_cancelled("信号检测"):
+        return _cancelled_result(regime)
     _prog("信号检测", 50, f"严格命中 {len(hit_codes)} 只")
 
     hit_dates = trade_dates[-FUND_FLOW_DAYS:] if trade_dates else []
     _prog("资金流", 55, f"拉取近 {FUND_FLOW_DAYS} 日资金流…")
     mf = data_fetch.get_moneyflow_by_dates(hit_dates, sleep=0.2) if hit_dates else pd.DataFrame()
+    if _stop_if_cancelled("资金流"):
+        return _cancelled_result(regime)
     mf_by_code = {code: g for code, g in mf.groupby("ts_code")} if not mf.empty else {}
 
     dbbasic_latest = dbbasic[dbbasic["trade_date"] == latest_date] if "trade_date" in getattr(dbbasic, "columns", []) else dbbasic
@@ -619,30 +723,59 @@ def run_scan(
         latest_date=latest_date, require_breakout=True, require_fund_quality=True,
         trade_dates=trade_dates,
     )
+
+    # 横盘阶梯：先只要 ~6 个月，不够再 5→4→… 直到凑满 TARGET_SELECT_COUNT
+    target_n = max(top_a, TARGET_SELECT_COUNT)
+    rows, ladder_rep = apply_box_ladder(rows, target=target_n)
+    _prog(
+        "箱体阶梯",
+        65,
+        f"strict 阶梯 min_days={ladder_rep.get('ladder_min_days')} "
+        f"≈{ladder_rep.get('months_approx')}月 保留 {ladder_rep.get('kept')}/{target_n} "
+        f"tried={ladder_rep.get('tried')}",
+    )
     df_all = pd.DataFrame(rows)
 
-    # B 池：放宽突破 + 主题软补齐（永不进 A）；多核全市场，不再截断 800
+    # B 池：若 strict 阶梯后仍不足目标，用 relaxed 补量再跑阶梯；theme_fill 仅观察
     if build_watch:
+        need_more = len(df_all) < target_n
         already = set(df_all["ts_code"].tolist()) if not df_all.empty else set()
         relax_pool = all_codes - already
-        _prog("观察池", 70, f"relaxed 全市场扫描 {len(relax_pool)} 只 ×{n_workers} 核（仅 B 池）…")
+        _prog("观察池", 70, f"relaxed 扫描 {len(relax_pool)} 只 ×{n_workers} 核…")
         new_hits = _detect_on_codes(
             relax_pool, daily_sorted, sig_by_code,
-            relaxed=True, workers=n_workers, progress_cb=progress_cb,
+            relaxed=True, workers=n_workers, progress_cb=progress_cb, cancel_check=cancel_check,
         )
+        if _stop_if_cancelled("观察池"):
+            return _cancelled_result(regime)
         extra = _score_codes(
             new_hits, sig_by_code, basic_latest, mf_by_code,
             fund_min_ratio=RELAXED_FUND_FLOW_MIN_RATIO, tier="relaxed",
             latest_date=latest_date, require_breakout=True, require_fund_quality=False,
             trade_dates=trade_dates,
         )
-        if extra:
-            df_all = pd.concat([df_all, pd.DataFrame(extra)], ignore_index=True).drop_duplicates("ts_code", keep="first")
+        if need_more and extra:
+            # 不足目标：strict+relaxed 合并后再阶梯，优先长横盘
+            merged_rows = (df_all.to_dict("records") if not df_all.empty else []) + extra
+            merged_rows, ladder_rep2 = apply_box_ladder(merged_rows, target=target_n)
+            _prog(
+                "箱体阶梯",
+                72,
+                f"strict+relaxed 阶梯 min_days={ladder_rep2.get('ladder_min_days')} "
+                f"保留 {ladder_rep2.get('kept')}/{target_n}",
+            )
+            ladder_rep = {**ladder_rep, "after_relaxed": ladder_rep2}
+            df_all = pd.DataFrame(merged_rows)
+        elif extra:
+            df_all = (
+                pd.concat([df_all, pd.DataFrame(extra)], ignore_index=True)
+                .drop_duplicates("ts_code", keep="first")
+                if not df_all.empty
+                else pd.DataFrame(extra)
+            )
 
         # theme_fill 仅补 B 池
         theme_min = dict(_DEFAULT_THEME_MIN)
-        a_tmp, _, _ = split_pools(df_all, top_a=top_a, top_b=0, include_relaxed_in_a=False)
-        # 观察主题覆盖不足时 soft fill
         from sector_themes import annotate_themes
         ann = annotate_themes(df_all) if not df_all.empty else df_all
         shortfall = []
@@ -668,10 +801,12 @@ def run_scan(
             if fill_rows:
                 df_all = pd.concat([df_all, pd.DataFrame(fill_rows)], ignore_index=True).drop_duplicates("ts_code", keep="first")
 
-    # 拆池
+    # 拆池：A 池目标 top_a（默认 20）；防守期仍清空可交易名额
     slots = regime.max_trade_slots if regime.allow_new_entries else 0
+    if _stop_if_cancelled("拆池"):
+        return _cancelled_result(regime)
     if not regime.allow_new_entries:
-        _prog("环境", 85, "防守环境：A 池清空（禁止新开仓）")
+        _prog("环境", 85, "防守环境：A 池清空（禁止新开仓）；结果仍写入 B/观察供回看")
     a_df, b_df, pool_report = split_pools(
         df_all if not df_all.empty else pd.DataFrame(),
         top_a=top_a,
@@ -679,6 +814,7 @@ def run_scan(
         include_relaxed_in_a=include_relaxed_in_a,
         regime_max_slots=slots if regime.allow_new_entries else 0,
     )
+    pool_report["box_ladder"] = ladder_rep
 
     # 交易卡片
     a_df = attach_trade_cards(a_df, regime=regime.regime, sig_by_code=sig_by_code)
@@ -695,6 +831,8 @@ def run_scan(
     kline_dfs: dict[str, pd.DataFrame] = {}
     chart_paths: dict = {}
     if not top_df.empty:
+        if _stop_if_cancelled("K线图"):
+            return _cancelled_result(regime)
         _prog("K线图", 90, f"生成 A 池 {len(top_df)} 张…")
         for code in top_df["ts_code"].tolist():
             g = daily_sorted[daily_sorted["ts_code"] == code].copy()

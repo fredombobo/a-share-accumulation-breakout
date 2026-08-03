@@ -7,7 +7,6 @@ accumulation_breakout/
 ├── config.py / signals.py / scoring.py / charting.py   # 选股引擎（Python）
 ├── run_screener.py        # CLI 全市场扫描 → out/ (xlsx+md+charts)
 ├── make_report.py         # Markdown 报告
-├── app.py                 # Streamlit 版（旧，简单面板）
 └── web/
     ├── backend_app.py     # FastAPI 后端（端口 8000）
     └── frontend/          # React 19 + Vite + ECharts（端口 3001）

@@ -30,10 +30,16 @@ import pandas as pd
 from config import (
     BOX_MAX_AMP,
     BOX_MAX_DAYS,
+    BOX_MAX_MID_DRAWDOWN,
+    BOX_MAX_MID_DRAWDOWN as _STRICT_MID_DD,
     BOX_MIN_DAYS,
+    BOX_POS_LOOKBACK,
+    BOX_POS_TREND_LOOKBACK,
+    BOX_POS_TREND_MAX_DROP,
     BREAKOUT_CHG_MAX,
     BREAKOUT_CHG_MIN,
     BREAKOUT_VOL_RATIO,
+    BREAKOUT_VS_RECENT_VOL_RATIO,
     TREND_SLOPE_LIMIT,
     VOL_SHRINK_RATIO,
 )
@@ -437,8 +443,11 @@ def _find_best_box(
             # 贴近性：箱体右端越靠近最新越好
             recency_gap = (n - 1) - end  # 0 最佳（紧贴最新前一根）
             recency_pen = recency_gap * 1.8
-            # 综合分
-            score = m["quality"] - recency_pen
+            # 时长偏好：优先更长横盘（6 个月平台 > 短窗子区间）
+            # length 20→0, 60→+11, 125→+18
+            length_bonus = 8.0 * math.log(max(length, box_min_days) / float(box_min_days))
+            # 综合分（越大越好）
+            score = float(m["quality"]) + length_bonus - recency_pen
             if score > best_score:
                 best_score = score
                 best = {
@@ -473,11 +482,17 @@ def detect_accumulation_breakout(
     breakout_chg_max: float | None = None,
     breakout_window_days: int | None = None,
     require_structure: bool = True,
+    box_max_mid_drawdown: float | None = None,
+    pos_trend_max_drop: float | None = None,
+    breakout_vs_recent_vol_ratio: float | None = None,
 ) -> dict:
     """对单只股票 K 线做横盘吸筹 + 启动检测。
 
     df 列：date, open, high, low, close, vol（或 volume），按 date 升序。
     require_structure=False：放宽结构（B 池 relaxed），仍要求振幅/平坦/突破。
+    box_max_mid_drawdown：箱体中轴相对窗口前段高点的最大回撤（防下跌中继）。
+    pos_trend_max_drop：近 BOX_POS_TREND_LOOKBACK 日涨跌幅下限（防大趋势下跌）。
+    breakout_vs_recent_vol_ratio：突破日量 / 前5日均量 下限（放量双重确认）。
     """
     box_max_days = box_max_days or BOX_MAX_DAYS
     box_min_days = box_min_days or BOX_MIN_DAYS
@@ -486,6 +501,17 @@ def detect_accumulation_breakout(
     breakout_chg_min = breakout_chg_min if breakout_chg_min is not None else BREAKOUT_CHG_MIN
     breakout_chg_max = breakout_chg_max if breakout_chg_max is not None else BREAKOUT_CHG_MAX
     breakout_window_days = breakout_window_days or BREAKOUT_WINDOW_DAYS
+    box_max_mid_drawdown = (
+        BOX_MAX_MID_DRAWDOWN if box_max_mid_drawdown is None else box_max_mid_drawdown
+    )
+    pos_trend_max_drop = (
+        BOX_POS_TREND_MAX_DROP if pos_trend_max_drop is None else pos_trend_max_drop
+    )
+    breakout_vs_recent_vol_ratio = (
+        BREAKOUT_VS_RECENT_VOL_RATIO
+        if breakout_vs_recent_vol_ratio is None
+        else breakout_vs_recent_vol_ratio
+    )
 
     result: dict[str, Any] = {
         "is_breakout": False,
@@ -558,6 +584,24 @@ def detect_accumulation_breakout(
     slope = float(m["slope"])
     vol_shrink = m.get("vol_shrink")
 
+    # ── 箱体位置约束：中轴相对窗口前段高点的回撤（防下跌中继误选） ──
+    box_mid = (box_high + box_low) / 2.0
+    pre_end = max(1, best["start"])  # 箱体开始之前的段落
+    pre_seg = obs.iloc[:pre_end].tail(BOX_POS_LOOKBACK)
+    pre_high = None
+    if len(pre_seg) >= 10:
+        _ph = pd.to_numeric(pre_seg["high"], errors="coerce")
+        pre_high = float(_ph.max()) if _ph.notna().any() else None
+    mid_drawdown = (box_mid / pre_high - 1.0) if (pre_high and pre_high > 0) else 0.0
+
+    # ── 大趋势约束：近 BOX_POS_TREND_LOOKBACK 日涨跌幅（防大趋势下跌） ──
+    _closes = pd.to_numeric(obs["_c"], errors="coerce").dropna()
+    trend_ret = (
+        float(_closes.iloc[-1] / _closes.iloc[-BOX_POS_TREND_LOOKBACK] - 1.0)
+        if len(_closes) >= BOX_POS_TREND_LOOKBACK
+        else 0.0
+    )
+
     last = obs.iloc[-1]
     last_close = float(last["_c"])
     last_vol = float(last["_v"])
@@ -599,6 +643,16 @@ def detect_accumulation_breakout(
             }
             break
 
+    # ── 突破日量 / 前5日均量（放量双重确认，防箱体缩量稀释分母虚高） ──
+    recent_vol_ratio = None
+    if breakout_found:
+        _i = breakout_found["pos_in_obs"]
+        _pre5 = obs.iloc[max(0, _i - 5): _i]
+        if len(_pre5) > 0:
+            _p5v = float(pd.to_numeric(_pre5["_v"], errors="coerce").mean())
+            if _p5v > 0:
+                recent_vol_ratio = float(breakout_found["vol"] / _p5v)
+
     cond_box = box_amp <= (m.get("amp_limit") or box_max_amp) * 1.01
     cond_flat = abs(slope) <= TREND_SLOPE_LIMIT * 1.05
     if require_structure:
@@ -622,6 +676,9 @@ def detect_accumulation_breakout(
         and last_close > result["ma20"]
         and result["ma5"] > result["ma20"]
     )
+    cond_position = mid_drawdown >= -box_max_mid_drawdown
+    cond_trend = trend_ret >= pos_trend_max_drop
+    cond_recent_vol = recent_vol_ratio is None or recent_vol_ratio >= breakout_vs_recent_vol_ratio
 
     bf = breakout_found or {}
     vol_ratio = bf.get("vol_ratio")
@@ -649,6 +706,10 @@ def detect_accumulation_breakout(
         "latest_close": last_close,
         "latest_vol": last_vol,
         "box_avg_vol": box_avg_vol,
+        "pre_high": pre_high,
+        "mid_drawdown": float(mid_drawdown),
+        "trend_ret": float(trend_ret),
+        "recent_vol_ratio": None if recent_vol_ratio is None else float(recent_vol_ratio),
         "cond_box": bool(cond_box),
         "cond_flat": bool(cond_flat),
         "cond_structure": bool(cond_structure),
@@ -656,6 +717,9 @@ def detect_accumulation_breakout(
         "cond_break": bool(cond_break),
         "cond_hold": bool(cond_hold),
         "cond_ma": bool(cond_ma),
+        "cond_position": bool(cond_position),
+        "cond_trend": bool(cond_trend),
+        "cond_recent_vol": bool(cond_recent_vol),
     })
 
     failures: list[str] = []
@@ -673,6 +737,12 @@ def detect_accumulation_breakout(
         failures.append(f"已跌回箱体({last_close:.2f}<{box_high:.2f})")
     if not cond_ma:
         failures.append("均线未多头")
+    if not cond_position:
+        failures.append(f"箱体位置过深(中轴回撤{mid_drawdown:+.0%}，下跌中继，非吸筹平台)")
+    if not cond_trend:
+        failures.append(f"大趋势下跌(近{BOX_POS_TREND_LOOKBACK}日{trend_ret:+.0%})")
+    if not cond_recent_vol:
+        failures.append(f"突破日量/前5日均量{recent_vol_ratio:.1f}倍<{breakout_vs_recent_vol_ratio}(放量不足)")
 
     # 结构在 soft 回退时可能不足：strict 命中仍要求结构；若 metrics.ok 来自 soft 则已在 fail 中
     # 对 is_breakout：结构作为硬条件（专业形态）

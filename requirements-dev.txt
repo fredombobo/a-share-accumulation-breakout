@@ -1,0 +1,4 @@
+# ── 开发/测试依赖（可选，生产部署不需要） ──
+# 注意：当前环境未必装有 pytest；若未安装，请用 stdlib unittest 跑 tests/：
+#   C:\Python314\python.exe -m unittest discover -s tests
+pytest~=8.3

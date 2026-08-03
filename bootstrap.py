@@ -204,11 +204,26 @@ def wait_health(timeout: float = 60.0) -> bool:
     return False
 
 
+def _port_in_use(port: int = 8000) -> bool:
+    """检查端口是否已被占用（存在监听者）。"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        try:
+            return s.connect_ex(("127.0.0.1", port)) == 0
+        except OSError:
+            return False
+
+
 def start_server(py: str, foreground: bool) -> subprocess.Popen | None:
     if not DIST_INDEX.is_file():
         _log("[warn] 未找到 web/frontend/dist，界面可能不完整（API 仍可用）")
     if health_ok(timeout=1.0):
         _log("[3/4] 服务已在运行")
+        return None
+    if _port_in_use(8000):
+        _log("[3/4] 端口 8000 已被占用但服务不响应（疑似残留进程）")
+        _log("       请先运行 停止.bat（或 stop_ui.ps1）清理残留进程后再启动")
         return None
 
     RUNTIME.mkdir(parents=True, exist_ok=True)

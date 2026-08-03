@@ -10,7 +10,7 @@ from typing import Any
 
 import pandas as pd
 
-from sector_themes import match_themes
+from sector_themes import _dedup_themes_map
 
 
 PREFERRED_THEMES = ("AI应用", "半导体", "光模块", "机器人", "电力", "芯片")
@@ -41,13 +41,24 @@ def apply_soft_theme_bonus(df: pd.DataFrame) -> pd.DataFrame:
     sc = _score_col(out)
     if not sc:
         return out
-    bonuses = []
-    for _, r in out.iterrows():
-        industry = r.get("行业") or r.get("industry") or ""
-        name = r.get("名称") or r.get("name") or ""
-        themes = match_themes(industry, name)
-        hit = any(t in PREFERRED_THEMES for t in themes)
-        bonuses.append(THEME_SOFT_BONUS if hit else 0.0)
+    ind = out.get("行业")
+    if ind is None:
+        ind = out.get("industry")
+    nm = out.get("名称")
+    if nm is None:
+        nm = out.get("name")
+    if ind is None or nm is None:
+        # 无主题列可判，全部不加分
+        out["主题软加分"] = 0.0
+        out["排序分"] = pd.to_numeric(out[sc], errors="coerce").fillna(0) + out["主题软加分"]
+        return out
+    lookup = _dedup_themes_map(ind, nm)
+    keys_ind = ind.map(lambda v: str(v or "").strip())
+    keys_nm = nm.map(lambda v: str(v or "").strip())
+    bonuses = [
+        THEME_SOFT_BONUS if any(t in PREFERRED_THEMES for t in lookup[(i, n)]) else 0.0
+        for i, n in zip(keys_ind, keys_nm)
+    ]
     out["主题软加分"] = bonuses
     out["排序分"] = pd.to_numeric(out[sc], errors="coerce").fillna(0) + out["主题软加分"]
     return out

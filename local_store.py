@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 import pandas as pd
 
@@ -37,11 +39,23 @@ class LocalStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # 权衡：FastAPI 多线程下 sqlite3 连接默认 check_same_thread=True，不能跨线程
+        # 复用；若做连接复用需加锁，风险高。故保持「每次调用新建连接」，通过
+        # contextmanager + finally close 保证显式释放（原来只 commit 依赖 GC）。
+        # PRAGMA journal_mode=WAL 为库级持久设置，重复执行开销极小，保留。
         conn = sqlite3.connect(str(self.db_path), timeout=30)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        return conn
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -268,11 +282,15 @@ class LocalStore:
         if "trade_date" in cols and table != "stock_basic":
             pk = ["ts_code", "trade_date"]
             set_cols = [c for c in cols if c not in pk]
-            set_clause = ",".join(f"{c}=excluded.{c}" for c in set_cols)
-            upsert_sql = (
-                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
-                f"ON CONFLICT({','.join(pk)}) DO UPDATE SET {set_clause}"
-            )
+            if set_cols:
+                set_clause = ",".join(f"{c}=excluded.{c}" for c in set_cols)
+                upsert_sql = (
+                    f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+                    f"ON CONFLICT({','.join(pk)}) DO UPDATE SET {set_clause}"
+                )
+            else:
+                # 仅含主键列时无列可更新，降级为 INSERT OR IGNORE（已有则跳过）
+                upsert_sql = f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
         else:
             upsert_sql = f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
         rows = [tuple(None if pd.isna(x) else x for x in r) for r in df[cols].itertuples(index=False)]
@@ -299,9 +317,9 @@ def sync_fina_for_codes(
     import time
 
     _here = os.path.dirname(os.path.abspath(__file__))
-    for _p in (_here, r"E:\openclaw\stock_picker_cn"):
-        if _p not in sys.path:
-            sys.path.insert(0, _p)
+    # tushare_http.py 与本文件同目录，去掉硬编码绝对路径 E:\openclaw\stock_picker_cn
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
     from tushare_http import pro
 
     store = LocalStore()
@@ -319,7 +337,9 @@ def sync_fina_for_codes(
             periods = [f"{year-1}1231", f"{year-1}0930", f"{year-1}0630", f"{year-1}0331"]
 
     existing = store.load_fina_indicator(ts_codes=ts_codes)
-    have_fina = set(zip(existing["ts_code"], existing["ann_date"])) if not existing.empty else set()
+    # 拉取后按 end_date 过滤入库（upsert_fina_indicator 存 end_date），故「已存在」
+    # 判定也统一用 end_date；原来用 ann_date 与 end_date 几乎永不相等导致全量重拉
+    have_fina = set(zip(existing["ts_code"], existing["end_date"])) if not existing.empty else set()
 
     rows = 0
     for ts in ts_codes:
@@ -362,9 +382,8 @@ def sync_from_tushare(
     from datetime import timedelta
 
     _here = os.path.dirname(os.path.abspath(__file__))
-    for _p in (_here, r"E:\openclaw\stock_picker_cn"):
-        if _p not in sys.path:
-            sys.path.insert(0, _p)
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
     from tushare_http import pro
     import time
 

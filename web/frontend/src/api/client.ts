@@ -1,16 +1,36 @@
 const BASE = '/api'
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(BASE + path, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
-  })
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) {
-    const detail = body?.detail || body?.message || `HTTP ${response.status}`
-    throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+/** 默认请求超时：30s，超时后 abort。 */
+const DEFAULT_TIMEOUT_MS = 30_000
+
+/** 可传外部 AbortSignal 与自定义超时。 */
+export type ReqOpts = { signal?: AbortSignal; timeoutMs?: number }
+
+async function request<T>(path: string, init?: RequestInit & ReqOpts): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...rest } = init || {}
+  const controller = new AbortController()
+  const external = rest.signal
+  // 外部已中止则立即 abort；外部后续中止时同步 abort 内部请求
+  if (external?.aborted) controller.abort()
+  const onExternalAbort = () => controller.abort()
+  external?.addEventListener('abort', onExternalAbort)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetch(BASE + path, {
+      ...rest,
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', ...(rest.headers || {}) },
+    })
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      const detail = body?.detail || body?.message || `HTTP ${response.status}`
+      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+    }
+    return body as T
+  } finally {
+    clearTimeout(timer)
+    external?.removeEventListener('abort', onExternalAbort)
   }
-  return body as T
 }
 
 export interface KlinePoint {
@@ -110,6 +130,8 @@ export interface OverviewResp {
   items: OverviewItem[]
   freshness?: Freshness
   regime?: Regime
+  pool_totals?: { A: number; B: number }
+  empty_reason?: string | null
 }
 
 export interface HealthResp {
@@ -209,23 +231,21 @@ export interface ScanStatus {
 }
 
 export const api = {
-  health: () => request<HealthResp>('/health'),
-  setupStatus: () => request<SetupStatus>('/setup-status'),
-  overview: (pool = 'A') => request<OverviewResp>(`/overview?pool=${pool}`),
-  stock: (tsCode: string) => request<StockDetail>(`/stock/${encodeURIComponent(tsCode)}`),
-  stockFlow: (tsCode: string, days = 20) =>
-    request<StockFlowResp>(`/stock/${encodeURIComponent(tsCode)}/flow?days=${days}`),
-  sectorFlow: (days = 10) => request<SectorFlowResp>(`/sector-flow?days=${days}`),
-  scan: (top = 15, days = 160, force = false) =>
+  health: (opts?: ReqOpts) => request<HealthResp>('/health', opts),
+  setupStatus: (opts?: ReqOpts) => request<SetupStatus>('/setup-status', opts),
+  overview: (pool = 'A', opts?: ReqOpts) => request<OverviewResp>(`/overview?pool=${pool}`, opts),
+  stock: (tsCode: string, opts?: ReqOpts) => request<StockDetail>(`/stock/${encodeURIComponent(tsCode)}`, opts),
+  stockFlow: (tsCode: string, days = 20, opts?: ReqOpts) =>
+    request<StockFlowResp>(`/stock/${encodeURIComponent(tsCode)}/flow?days=${days}`, opts),
+  sectorFlow: (days = 10, opts?: ReqOpts) => request<SectorFlowResp>(`/sector-flow?days=${days}`, opts),
+  scan: (top = 15, days = 160, force = false, opts?: ReqOpts) =>
     request<{ status: string; task_id: string; top: number; days: number }>('/scan', {
+      ...opts,
       method: 'POST',
       body: JSON.stringify({ top, days, force }),
     }),
-  scanStatus: (taskId?: string) =>
-    request<ScanStatus>(taskId ? `/scan/status?task_id=${taskId}` : '/scan/status'),
-  cancelScan: (taskId: string) =>
-    request<{ status: string; stage: string }>(`/scan/${taskId}/cancel`, { method: 'POST' }),
-  portfolio: () => request<{ portfolio: { positions: unknown[] }; alerts: unknown[]; prices: Record<string, number> }>('/portfolio'),
-  portfolioUpsert: (body: Record<string, unknown>) =>
-    request('/portfolio', { method: 'POST', body: JSON.stringify(body) }),
+  scanStatus: (taskId?: string, opts?: ReqOpts) =>
+    request<ScanStatus>(taskId ? `/scan/status?task_id=${taskId}` : '/scan/status', opts),
+  cancelScan: (taskId: string, opts?: ReqOpts) =>
+    request<{ status: string; stage: string }>(`/scan/${taskId}/cancel`, { ...opts, method: 'POST' }),
 }

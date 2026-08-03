@@ -25,6 +25,8 @@ import pandas as pd
 from config import (
     FUND_FLOW_DAYS,
     FUND_FLOW_MIN_RATIO,
+    FUND_SCORE_WEIGHT,
+    FUNDAMENTAL_SCORE_WEIGHT,
     MAX_MV_YI,
     MAX_PB,
     MAX_PE,
@@ -33,6 +35,19 @@ from config import (
     MIN_PB,
     MIN_PE,
     MIN_PRICE,
+    SCORE_MV_BEST_HIGH,
+    SCORE_MV_BEST_LOW,
+    SCORE_MV_OK_HIGH,
+    SCORE_MV_OK_LOW,
+    SCORE_PB_BEST_HIGH,
+    SCORE_PB_BEST_LOW,
+    SCORE_PB_OK_HIGH,
+    SCORE_PE_BEST_HIGH,
+    SCORE_PE_BEST_LOW,
+    SCORE_TR_BEST_HIGH,
+    SCORE_TR_BEST_LOW,
+    SCORE_TR_OK_HIGH,
+    SIGNAL_SCORE_WEIGHT,
 )
 from signals import score_breakout_strength
 
@@ -67,11 +82,12 @@ def calc_fund_flow_strength(mf_rows: pd.DataFrame) -> tuple[float, float, float]
     if mf_rows is None or mf_rows.empty:
         return 0.0, 0.0, 0.0
     net = calc_main_net_inflow(mf_rows)
-    # 同期成交额估算：使用 amount 列（万元）或买卖总量
+    # 同期成交额估算：优先 amount 列（万元）；缺失时回退为「完整主力成交额」
+    # （买/卖超大单+大单合计 ≈ 主力双边成交额），避免仅用买入侧造成分母减半、比率翻倍。
     if "amount" in mf_rows.columns:
         amt = pd.to_numeric(mf_rows["amount"], errors="coerce").fillna(0.0).sum()
     else:
-        cols = [c for c in ("buy_elg_amount", "buy_lg_amount", "buy_md_amount", "buy_sm_amount") if c in mf_rows.columns]
+        cols = [c for c in MAIN_FLOW_COLS if c in mf_rows.columns]
         amt = mf_rows[cols].astype(float).sum().sum() if cols else 0.0
     ratio = (net / amt) if amt > 0 else 0.0
     # 强度分：净流入占比 0.5% → 60分，2% → 90分，负 → 0
@@ -108,13 +124,13 @@ def score_fundamentals(row: pd.Series) -> tuple[float, list[str]]:
     mv = row.get("total_mv_yi")
     tr = row.get("turnover_rate")
 
-    # 估值：PE 越接近合理区间(8-30)分越高
+    # 估值：PE 越接近合理区间(SCORE_PE_BEST_LOW~HIGH)分越高
     if pd.notna(pe) and pe > 0:
-        if 8 <= pe <= 30:
+        if SCORE_PE_BEST_LOW <= pe <= SCORE_PE_BEST_HIGH:
             s = 30.0
-        elif 0 < pe < 8:
+        elif 0 < pe < SCORE_PE_BEST_LOW:
             s = 20.0
-        elif 30 < pe <= MAX_PE:
+        elif SCORE_PE_BEST_HIGH < pe <= MAX_PE:
             s = 15.0
         else:
             s = 5.0
@@ -123,13 +139,13 @@ def score_fundamentals(row: pd.Series) -> tuple[float, list[str]]:
     else:
         notes.append("PE无数据")
 
-    # 市净率：越低越好，0.8-4 为佳
+    # 市净率：越低越好，SCORE_PB_BEST_LOW~HIGH 为佳
     if pd.notna(pb) and pb > 0:
-        if 0.8 <= pb <= 4:
+        if SCORE_PB_BEST_LOW <= pb <= SCORE_PB_BEST_HIGH:
             s = 20.0
-        elif 4 < pb <= 8:
+        elif SCORE_PB_BEST_HIGH < pb <= SCORE_PB_OK_HIGH:
             s = 12.0
-        elif 0 < pb < 0.8:
+        elif 0 < pb < SCORE_PB_BEST_LOW:
             s = 15.0
         else:
             s = 5.0
@@ -138,13 +154,13 @@ def score_fundamentals(row: pd.Series) -> tuple[float, list[str]]:
     else:
         notes.append("PB无数据")
 
-    # 市值：50-500亿 适中（有弹性且不太小）
+    # 市值：SCORE_MV_BEST_LOW~HIGH 亿 适中（有弹性且不太小）
     if pd.notna(mv) and mv > 0:
-        if 50 <= mv <= 500:
+        if SCORE_MV_BEST_LOW <= mv <= SCORE_MV_BEST_HIGH:
             s = 25.0
-        elif 500 < mv <= 1500:
+        elif SCORE_MV_BEST_HIGH < mv <= SCORE_MV_OK_HIGH:
             s = 18.0
-        elif 30 <= mv < 50:
+        elif SCORE_MV_OK_LOW <= mv < SCORE_MV_BEST_LOW:
             s = 18.0
         else:
             s = 8.0
@@ -153,13 +169,13 @@ def score_fundamentals(row: pd.Series) -> tuple[float, list[str]]:
     else:
         notes.append("市值无数据")
 
-    # 换手率：2%-12% 活跃但不过热
+    # 换手率：SCORE_TR_BEST_LOW~HIGH 活跃但不过热
     if pd.notna(tr) and tr > 0:
-        if 2 <= tr <= 12:
+        if SCORE_TR_BEST_LOW <= tr <= SCORE_TR_BEST_HIGH:
             s = 25.0
-        elif 12 < tr <= 20:
+        elif SCORE_TR_BEST_HIGH < tr <= SCORE_TR_OK_HIGH:
             s = 15.0
-        elif 0 < tr < 2:
+        elif 0 < tr < SCORE_TR_BEST_LOW:
             s = 12.0
         else:
             s = 5.0
@@ -178,7 +194,7 @@ def build_master_score(
     fund_ratio: float,
     fund_row: pd.Series,
 ) -> tuple[float, dict]:
-    """综合打分：信号 55% + 资金流 25% + 基本面 20%。
+    """综合打分：信号 + 资金流 + 基本面，权重见 config.SIGNAL/FUND/FUNDAMENTAL_SCORE_WEIGHT。
 
     信号权重略提高，使「长横盘 + 明确突破」在排序中更占主导。
     """
@@ -186,7 +202,12 @@ def build_master_score(
     fund_score, fund_notes = fund_flow_score, []
     basic_score, basic_notes = score_fundamentals(fund_row)
 
-    total = round(sig_score * 0.55 + fund_score * 0.25 + basic_score * 0.20, 1)
+    total = round(
+        sig_score * SIGNAL_SCORE_WEIGHT
+        + fund_score * FUND_SCORE_WEIGHT
+        + basic_score * FUNDAMENTAL_SCORE_WEIGHT,
+        1,
+    )
 
     detail = {
         "信号强度分": sig_score,

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -170,29 +169,27 @@ def main() -> int:
     print("- B 池 relaxed 仅随机抽最多 800 只未命中票，不是全市场放宽扫描")
     print("- 默认输出只展示 A 池 Top15，不是全市场命中列表")
 
-    conn = sqlite3.connect("runtime/stock_data.db")
+    # 用 LocalStore 公共接口读 scan_result 历史（路径由 store 推导，不再硬编码 runtime/stock_data.db）
     try:
-        sc = pd.read_sql(
-            "SELECT trade_date, COUNT(*) AS c FROM scan_result "
-            "GROUP BY trade_date ORDER BY trade_date DESC LIMIT 8",
-            conn,
-        )
+        sc_dates = store.distinct_dates("scan_result", limit=8)
         print("\n=== scan_result 历史 ===")
-        print(sc.to_string(index=False) if not sc.empty else "(空)")
-        if not sc.empty:
-            latest_scan = str(sc.iloc[0]["trade_date"])
-            top = pd.read_sql(
-                "SELECT ts_code, name, total_score, box_days, vol_ratio, reasons "
-                "FROM scan_result WHERE trade_date=? ORDER BY total_score DESC LIMIT 15",
-                conn,
-                params=(latest_scan,),
-            )
+        if not sc_dates:
+            print("(空)")
+        else:
+            rows = []
+            for d in sc_dates:
+                r = store.load_scan_result(trade_date=d)
+                rows.append((d, len(r) if r is not None and not r.empty else 0))
+            sc = pd.DataFrame(rows, columns=["trade_date", "c"]).iloc[::-1]
+            print(sc.to_string(index=False))
+            latest_scan = sc_dates[-1]
+            top = store.load_scan_result(trade_date=latest_scan)
+            cols = ["ts_code", "name", "total_score", "box_days", "vol_ratio", "reasons"]
+            top = top[[c for c in cols if c in top.columns]].head(15) if not top.empty else top
             print(f"\n最新扫描日 {latest_scan} Top15:")
             print(top.to_string(index=False))
     except Exception as e:  # noqa: BLE001
         print("scan_result 读取失败:", e)
-    finally:
-        conn.close()
 
     return 0
 

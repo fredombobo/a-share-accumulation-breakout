@@ -207,6 +207,17 @@ def _start_server(py: str) -> subprocess.Popen:
     return p
 
 
+def _port_in_use(port: int = 8000) -> bool:
+    """检查端口是否已被占用（存在监听者）。"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        try:
+            return s.connect_ex(("127.0.0.1", port)) == 0
+        except OSError:
+            return False
+
+
 def _wait_health(timeout: float = 40.0) -> bool:
     import urllib.request
 
@@ -260,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     elif not ok_token:
         print("[数据] 无 Token，跳过同步（可先看界面说明）")
 
-    if _wait_health(timeout=1.5):
+    if _wait_health(timeout=4.0):
         print("[启动] 服务已在运行")
         if not no_browser:
             webbrowser.open("http://127.0.0.1:8000/")
@@ -270,6 +281,11 @@ def main(argv: list[str] | None = None) -> int:
     proc = _start_server(py)
     if not _wait_health(timeout=45):
         print("[错误] 服务未就绪，请查看 runtime/easy_backend.err.log")
+        if _port_in_use(8000):
+            print()
+            print("[提示] 端口 8000 已被其他进程占用（可能是上次未正确关闭的残留服务）。")
+            print("       请先双击「停止.bat」清理残留进程，再重新启动。")
+            print("       若仍无法停止，可在任务管理器结束名为 python.exe 的残留进程。")
         return 1
 
     print()

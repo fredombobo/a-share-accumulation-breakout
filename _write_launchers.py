@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from pathlib import Path
 
-root = Path(r"E:\CODEX\Stock_selection\accumulation_breakout")
+# 根路径从脚本自身位置推导，项目迁移后仍可用
+root = Path(__file__).resolve().parent
 
 start_ui = r"""# AB-Screener one-click start (backend :8000 + frontend :3001)
 $ErrorActionPreference = 'Stop'
