@@ -24,9 +24,9 @@ out/
 
 # frontend
 web/frontend/node_modules/
-web/frontend/dist/
 web/frontend/.vite/
 web/frontend/tsconfig.tsbuildinfo
+# dist 入库：小白无需安装 Node 即可单端口使用
 
 # IDE / OS
 .idea/

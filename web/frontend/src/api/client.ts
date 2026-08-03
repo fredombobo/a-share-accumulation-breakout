@@ -120,6 +120,18 @@ export interface HealthResp {
   regime?: Regime
 }
 
+export interface SetupStatus {
+  has_token: boolean
+  has_frontend_dist: boolean
+  latest_daily: string | null
+  latest_moneyflow: string | null
+  has_market_data: boolean
+  scan_result_rows: number
+  ui_mode: string
+  open_url: string
+  tips: string[]
+}
+
 export interface StockDetail {
   ts_code: string
   name: string
@@ -198,6 +210,7 @@ export interface ScanStatus {
 
 export const api = {
   health: () => request<HealthResp>('/health'),
+  setupStatus: () => request<SetupStatus>('/setup-status'),
   overview: (pool = 'A') => request<OverviewResp>(`/overview?pool=${pool}`),
   stock: (tsCode: string) => request<StockDetail>(`/stock/${encodeURIComponent(tsCode)}`),
   stockFlow: (tsCode: string, days = 20) =>

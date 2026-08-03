@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp } from '../api/client'
+import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp, SetupStatus } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from '../components/EChart'
 import SectorFlowPanel from '../components/SectorFlowPanel'
@@ -20,6 +20,7 @@ export default function Overview() {
   const nav = useNavigate()
   const [data, setData] = useState<OverviewResp | null>(null)
   const [health, setHealth] = useState<HealthResp | null>(null)
+  const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [sector, setSector] = useState<SectorFlowResp | null>(null)
   const [sectorDays, setSectorDays] = useState(10)
   const [pool, setPool] = useState<'A' | 'B' | 'ALL'>('A')
@@ -33,6 +34,7 @@ export default function Overview() {
 
   const load = () => {
     api.health().then(setHealth).catch(() => setHealth(null))
+    api.setupStatus().then(setSetup).catch(() => setSetup(null))
     api.overview(pool).then(setData).catch((e) => setErr(String(e)))
     api.sectorFlow(sectorDays).then(setSector).catch(() => setSector(null))
   }
@@ -124,9 +126,29 @@ export default function Overview() {
   const fresh = data.freshness || health?.freshness
   const regime = data.regime || health?.regime
   const stale = !!fresh?.is_stale
+  const defense = regime?.allow_new_entries === false
 
   return (
     <div>
+      {/* 小白提示条 */}
+      <div className="card section-gap" style={{ marginBottom: 12, borderColor: 'var(--accent)', background: 'var(--surface-2)' }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>新手 3 步</div>
+        <div className="muted" style={{ lineHeight: 1.7 }}>
+          ① 双击 <b>一键启动.bat</b> 同步数据（日常约 2～10 分钟）→
+          ② 点下方 <b>扫描</b>（约 5～15 分钟）→
+          ③ 只看 <b>A 池</b>（可交易）；B 池仅观察。
+          {defense && (
+            <span style={{ color: 'var(--up)' }}> 当前防守环境，A 池可能为空，属正常风控。</span>
+          )}
+          {setup && !setup.has_market_data && (
+            <span style={{ color: 'var(--up)' }}> 尚未拉到行情，请先跑一键启动同步。</span>
+          )}
+          {setup && !setup.has_token && (
+            <span style={{ color: 'var(--up)' }}> 未检测到 Token，请编辑项目根目录 .env。</span>
+          )}
+        </div>
+      </div>
+
       {/* 状态条：数据新鲜度 + 市场环境 */}
       <div className={`status-bar ${stale ? 'status-stale' : 'status-ok'}`}>
         <span>

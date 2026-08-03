@@ -36,6 +36,8 @@ for _p in (str(_BASE), str(_PARENT)):
 import pandas as pd  # noqa: E402
 from fastapi import FastAPI, HTTPException  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from local_store import LocalStore, sync_fina_for_codes  # noqa: E402
@@ -633,6 +635,70 @@ def stock_flow(ts_code: str, days: int = 20):
     }
 
 
+# ── 小白友好：单端口托管前端 dist（无需再开 npm）──
+_DIST = _BASE / "frontend" / "dist"
+_HAS_DIST = _DIST.is_dir() and (_DIST / "index.html").is_file()
+
+
+@app.get("/api/setup-status")
+def setup_status():
+    """新手向导用：Token / 数据 / 扫描是否就绪。"""
+    token = (os.environ.get("TUSHARE_TOKEN") or "").strip()
+    env_path = _PARENT / ".env"
+    if not token and env_path.is_file():
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("TUSHARE_TOKEN=") and not line.startswith("#"):
+                    token = line.split("=", 1)[1].strip().strip('"').strip("'")
+        except Exception:  # noqa: BLE001
+            pass
+    latest_daily = _store.max_trade_date("daily")
+    latest_mf = _store.max_trade_date("moneyflow")
+    scan_n = 0
+    try:
+        df_scan = _store.load_scan_result()
+        scan_n = 0 if df_scan is None or getattr(df_scan, "empty", True) else len(df_scan)
+    except Exception:  # noqa: BLE001
+        scan_n = 0
+    return {
+        "has_token": bool(token) and token not in ("your_token_here", "changeme"),
+        "has_frontend_dist": _HAS_DIST,
+        "latest_daily": latest_daily,
+        "latest_moneyflow": latest_mf,
+        "has_market_data": bool(latest_daily),
+        "scan_result_rows": scan_n,
+        "ui_mode": "single_port" if _HAS_DIST else "dev_split",
+        "open_url": "http://127.0.0.1:8000/" if _HAS_DIST else "http://127.0.0.1:3001/",
+        "tips": [
+            "没有 Token：编辑项目根目录 .env 填入 TUSHARE_TOKEN",
+            "没有行情：双击「一键启动.bat」会自动同步，或点界面「扫描」",
+            "A 池为空且提示防守：市场弱，系统故意不开新仓，属正常",
+        ],
+    }
+
+
+if _HAS_DIST:
+    assets_dir = _DIST / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+    @app.get("/")
+    def _spa_index():
+        return FileResponse(_DIST / "index.html")
+
+    @app.get("/{full_path:path}")
+    def _spa_fallback(full_path: str):
+        # API 已由上方路由处理；其余走静态或 SPA
+        if full_path.startswith("api/") or full_path == "api":
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = _DIST / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")
+
+
 if __name__ == "__main__":
     import uvicorn
+    print(f"UI: http://127.0.0.1:8000/  (dist={'yes' if _HAS_DIST else 'no-use :3001'})")
     uvicorn.run(app, host="127.0.0.1", port=8000)
