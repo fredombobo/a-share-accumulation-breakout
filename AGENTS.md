@@ -19,6 +19,9 @@
 
 ## 运行前环境
 
+**小白入口（优先）：** 双击 `一键启动.bat` → 浏览器 `http://127.0.0.1:8000/` → 点「扫描」  
+停止：双击 `停止.bat`。详见 `docs/小白使用手册.md`。
+
 ```powershell
 # 清除 Hermes/代理污染
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
@@ -27,23 +30,14 @@ $env:http_proxy=$env:https_proxy=$env:all_proxy=$null
 
 # Token：.env 或环境变量 TUSHARE_TOKEN
 cd E:\CODEX\Stock_selection\accumulation_breakout
+C:\Python314\python.exe easy_start.py
 C:\Python314\python.exe sync_daily.py
-C:\Python314\python.exe run_screener.py --top 20
+C:\Python314\python.exe run_screener.py --top 15 --days 160 --workers 0
 C:\Python314\python.exe test_signals.py
 ```
 
-Web：
-
-```powershell
-# 后端
-cd E:\CODEX\Stock_selection\accumulation_breakout\web
-C:\Python314\python.exe backend_app.py
-
-# 前端（另开终端）
-cd E:\CODEX\Stock_selection\accumulation_breakout\web\frontend
-npm run dev
-# http://localhost:3001
-```
+Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend_app.py` :8000。
+开发热更新才需要 `npm run dev` :3001。
 
 ## 硬约束（踩坑后写死）
 
