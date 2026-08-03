@@ -1,0 +1,37 @@
+# secrets
+.env
+.env.local
+*.pem
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# local data & outputs (large / regenerable)
+runtime/
+out/
+*.db
+*.db-shm
+*.db-wal
+*.pkl
+*.log
+*.pid
+
+# frontend
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/.vite/
+web/frontend/tsconfig.tsbuildinfo
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+.hermes/

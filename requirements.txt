@@ -1,0 +1,11 @@
+pandas>=2.0
+numpy>=1.26
+curl_cffi>=0.13
+tushare>=1.4.0
+openpyxl>=3.1
+mplfinance>=0.12
+matplotlib>=3.8
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.0
+requests>=2.31
