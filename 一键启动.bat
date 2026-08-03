@@ -24,10 +24,16 @@ if errorlevel 1 (
   set "PY=python"
 )
 
-"%PY%" easy_start.py
+REM 若已设置环境变量 TUSHARE_TOKEN，走全自动 bootstrap
+if defined TUSHARE_TOKEN (
+  "%PY%" bootstrap.py --yes
+) else (
+  "%PY%" easy_start.py
+)
 if errorlevel 1 (
   echo.
   echo 启动失败，请把上面的报错截图保存。
+  echo Agent 模式: python bootstrap.py --token 你的TOKEN --yes
   pause
   exit /b 1
 )

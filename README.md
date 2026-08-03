@@ -5,7 +5,31 @@ A 股「横盘吸筹平台 + 放量突破」筛选工具（本地运行）。
 
 ---
 
-## 小白最短路径（推荐）
+## 给 AI Agent（推荐：用户只提供 Token）
+
+用户只需给出 **Tushare Token**。Agent 执行：
+
+```bash
+git clone https://github.com/fredombobo/a-share-accumulation-breakout.git
+cd a-share-accumulation-breakout
+python bootstrap.py --token "<TUSHARE_TOKEN>" --yes --no-browser
+```
+
+成功标志：终端出现 `BOOTSTRAP_OK url=http://127.0.0.1:8000/`  
+然后让用户打开该地址，点 **「扫描」**，约 5～15 分钟后看 **A 池**。
+
+- 给 Agent 的完整提示词：[PROMPT_FOR_AGENT.md](./PROMPT_FOR_AGENT.md)  
+- Agent 协议说明：[FOR_AGENTS.md](./FOR_AGENTS.md)
+
+```powershell
+# Windows 等价
+$env:TUSHARE_TOKEN = "<TUSHARE_TOKEN>"
+python bootstrap.py --yes --no-browser
+```
+
+---
+
+## 小白最短路径（自己点鼠标）
 
 ### 只要 3 步
 

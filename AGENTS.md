@@ -19,7 +19,10 @@
 
 ## 运行前环境
 
-**小白入口（优先）：** 双击 `一键启动.bat` → 浏览器 `http://127.0.0.1:8000/` → 点「扫描」  
+**Agent 入口（优先）：** `python bootstrap.py --token <TUSHARE_TOKEN> --yes --no-browser`  
+成功行：`BOOTSTRAP_OK url=http://127.0.0.1:8000/` · 说明见 `FOR_AGENTS.md` / `PROMPT_FOR_AGENT.md`  
+
+**小白入口：** 双击 `一键启动.bat` → 浏览器 `http://127.0.0.1:8000/` → 点「扫描」  
 停止：双击 `停止.bat`。详见 `docs/小白使用手册.md`。
 
 ```powershell

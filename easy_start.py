@@ -223,18 +223,26 @@ def _wait_health(timeout: float = 40.0) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """兼容入口：有 --token/--yes 时转交 bootstrap（Agent 友好）。"""
     argv = list(argv or sys.argv[1:])
-    skip_sync = "--no-sync" in argv
+    # Agent / 非交互：统一走 bootstrap.py
+    if any(a.startswith("--token") or a in ("--yes", "-y") for a in argv) or os.environ.get("TUSHARE_TOKEN"):
+        if "--yes" not in argv and "-y" not in argv and not sys.stdin.isatty():
+            argv = ["--yes", *argv]
+        from bootstrap import main as bootstrap_main
+        return bootstrap_main(argv)
+
+    skip_sync = "--no-sync" in argv or "--skip-sync" in argv
     no_browser = "--no-browser" in argv
     interactive = "--yes" not in argv and sys.stdin.isatty()
 
     _clear_proxy()
     _banner("横盘吸筹选股 · 小白一键启动")
     print("目录:", ROOT)
+    print("提示: Agent 请用  python bootstrap.py --token <TOKEN> --yes")
 
     if not DIST.is_file():
         print("[警告] 未找到前端打包文件 web/frontend/dist")
-        print("       将仅启动 API。完整界面请先执行前端构建，或使用 start_ui.ps1")
 
     py = _find_python()
     print("[环境] Python =", py)
@@ -252,14 +260,11 @@ def main(argv: list[str] | None = None) -> int:
     elif not ok_token:
         print("[数据] 无 Token，跳过同步（可先看界面说明）")
 
-    # 若已有服务在跑，直接打开
     if _wait_health(timeout=1.5):
         print("[启动] 服务已在运行")
         if not no_browser:
             webbrowser.open("http://127.0.0.1:8000/")
-        print()
         print("打开: http://127.0.0.1:8000/")
-        print("停止: 双击 停止.bat  或  .\\stop_ui.ps1")
         return 0
 
     proc = _start_server(py)
@@ -268,17 +273,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print()
-    print("✓ 已启动")
-    print("  界面: http://127.0.0.1:8000/")
-    print("  用法: 点「扫描」→ 等 5～15 分钟 → 看 A 池")
-    print("  停止: 双击 停止.bat，或关闭本窗口前先停止服务")
-    print()
+    print("✓ 已启动  http://127.0.0.1:8000/")
+    print("  点「扫描」→ 等 5～15 分钟 → 看 A 池")
     if not no_browser:
         webbrowser.open("http://127.0.0.1:8000/")
 
-    # 双击启动时保持窗口，方便看日志
     if interactive and sys.platform.startswith("win"):
-        print("服务在后台运行中。按回车仅关闭本窗口（服务仍继续）…")
+        print("服务在后台运行中。按回车仅关闭本窗口…")
         try:
             input()
         except EOFError:
