@@ -808,6 +808,159 @@ def setup_status():
     }
 
 
+# ── 策略实验室（P6：闭环优化 → 验证 → 擂台赛） ──
+_LAB_TASKS: dict[str, dict] = {}
+_LAB_TASKS_MAX = 10
+
+
+class LabOptimizeRequest(BaseModel):
+    strategy: str = "A"  # A: 形态入场+标杆量出场 | B: 五步抓主升+标杆量出场
+    is_start: str = "20250101"
+    is_end: str = "20251231"
+    oos_start: str = "20260101"
+    oos_end: str = "20260803"
+    max_codes: int = 4500
+    step: int = 5
+
+
+def _lab_running() -> str | None:
+    for tid, t in _LAB_TASKS.items():
+        if t.get("status") in ("running", "pending"):
+            return tid
+    return None
+
+
+def _run_lab_worker(task_id: str, req: LabOptimizeRequest) -> None:
+    from walkforward import run_is_oos  # 延迟导入避免启动耦合
+
+    def prog(msg: str, pct: int) -> None:
+        t = _LAB_TASKS.get(task_id)
+        if t:
+            t["progress"] = pct
+            t["message"] = msg
+
+    try:
+        t = _LAB_TASKS.get(task_id)
+        if t:
+            t["status"] = "running"
+        r = run_is_oos(strategy=req.strategy, step=req.step, max_codes=req.max_codes,
+                       top_n=3, progress_cb=prog,
+                       is_start=req.is_start, is_end=req.is_end,
+                       oos_start=req.oos_start, oos_end=req.oos_end)
+        t = _LAB_TASKS.get(task_id)
+        if t:
+            t["status"] = "done"
+            t["result"] = {
+                "is_top": r["is"].head(8).to_dict("records") if not r["is"].empty else [],
+                "oos": r["oos"].to_dict("records") if not r["oos"].empty else [],
+                "msg": r.get("msg"),
+            }
+            t["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception as e:  # noqa: BLE001
+        t = _LAB_TASKS.get(task_id)
+        if t:
+            t["status"] = "error"
+            t["error"] = str(e)[:500]
+
+
+@app.post("/api/lab/optimize")
+def lab_optimize(req: LabOptimizeRequest):
+    """触发异步 IS/OOS 优化，立即返回 task_id。与扫描共享互斥（都是重计算）。"""
+    running = _running_task_id()
+    if running:
+        raise HTTPException(status_code=409, detail=f"已有扫描进行中（{running}），优化任务排队等扫描完成")
+    lab_run = _lab_running()
+    if lab_run:
+        raise HTTPException(status_code=409, detail=f"已有优化任务进行中（{lab_run}）")
+    if len(_LAB_TASKS) > _LAB_TASKS_MAX:
+        for tid in [k for k, v in _LAB_TASKS.items() if v.get("status") in ("done", "error")]:
+            _LAB_TASKS.pop(tid, None)
+            if len(_LAB_TASKS) <= _LAB_TASKS_MAX:
+                break
+    task_id = uuid.uuid4().hex[:12]
+    _LAB_TASKS[task_id] = {"status": "pending", "progress": 0, "message": "排队中",
+                           "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                           "strategy": req.strategy}
+    threading.Thread(target=_run_lab_worker, args=(task_id, req), daemon=True).start()
+    return {"status": "started", "task_id": task_id, "strategy": req.strategy}
+
+
+@app.get("/api/lab/status")
+def lab_status(task_id: str | None = None):
+    if task_id:
+        t = _LAB_TASKS.get(task_id)
+        if not t:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return {"task_id": task_id, **t}
+    if not _LAB_TASKS:
+        return {"task_id": None, "status": "idle"}
+    latest = max(_LAB_TASKS.values(), key=lambda t: t.get("started_at") or "")
+    return {"task_id": next(k for k, v in _LAB_TASKS.items() if v is latest), **latest}
+
+
+@app.get("/api/lab/leaderboard")
+def lab_leaderboard(kind: str = "IS", strategy: str = "A", limit: int = 20):
+    """参数排行榜（param_eval 表或最近一次优化结果）。"""
+    import pandas as pd
+    from local_store import LocalStore
+
+    st = LocalStore()
+    ev = st.load_param_eval(eval_kind=kind)
+    if ev.empty:
+        # 回退：返回最近一次 lab 优化结果
+        done = [t for t in _LAB_TASKS.values() if t.get("status") == "done" and t.get("result")]
+        if done:
+            latest = max(done, key=lambda t: t.get("finished_at") or "")
+            rows = latest["result"].get("is_top" if kind == "IS" else "oos") or []
+            return {"rows": rows[:limit], "source": "last_run"}
+        return {"rows": [], "source": "empty"}
+    ev = ev[ev["eval_kind"] == kind].sort_values("profit_factor", ascending=False).head(limit)
+    return {"rows": ev.to_dict("records"), "source": "param_eval"}
+
+
+@app.get("/api/lab/compare")
+def lab_compare(ids: str = ""):
+    """A/B 方案 + fixed/bench 出场对比。ids 逗号分隔 param_id；空则返回最近 done 任务的 A/B 摘要。"""
+    from local_store import LocalStore
+
+    st = LocalStore()
+    if ids:
+        pid_list = [p for p in ids.split(",") if p]
+        rows = []
+        for pid in pid_list:
+            r = st.load_strategy_params()
+            hit = r[r["param_id"] == pid]
+            if not hit.empty:
+                rows.append(hit.iloc[0].to_dict())
+        return {"rows": rows}
+    # 汇总最近优化任务的 A/B 最佳组合
+    done = [t for t in _LAB_TASKS.values() if t.get("status") == "done" and t.get("result")]
+    out = {}
+    for strat in ("A", "B"):
+        tasks = [t for t in done if t.get("strategy") == strat]
+        if tasks:
+            latest = max(tasks, key=lambda t: t.get("finished_at") or "")
+            is_top = latest["result"].get("is_top") or []
+            out[strat] = is_top[0] if is_top else None
+    return {"best_by_strategy": out}
+
+
+@app.get("/api/lab/arena")
+def lab_arena():
+    """擂台赛状态看板：strategy_params 全量（active/candidate/retired）。"""
+    from local_store import LocalStore
+
+    df = LocalStore().load_strategy_params()
+    if df.empty:
+        return {"rows": [], "weights": {}}
+    weights = {}
+    act = df[df["status"] == "active"]
+    for _, r in act.iterrows():
+        if r.get("oos_profit_factor"):
+            weights[r["strategy"]] = float(r["oos_profit_factor"])
+    return {"rows": df.to_dict("records"), "weights": weights}
+
+
 if _HAS_DIST:
     assets_dir = _DIST / "assets"
     if assets_dir.is_dir():

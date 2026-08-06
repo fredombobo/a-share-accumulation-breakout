@@ -30,7 +30,8 @@ _DB_PATH = _DB_DIR / "stock_data.db"
 
 
 # 允许的表名白名单（防注入）
-_ALLOWED_TABLES = {"daily", "daily_basic", "moneyflow", "stock_basic", "fina_indicator", "scan_result"}
+_ALLOWED_TABLES = {"daily", "daily_basic", "moneyflow", "stock_basic", "fina_indicator", "scan_result",
+                   "strategy_params", "param_eval"}
 
 
 class LocalStore:
@@ -130,6 +131,30 @@ class LocalStore:
                 PRIMARY KEY (trade_date, ts_code)
             );
             CREATE INDEX IF NOT EXISTS idx_scan_date ON scan_result(trade_date);
+
+            CREATE TABLE IF NOT EXISTS strategy_params (
+                param_id TEXT PRIMARY KEY,
+                strategy TEXT NOT NULL,
+                params_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'candidate',
+                is_profit_factor REAL, is_win_rate REAL, is_max_dd REAL,
+                oos_profit_factor REAL, oos_win_rate REAL, oos_max_dd REAL,
+                wf_pass INTEGER,
+                seeded_at TEXT, promoted_at TEXT, retired_at TEXT,
+                weekly_oos_pf REAL, degrade_streak INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_sp_status ON strategy_params(status);
+
+            CREATE TABLE IF NOT EXISTS param_eval (
+                param_id TEXT NOT NULL,
+                eval_kind TEXT NOT NULL,
+                window_start TEXT NOT NULL,
+                window_end TEXT,
+                n_trades INTEGER,
+                win_rate REAL, profit_factor REAL, max_dd REAL,
+                evaluated_at TEXT,
+                PRIMARY KEY (param_id, eval_kind, window_start)
+            );
             """)
 
     # ── 查询 ──
@@ -270,6 +295,53 @@ class LocalStore:
                 "SELECT * FROM scan_result WHERE trade_date=? ORDER BY total_score DESC",
                 conn, params=[trade_date],
             )
+
+    # ── 策略参数注册制（strategy_params / param_eval） ──
+
+    def upsert_strategy_params(self, df: pd.DataFrame) -> int:
+        return self._upsert("strategy_params", df)
+
+    def load_strategy_params(self, status: str | None = None) -> pd.DataFrame:
+        sql = "SELECT * FROM strategy_params"
+        params: list = []
+        if status:
+            sql += " WHERE status=?"
+            params.append(status)
+        sql += " ORDER BY oos_profit_factor DESC NULLS LAST"
+        # SQLite 不支持 NULLS LAST（旧版本），改用 CASE 排序
+        sql = sql.replace(" ORDER BY oos_profit_factor DESC NULLS LAST",
+                          " ORDER BY CASE WHEN oos_profit_factor IS NULL THEN 1 ELSE 0 END, oos_profit_factor DESC")
+        with self._connect() as conn:
+            return pd.read_sql(sql, conn, params=params)
+
+    def update_strategy_status(self, param_id: str, status: str, **fields) -> None:
+        """更新参数状态 + 可选字段（promoted_at/retired_at/weekly_oos_pf/degrade_streak 等）。"""
+        sets = ["status=?"]
+        vals: list = [status]
+        for k, v in fields.items():
+            sets.append(f"{k}=?")
+            vals.append(v)
+        vals.append(param_id)
+        with self._connect() as conn:
+            conn.execute(f"UPDATE strategy_params SET {', '.join(sets)} WHERE param_id=?", vals)
+
+    def upsert_param_eval(self, df: pd.DataFrame) -> int:
+        if "evaluated_at" not in df.columns:
+            df = df.copy()
+            df["evaluated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return self._upsert("param_eval", df)
+
+    def load_param_eval(self, param_id: str | None = None, eval_kind: str | None = None) -> pd.DataFrame:
+        sql = "SELECT * FROM param_eval WHERE 1=1"
+        params: list = []
+        if param_id:
+            sql += " AND param_id=?"
+            params.append(param_id)
+        if eval_kind:
+            sql += " AND eval_kind=?"
+            params.append(eval_kind)
+        with self._connect() as conn:
+            return pd.read_sql(sql, conn, params=params)
 
     def _upsert(self, table: str, df: pd.DataFrame) -> int:
         if df.empty:

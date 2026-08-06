@@ -110,6 +110,49 @@ STOP_LOSS_PCT = 0.07
 TARGET_PCT_1 = 0.12
 MAX_HOLD_DAYS = 15
 
+# ── 标杆量引擎（bench_volume，小红书「标杆量识破洗盘」体系） ──
+BENCH_VOL_RATIO_MIN = 1.5      # 建仓放量阈值（当日量 / 5日均量）
+BENCH_GAP_MAX_PCT = -0.02      # 建仓序列允许的断档日最大跌幅（缩量小阴不断档）
+BENCH_EXIT_WINDOW = 10         # 二次出货计数窗口（交易日）
+BENCH_STRONG_RESET = 3         # 连续强势日（量<标杆）清零出货计数
+BENCH_STOP_PCT = 0.07          # 兜底止损（入场价 -7%，任何模式强制）
+BENCH_MAX_HOLD_DAYS = 30       # 最长持有强平
+
+# ── 方案 B 入场（五步抓主升：金叉→破五→建仓→标杆量） ──
+PLAN_B_CROSS_LOOKBACK = 20     # 金叉回看窗口（交易日）
+PLAN_B_MIN_BUILD_DAYS = 2      # 最少建仓天数
+PLAN_B_REATTACK_RATIO = 1.0    # 破五量能倍数（相对标杆量）
+PLAN_B_CHG_MIN = 0.02          # 破五最小涨幅
+
+# ── 回测/优化窗口 ──
+BT_IS_START = "20230801"       # 样本内（优化）
+BT_IS_END = "20250731"
+BT_OOS_START = "20250801"      # 样本外（严格验证）
+BT_OOS_END = "20260731"
+BT_MIN_TRADES = 30             # 样本内最少交易数（低于则丢弃该参数组合）
+
+# ── 参数网格（标杆量出场） ──
+GRID_BENCH = {
+    "vol_ratio_min": [1.3, 1.5, 1.8],
+    "strong_reset": [2, 3, 4],
+    "exit_window": [7, 10, 15],
+    "stop_pct": [0.05, 0.07],
+}
+
+# ── Walk-forward 滚动复核 ──
+WF_TRAIN_MONTHS = 12
+WF_TEST_MONTHS = 6
+WF_STEP_MONTHS = 6
+WF_MIN_OOS_PF_RATIO = 0.8      # OOS PF ≥ 0.8 × IS PF 才算通过
+
+# ── 擂台赛（参数注册制回灌） ──
+ARENA_PROMOTE_MARGIN = 1.2     # 候选样本外 PF 超现役 20% 才晋升
+ARENA_DEGRADE_WEEKS = 4        # 现役连续退化周数→淘汰
+ARENA_EVAL_WEEKS = 4           # 周评估窗口
+
+# ── 历史数据扩容 ──
+HISTORY_SYNC_DAYS = 730        # 约 3 年交易日（36 个月验证窗所需）
+
 # ── 数据源 ──
 TENCNET_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 TENCNET_QUOTE_URL = "https://qt.gtimg.cn/q="

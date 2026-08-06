@@ -88,6 +88,21 @@ python run_screener.py --top 15 --days 160 --workers 0
 python test_signals.py
 ```
 
+### 策略实验室（闭环优化，2026-08-06 新增）
+
+界面「🧪 策略实验室」页可一键触发：样本内网格优化 → 样本外验证 → 参数擂台赛回灌。
+
+```powershell
+python sync_history.py                # 历史日线扩容到 3 年（约 2-4 小时，断点续传）
+python run_optimize_plan.py A 600 10  # 方案 A 全市场优化（B 同理；600=样本数,10=采样步长）
+python pipeline_seed.py A             # WF 复核 + 参数播种 + 擂台赛干跑
+python strategy_store.py --weights    # 查看 active 参数权重（选股排序回灌）
+```
+
+新模块：`bench_volume.py`（标杆量四象限引擎）、`entry_plan_b.py`（五步抓主升入场）、
+`trade_sim.py`（双模式出场模拟）、`optimizer.py`（网格优化）、`walkforward.py`（IS/OOS+滚动复核）、
+`strategy_store.py`（参数注册制+擂台赛）。说明见 `docs/HANDOFF-2026-08-06.md`。
+
 开发前端：
 
 ```powershell

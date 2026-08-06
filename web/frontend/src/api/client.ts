@@ -248,4 +248,38 @@ export const api = {
     request<ScanStatus>(taskId ? `/scan/status?task_id=${taskId}` : '/scan/status', opts),
   cancelScan: (taskId: string, opts?: ReqOpts) =>
     request<{ status: string; stage: string }>(`/scan/${taskId}/cancel`, { ...opts, method: 'POST' }),
+  labOptimize: (body: { strategy: string; is_start?: string; is_end?: string; oos_start?: string; oos_end?: string; max_codes?: number; step?: number }, opts?: ReqOpts) =>
+    request<{ status: string; task_id: string; strategy: string }>('/lab/optimize', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+  labStatus: (taskId?: string, opts?: ReqOpts) =>
+    request<LabStatusResp>(taskId ? `/lab/status?task_id=${taskId}` : '/lab/status', opts),
+  labLeaderboard: (kind = 'IS', strategy = 'A', limit = 20, opts?: ReqOpts) =>
+    request<LabBoardResp>(`/lab/leaderboard?kind=${kind}&strategy=${strategy}&limit=${limit}`, opts),
+  labCompare: (ids = '', opts?: ReqOpts) =>
+    request<LabCompareResp>(`/lab/compare${ids ? `?ids=${ids}` : ''}`, opts),
+  labArena: (opts?: ReqOpts) => request<LabArenaResp>('/lab/arena', opts),
+}
+
+export interface LabStatusResp {
+  task_id?: string | null
+  status: string
+  progress?: number
+  message?: string
+  error?: string | null
+  result?: { is_top: Record<string, unknown>[]; oos: Record<string, unknown>[]; msg?: string } | null
+  strategy?: string
+}
+
+export interface LabBoardResp {
+  rows: Record<string, unknown>[]
+  source: string
+}
+
+export interface LabCompareResp {
+  rows?: Record<string, unknown>[]
+  best_by_strategy?: Record<string, Record<string, unknown> | null>
+}
+
+export interface LabArenaResp {
+  rows: Record<string, unknown>[]
+  weights: Record<string, number>
 }

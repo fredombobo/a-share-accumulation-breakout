@@ -222,6 +222,14 @@ def _score_codes(
 ) -> list[dict]:
     """对命中信号的代码做基本面+资金流+综合打分，返回行 dict 列表。"""
     from scoring import build_master_score
+    from strategy_store import active_weights
+
+    # 策略实验室回灌权重：取当前 active 参数的最高样本外 PF 作为通用排序权重
+    _w = active_weights()
+    param_weight_by_tier = {}
+    if _w:
+        w = max(float(v) for v in _w.values() if v and v > 0)
+        param_weight_by_tier = {"strict": w, "relaxed": w}
 
     rows: list[dict] = []
     for code in codes:
@@ -263,7 +271,8 @@ def _score_codes(
             if not q_ok:
                 continue
 
-        total, detail = build_master_score(sig, fund_score, fund_net, fund_ratio, fund_row)
+        total, detail = build_master_score(sig, fund_score, fund_net, fund_ratio, fund_row,
+                                           param_weight=param_weight_by_tier.get(tier, 1.0))
         fresh = breakout_freshness_bonus(
             sig.get("breakout_date"), latest_date, trade_dates=trade_dates,
         )

@@ -23,31 +23,22 @@ os.environ.pop("PYTHONPATH", None)
 from config import OUT_DIR  # noqa: E402
 from local_store import LocalStore  # noqa: E402
 from signals import detect_accumulation_breakout  # noqa: E402
+from bench_volume import find_build_seqs  # noqa: E402
+from trade_sim import simulate_trade, summarize  # noqa: E402
 
 
 def _simulate_trade(bars: pd.DataFrame, entry_i: int, stop_pct: float = 0.07, target_pct: float = 0.12, max_hold: int = 15) -> dict:
-    """entry_i 为信号日索引，次日开盘买入（若无 open 用 close）。"""
-    if entry_i + 1 >= len(bars):
-        return {"ok": False}
-    entry = float(bars.iloc[entry_i + 1].get("open") or bars.iloc[entry_i + 1]["close"])
-    stop = entry * (1 - stop_pct)
-    target = entry * (1 + target_pct)
-    for j in range(entry_i + 1, min(len(bars), entry_i + 1 + max_hold)):
-        row = bars.iloc[j]
-        lo = float(row["low"])
-        hi = float(row["high"])
-        cl = float(row["close"])
-        # 先止损再止盈（保守）
-        if lo <= stop:
-            ret = stop / entry - 1
-            return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "stop", "win": ret > 0}
-        if hi >= target:
-            ret = target / entry - 1
-            return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "target", "win": True}
-        if j == min(len(bars), entry_i + 1 + max_hold) - 1:
-            ret = cl / entry - 1
-            return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "time", "win": ret > 0}
-    return {"ok": False}
+    """旧固定规则薄包装（保留签名兼容），内部委托 trade_sim fixed 模式。"""
+    return simulate_trade(bars, entry_i, mode="fixed",
+                          params={"stop_pct": stop_pct, "target_pct": target_pct, "max_hold": max_hold})
+
+
+def _bench_vol_for_signal(win: pd.DataFrame, breakout_vol: float | None) -> float | None:
+    """方案 A bench 模式标杆量：优先信号日前最近建仓序列的标杆；无则用突破日量。"""
+    seqs = find_build_seqs(win)
+    if seqs:
+        return seqs[-1]["bench_vol"]
+    return breakout_vol
 
 
 def run_backtest(
@@ -56,7 +47,11 @@ def run_backtest(
     step: int = 5,
     max_codes: int = 400,
     horizon: int = 160,
+    strategy: str = "A",
+    mode: str = "fixed",
+    bench_params: dict | None = None,
 ) -> dict:
+    """轻量回测。strategy: A=形态突破入场（当前仅此）；mode: fixed|bench 出场。"""
     store = LocalStore()
     basic = store.load_stock_basic()
     if basic.empty:
@@ -117,7 +112,17 @@ def run_backtest(
             entry_i = dts.index(bd) + 1
             if entry_i >= len(df):
                 continue
-            sim = _simulate_trade(df, entry_i)
+            if mode == "bench":
+                bp = dict(bench_params or {})
+                if "bench_vol" not in bp:
+                    bo_vol = float(df.loc[df["trade_date"] == bd, "vol"].iloc[0])
+                    bv = _bench_vol_for_signal(win, bo_vol)
+                    if not bv:
+                        continue
+                    bp["bench_vol"] = bv
+                sim = simulate_trade(df, entry_i, mode="bench", params=bp)
+            else:
+                sim = _simulate_trade(df, entry_i)
             if not sim.get("ok"):
                 continue
             trades.append({
@@ -127,28 +132,18 @@ def run_backtest(
                 "days": sim["days"],
                 "exit": sim["exit"],
                 "win": sim["win"],
+                "max_dd": sim.get("max_dd"),
             })
         if processed % 50 == 0:
             print(f"  … {processed}/{len(dfs_by_code)} 累计交易 {len(trades)}")
 
+    summary = summarize(trades)
     if not trades:
-        summary = {"n_trades": 0, "win_rate": None, "avg_ret": None, "msg": "无交易样本"}
-    else:
-        rets = np.array([t["ret"] for t in trades], dtype=float)
-        wins = np.array([t["win"] for t in trades], dtype=bool)
-        summary = {
-            "n_trades": len(trades),
-            "win_rate": round(float(wins.mean()), 4),
-            "avg_ret": round(float(rets.mean()), 4),
-            "median_ret": round(float(np.median(rets)), 4),
-            "avg_win": round(float(rets[wins].mean()), 4) if wins.any() else None,
-            "avg_loss": round(float(rets[~wins].mean()), 4) if (~wins).any() else None,
-            "profit_factor": None,
-            "exits": pd.Series([t["exit"] for t in trades]).value_counts().to_dict(),
-            "params": {"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15, "entry": "next_open"},
-        }
-        if wins.any() and (~wins).any() and rets[~wins].sum() != 0:
-            summary["profit_factor"] = round(float(rets[wins].sum() / abs(rets[~wins].sum())), 3)
+        summary["msg"] = "无交易样本"
+    summary["params"] = ({"mode": "fixed", "stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15, "entry": "next_open"}
+                         if mode == "fixed" else
+                         {"mode": "bench", **(bench_params or {}), "entry": "next_open"})
+    summary["strategy"] = strategy
 
     out_dir = os.path.join(OUT_DIR)
     os.makedirs(out_dir, exist_ok=True)
@@ -160,15 +155,19 @@ def run_backtest(
     with open(md, "w", encoding="utf-8") as f:
         f.write("# 轻量信号回测摘要\n\n")
         f.write(f"- 区间: {start} ~ {end}\n")
+        f.write(f"- 策略/出场: {strategy} / {mode}\n")
         f.write(f"- 交易数: {summary.get('n_trades')}\n")
         f.write(f"- 胜率: {summary.get('win_rate')}\n")
         f.write(f"- 平均收益: {summary.get('avg_ret')}\n")
         f.write(f"- 盈亏比(profit_factor): {summary.get('profit_factor')}\n")
+        f.write(f"- 最大回撤: {summary.get('max_drawdown')}\n")
         f.write(f"- 退出分布: {summary.get('exits')}\n")
-        f.write("\n规则: 信号次日开盘买；止损-7%；止盈+12%；最长15日。\n")
+        rule = "信号次日开盘买；止损-7%；止盈+12%；最长15日。" if mode == "fixed" else \
+               "信号次日开盘买；标杆量二次出货出场；止损-7%兜底；最长30日。"
+        f.write(f"\n规则: {rule}\n")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print(f"写入 {path}\n写入 {md}")
-    return {"summary": summary, "path": path, "md": md}
+    return {"summary": summary, "path": path, "md": md, "trades": trades}
 
 
 def main() -> int:
@@ -177,8 +176,11 @@ def main() -> int:
     p.add_argument("--end", default="20260731")
     p.add_argument("--step", type=int, default=5)
     p.add_argument("--max-codes", type=int, default=300)
+    p.add_argument("--strategy", default="A", choices=["A", "B"])
+    p.add_argument("--mode", default="fixed", choices=["fixed", "bench"])
     args = p.parse_args()
-    run_backtest(start=args.start, end=args.end, step=args.step, max_codes=args.max_codes)
+    run_backtest(start=args.start, end=args.end, step=args.step, max_codes=args.max_codes,
+                 strategy=args.strategy, mode=args.mode)
     return 0
 
 

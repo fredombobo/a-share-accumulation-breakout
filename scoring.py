@@ -193,21 +193,25 @@ def build_master_score(
     fund_net: float,
     fund_ratio: float,
     fund_row: pd.Series,
+    param_weight: float = 1.0,
 ) -> tuple[float, dict]:
     """综合打分：信号 + 资金流 + 基本面，权重见 config.SIGNAL/FUND/FUNDAMENTAL_SCORE_WEIGHT。
 
     信号权重略提高，使「长横盘 + 明确突破」在排序中更占主导。
+    param_weight：策略实验室回灌的历史验证权重（active 参数样本外 PF），默认 1.0 不生效。
     """
     sig_score = score_breakout_strength(sig)
     fund_score, fund_notes = fund_flow_score, []
     basic_score, basic_notes = score_fundamentals(fund_row)
 
-    total = round(
+    base = (
         sig_score * SIGNAL_SCORE_WEIGHT
         + fund_score * FUND_SCORE_WEIGHT
-        + basic_score * FUNDAMENTAL_SCORE_WEIGHT,
-        1,
+        + basic_score * FUNDAMENTAL_SCORE_WEIGHT
     )
+    # 回灌权重：历史验证好的策略参数给信号更高的排序分；防 0/负值破坏排序
+    weight = max(float(param_weight or 1.0), 0.1)
+    total = round(base * weight, 1)
 
     detail = {
         "信号强度分": sig_score,
@@ -220,6 +224,7 @@ def build_master_score(
         "箱体天数": sig.get("box_days"),
         "量比": sig.get("breakout_vol_ratio"),
         "箱体振幅": sig.get("box_amp"),
+        "策略验证权重": round(weight, 3),
     }
     return total, detail
 

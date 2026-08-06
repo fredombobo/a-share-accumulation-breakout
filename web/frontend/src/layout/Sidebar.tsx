@@ -2,6 +2,7 @@ import { useLocation, useNavigate } from 'react-router'
 
 const items = [
   { path: '/', label: '📈 选股总览' },
+  { path: '/lab', label: '🧪 策略实验室' },
 ]
 
 export default function Sidebar() {
@@ -9,6 +10,7 @@ export default function Sidebar() {
   const loc = useLocation()
   let active = '/'
   if (loc.pathname.startsWith('/stock')) active = '/stock'
+  else if (loc.pathname.startsWith('/lab')) active = '/lab'
   return (
     <aside className="sidebar">
       <div className="brand">📊 AB-Screener</div>
