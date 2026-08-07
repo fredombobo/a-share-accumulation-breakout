@@ -619,8 +619,15 @@ def run_scan(
             return True
         return False
 
-    def _cancelled_result(regime_obj) -> dict:
+    def _cancelled_result(regime_obj=None) -> dict:
+        if regime_obj is not None and hasattr(regime_obj, "to_dict"):
+            reg = regime_obj.to_dict()
+        elif isinstance(regime_obj, dict):
+            reg = regime_obj
+        else:
+            reg = {}
         return {
+            "cancelled": True,
             "latest_date": "",
             "total_candidates": 0,
             "hits": [],
@@ -633,7 +640,7 @@ def run_scan(
             "elapsed_sec": round(time.time() - t0, 1),
             "out_xlsx": "",
             "quota_report": {},
-            "regime": regime_obj.to_dict() if hasattr(regime_obj, "to_dict") else {},
+            "regime": reg,
             "freshness": {},
             "pool_report": {},
             "workers": n_workers,
@@ -645,7 +652,25 @@ def run_scan(
     n_workers = resolve_workers(SCAN_WORKERS if workers is None else workers)
 
     t0 = time.time()
-    basic, trade_dates, daily, dbbasic, _ = load_market_data(days, force)
+    if _stop_if_cancelled("启动"):
+        return _cancelled_result()
+
+    _prog("数据准备", 6, "加载本地行情…")
+    try:
+        basic, trade_dates, daily, dbbasic, _ = load_market_data(days, force)
+    except Exception as e:  # noqa: BLE001
+        _prog("数据准备", 6, f"加载失败: {str(e)[:80]}")
+        raise
+    if _stop_if_cancelled("数据准备"):
+        return _cancelled_result()
+
+    if daily is None or getattr(daily, "empty", True):
+        _prog("数据准备", 6, "日线为空，无法扫描")
+        return {
+            **_cancelled_result(),
+            "cancelled": False,
+            "msg": "empty_daily",
+        }
 
     if daily is not None and not daily.empty and "trade_date" in daily.columns:
         max_d = str(pd.to_numeric(daily["trade_date"], errors="coerce").max()).split(".")[0]
@@ -682,18 +707,58 @@ def run_scan(
     )
     _prog("环境", 12, f"{regime.label}({regime.index_code}) 开仓={regime.allow_new_entries} 名额≤{regime.max_trade_slots}")
 
+    if _stop_if_cancelled("预过滤"):
+        return _cancelled_result(regime)
     cand = prefilter(basic, dbbasic)
     _prog("数据准备", 15, f"预过滤后候选 {len(cand)} 只")
     if max_check and max_check < len(cand):
         cand = cand.head(max_check)
+    if _stop_if_cancelled("预过滤"):
+        return _cancelled_result(regime)
 
+    # 排序可能较慢：前后都查取消
+    _prog("数据准备", 16, "整理日线排序…")
+    if _stop_if_cancelled("数据准备"):
+        return _cancelled_result(regime)
     daily_sorted = daily.sort_values(["ts_code", "trade_date"])
-    sig_by_code: dict[str, dict] = {}
-    all_codes = set(cand["ts_code"].tolist())
+    if _stop_if_cancelled("数据准备"):
+        return _cancelled_result(regime)
 
-    # 量能预筛：多进程粗筛，加速 strict 全市场扫描
+    sig_by_code: dict[str, dict] = {}
+    all_codes = set(cand["ts_code"].tolist()) if cand is not None and not cand.empty else set()
+    if not all_codes:
+        _prog("数据准备", 17, "候选为空")
+        return {
+            "cancelled": False,
+            "latest_date": latest_date,
+            "total_candidates": 0,
+            "hits": [],
+            "df": pd.DataFrame(),
+            "df_a": pd.DataFrame(),
+            "df_b": pd.DataFrame(),
+            "sig": {},
+            "kline_dfs": {},
+            "chart_paths": {},
+            "elapsed_sec": round(time.time() - t0, 1),
+            "out_xlsx": "",
+            "quota_report": {},
+            "regime": regime.to_dict() if hasattr(regime, "to_dict") else {},
+            "freshness": fresh if isinstance(fresh, dict) else {},
+            "pool_report": {},
+            "workers": n_workers,
+        }
+
+    # 量能预筛：多进程粗筛，加速 strict 全市场扫描（可取消，不再卡死）
     _prog("预筛", 18, f"量能/近高点粗筛 {len(all_codes)} 只（workers={n_workers}）…")
-    fast_codes = prefilter_volume_parallel(daily_sorted, all_codes, workers=n_workers, cancel_check=cancel_check)
+    if _stop_if_cancelled("预筛"):
+        return _cancelled_result(regime)
+    fast_codes = prefilter_volume_parallel(
+        daily_sorted,
+        all_codes,
+        workers=n_workers,
+        cancel_check=cancel_check,
+        progress_cb=progress_cb,
+    )
     if _stop_if_cancelled("预筛"):
         return _cancelled_result(regime)
     if len(fast_codes) < 50:
@@ -860,6 +925,7 @@ def run_scan(
             if part is None or part.empty:
                 continue
             for _, r in part.iterrows():
+                sig = sig_by_code.get(r["ts_code"]) or {}
                 scan_rows.append({
                     "trade_date": latest_date,
                     "ts_code": r["ts_code"],
@@ -881,6 +947,12 @@ def run_scan(
                     "total_score": r.get("综合分"),
                     "reasons": f"[池{pool_name}|{r.get('筛选层级','')}|{r.get('主题板块','')}] {r.get('入选理由','')}",
                     "breakout_date": r.get("突破日"),
+                    # 信号字段持久化：总览直接读表，避免每次请求重算 detect（30 只 ~4s）
+                    "box_high": sig.get("box_high"),
+                    "box_low": sig.get("box_low"),
+                    "ma5": sig.get("ma5"),
+                    "ma20": sig.get("ma20"),
+                    "sig_calculated": 1,
                 })
         if scan_rows:
             # 先清当日再写，避免旧 theme_fill 残留主导排序

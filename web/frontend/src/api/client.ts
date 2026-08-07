@@ -222,7 +222,7 @@ export interface StockFlowResp {
 
 export interface ScanStatus {
   id: string
-  status: 'pending' | 'running' | 'done' | 'error' | 'cancelled' | 'idle'
+  status: 'pending' | 'running' | 'done' | 'error' | 'cancelled' | 'cancelling' | 'idle'
   stage: string
   progress: number
   cancel_requested: boolean
@@ -248,15 +248,114 @@ export const api = {
     request<ScanStatus>(taskId ? `/scan/status?task_id=${taskId}` : '/scan/status', opts),
   cancelScan: (taskId: string, opts?: ReqOpts) =>
     request<{ status: string; stage: string }>(`/scan/${taskId}/cancel`, { ...opts, method: 'POST' }),
-  labOptimize: (body: { strategy: string; is_start?: string; is_end?: string; oos_start?: string; oos_end?: string; max_codes?: number; step?: number }, opts?: ReqOpts) =>
-    request<{ status: string; task_id: string; strategy: string }>('/lab/optimize', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+  labOptimize: (body: LabOptimizeBody, opts?: ReqOpts) =>
+    request<LabOptimizeResp>('/lab/optimize', { ...opts, method: 'POST', body: JSON.stringify(body) }),
   labStatus: (taskId?: string, opts?: ReqOpts) =>
     request<LabStatusResp>(taskId ? `/lab/status?task_id=${taskId}` : '/lab/status', opts),
+  labCancel: (taskId: string, opts?: ReqOpts) =>
+    request<{ status: string; task_id?: string; msg?: string }>(`/lab/${taskId}/cancel`, { ...opts, method: 'POST' }),
   labLeaderboard: (kind = 'IS', strategy = 'A', limit = 20, opts?: ReqOpts) =>
     request<LabBoardResp>(`/lab/leaderboard?kind=${kind}&strategy=${strategy}&limit=${limit}`, opts),
   labCompare: (ids = '', opts?: ReqOpts) =>
     request<LabCompareResp>(`/lab/compare${ids ? `?ids=${ids}` : ''}`, opts),
   labArena: (opts?: ReqOpts) => request<LabArenaResp>('/lab/arena', opts),
+  labResearchStatus: (probeToken = false, opts?: ReqOpts) =>
+    request<LabResearchStatus>(`/lab/research-status?probe_token=${probeToken ? 'true' : 'false'}`, opts),
+  labCatalog: (opts?: ReqOpts) => request<LabCatalog>('/lab/catalog', opts),
+}
+
+export interface LabOptimizeBody {
+  strategy: string
+  is_start?: string
+  is_end?: string
+  oos_start?: string
+  oos_end?: string
+  max_codes?: number
+  step?: number
+  mode?: 'grid' | 'single'
+  grid?: Record<string, number[]>
+  vol_ratio_min?: number
+  strong_reset?: number
+  exit_window?: number
+  stop_pct?: number
+}
+
+export interface LabParamDoc {
+  key: string
+  name: string
+  unit: string
+  meaning: string
+  affects: string
+  default: number
+  options: number[]
+  range_hint: string
+}
+
+export interface LabStrategyDoc {
+  id: string
+  name: string
+  tagline: string
+  entry_title: string
+  entry_steps: string[]
+  exit_title: string
+  exit_steps: string[]
+  fixed_note: string
+}
+
+export interface LabCatalog {
+  strategies: Record<string, LabStrategyDoc>
+  params: LabParamDoc[]
+  grid_default: Record<string, number[]>
+  grid_combo_count: number
+  defaults: Record<string, number>
+  pipeline: { id: string; name: string; desc: string }[]
+  disclaimer: string
+}
+
+export interface LabWindows {
+  is_start?: string
+  is_end?: string
+  oos_start?: string
+  oos_end?: string
+  mode?: string
+  label?: string
+  can_claim_edge?: boolean
+  notes?: string[]
+  n_dates?: number
+}
+
+export interface LabOptimizeResp {
+  status: string
+  task_id: string
+  strategy: string
+  research_mode?: string
+  can_claim_edge?: boolean
+  windows?: LabWindows
+}
+
+export interface LabResearchPlan {
+  mode: string
+  label: string
+  is_start: string
+  is_end: string
+  oos_start: string
+  oos_end: string
+  n_dates: number
+  earliest?: string | null
+  latest?: string | null
+  is_n_dates: number
+  oos_n_dates: number
+  can_claim_edge: boolean
+  notes?: string[]
+}
+
+export interface LabResearchStatus {
+  as_of_check: string
+  plan: LabResearchPlan
+  token?: { ok?: boolean | null; error?: string | null }
+  need_backfill: boolean
+  next_steps: string[]
+  disclaimer: string
 }
 
 export interface LabStatusResp {
@@ -265,8 +364,19 @@ export interface LabStatusResp {
   progress?: number
   message?: string
   error?: string | null
-  result?: { is_top: Record<string, unknown>[]; oos: Record<string, unknown>[]; msg?: string } | null
+  result?: {
+    is_top: Record<string, unknown>[]
+    is_all?: Record<string, unknown>[]
+    oos: Record<string, unknown>[]
+    msg?: string
+    run_mode?: string
+    research_mode?: string
+    can_claim_edge?: boolean
+    params_used?: unknown
+    windows?: LabWindows
+  } | null
   strategy?: string
+  windows?: LabWindows
 }
 
 export interface LabBoardResp {

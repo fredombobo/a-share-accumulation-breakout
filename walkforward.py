@@ -52,17 +52,46 @@ def eval_combo(combo: dict, start: str, end: str, step: int = 5,
 def run_is_oos(strategy: str, step: int = 5, max_codes: int | None = None,
                top_n: int = 3, progress_cb=None,
                is_start: str = BT_IS_START, is_end: str = BT_IS_END,
-               oos_start: str = BT_OOS_START, oos_end: str = BT_OOS_END) -> dict:
+               oos_start: str = BT_OOS_START, oos_end: str = BT_OOS_END,
+               grid: dict | None = None,
+               single: dict | None = None) -> dict:
     """完整流程：IS 网格 → 过滤（胜率≥30%、DD≤25%）→ Top N → OOS 验证。
 
-    窗口可用参数覆盖（数据不足时传较短窗口降级；默认按 config 24/12 月）。
+    - grid: 自定义网格（如只勾选部分量比档）；None 用 config.GRID_BENCH
+    - single: 单组 what-if，跳过网格展开，直接 IS+OOS 各评一次（便于人工调参）
     """
+    if single:
+        combo = {
+            "strategy": strategy,
+            "vol_ratio_min": float(single["vol_ratio_min"]),
+            "strong_reset": int(single["strong_reset"]),
+            "exit_window": int(single["exit_window"]),
+            "stop_pct": float(single["stop_pct"]),
+        }
+        if progress_cb:
+            progress_cb("单组试跑 · 样本内", 10)
+        is_row = eval_combo(combo, is_start, is_end, step=step,
+                            max_codes=max_codes, progress_cb=progress_cb)
+        is_df = pd.DataFrame([{**combo, **is_row}]) if is_row.get("n_trades") else pd.DataFrame()
+        if progress_cb:
+            progress_cb("单组试跑 · 样本外", 55)
+        oos = eval_combo(combo, oos_start, oos_end, step=step,
+                         max_codes=max_codes, progress_cb=progress_cb)
+        oos_df = pd.DataFrame([{
+            **combo,
+            **{f"oos_{k}": v for k, v in oos.items() if k not in combo},
+            **{f"is_{k}": is_row.get(k) for k in ("n_trades", "win_rate", "profit_factor", "max_drawdown")},
+        }])
+        if progress_cb:
+            progress_cb("单组试跑完成", 100)
+        return {"is": is_df, "oos": oos_df, "msg": None, "mode": "single"}
+
     is_df = run_grid(start=is_start, end=is_end, strategy=strategy, step=step,
-                     max_codes=max_codes, progress_cb=progress_cb)
+                     max_codes=max_codes, grid=grid, progress_cb=progress_cb)
     if is_df.empty:
-        return {"is": is_df, "oos": pd.DataFrame(), "msg": "样本内无有效组合"}
+        return {"is": is_df, "oos": pd.DataFrame(), "msg": "样本内无有效组合", "mode": "grid"}
     elig = is_df[(is_df["win_rate"] >= 0.30) & (is_df["max_drawdown"] <= 0.25)]
-    top = elig.head(top_n)
+    top = elig.head(top_n) if not elig.empty else is_df.head(top_n)
     oos_rows = []
     for _, row in top.iterrows():
         combo = {k: row[k] for k in ("strategy", "vol_ratio_min", "strong_reset", "exit_window", "stop_pct")}
@@ -70,7 +99,7 @@ def run_is_oos(strategy: str, step: int = 5, max_codes: int | None = None,
                          max_codes=max_codes, progress_cb=progress_cb)
         oos_rows.append({**combo, **{f"oos_{k}": v for k, v in oos.items() if k not in combo},
                          **{f"is_{k}": row[k] for k in ("n_trades", "win_rate", "profit_factor", "max_drawdown")}})
-    return {"is": is_df, "oos": pd.DataFrame(oos_rows)}
+    return {"is": is_df, "oos": pd.DataFrame(oos_rows), "mode": "grid"}
 
 
 def wf_recheck(combos: list[dict], step: int = 5, max_codes: int | None = None,

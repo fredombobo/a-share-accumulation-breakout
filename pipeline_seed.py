@@ -15,15 +15,9 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
+from research_windows import recommend_research_plan  # noqa: E402
 from strategy_store import seed_params, weekly_arena  # noqa: E402
 from walkforward import wf_recheck  # noqa: E402
-
-# 降级 WF 窗口（399 交易日数据内），token 恢复补全 3 年后可用完整 WF_WINDOWS
-DEGRADED_WF = [
-    ("20250101", "20250630", "20250701", "20251231"),
-    ("20250701", "20251231", "20260101", "20260331"),
-    ("20251001", "20260331", "20260401", "20260803"),
-]
 
 
 def seed_from_result(strategy: str, max_codes: int = 2000, step: int = 5) -> dict:
@@ -36,12 +30,16 @@ def seed_from_result(strategy: str, max_codes: int = 2000, step: int = 5) -> dic
     if oos_df.empty:
         return {"error": "OOS 为空", "msg": data.get("msg")}
 
-    # WF 复核（降级窗口，全市场样本）
+    plan = recommend_research_plan()
+    wf_windows = plan.wf_windows or None
+    if plan.mode != "full":
+        print(f"[pipeline_seed] research mode={plan.mode} — 使用数据驱动 WF 窗，不可声称 edge")
+    # WF 复核（窗口来自 research_windows；full 时贴近标准 WF）
     combos = []
     for _, r in oos_df.iterrows():
         combos.append({k: r[k] for k in ("strategy", "vol_ratio_min", "strong_reset", "exit_window", "stop_pct")})
     wf_df = wf_recheck(combos, step=step, max_codes=max_codes,
-                       progress_cb=lambda m, pct: print(f"[WF {pct:3d}%] {m}"), windows=DEGRADED_WF)
+                       progress_cb=lambda m, pct: print(f"[WF {pct:3d}%] {m}"), windows=wf_windows)
     print("=== WF 复核 ===")
     print(wf_df.to_string())
 

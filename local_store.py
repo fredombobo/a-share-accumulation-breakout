@@ -127,6 +127,8 @@ class LocalStore:
                 signal_score REAL, fund_score REAL, basic_score REAL,
                 total_score REAL,
                 reasons TEXT, breakout_date TEXT,
+                box_high REAL, box_low REAL, ma5 REAL, ma20 REAL,
+                sig_calculated INTEGER DEFAULT 0,
                 created_at TEXT,
                 PRIMARY KEY (trade_date, ts_code)
             );
@@ -266,6 +268,16 @@ class LocalStore:
         df = df.copy()
         if "created_at" not in df.columns:
             df["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 增量迁移：老库 scan_result 缺 box_high/box_low/ma5/ma20/sig_calculated，补列（只加列不删数据）
+        try:
+            with self._connect() as conn:
+                have = {r[1] for r in conn.execute("PRAGMA table_info(scan_result)").fetchall()}
+                for col in ("box_high", "box_low", "ma5", "ma20", "sig_calculated"):
+                    if col not in have:
+                        col_type = "REAL" if col != "sig_calculated" else "INTEGER DEFAULT 0"
+                        conn.execute(f"ALTER TABLE scan_result ADD COLUMN {col} {col_type}")
+        except Exception:  # noqa: BLE001
+            pass
         return self._upsert("scan_result", df)
 
     def load_fina_indicator(self, ts_codes: list[str] | None = None, limit: int | None = None) -> pd.DataFrame:

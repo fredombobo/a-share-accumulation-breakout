@@ -77,10 +77,33 @@ def calc_main_net_inflow(mf_rows: pd.DataFrame) -> float:
     return float((buy - sell).sum())
 
 
-def calc_fund_flow_strength(mf_rows: pd.DataFrame) -> tuple[float, float, float]:
-    """返回 (主力净流入万元, 资金流强度分 0-100, 净流入/成交额比)"""
+def _tail_trading_days(mf_rows: pd.DataFrame, days: int) -> pd.DataFrame:
+    """截取最近 days 个交易日（按 trade_date 排序去重后取尾部）。
+
+    修复：原实现把全部历史累计当作「近5日」；这里必须按交易日截断，
+    避免详情页「近5日资金流」实际累计了整段历史。
+    """
+    if mf_rows is None or mf_rows.empty:
+        return mf_rows if mf_rows is not None else pd.DataFrame()
+    if "trade_date" not in mf_rows.columns:
+        return mf_rows.tail(days) if days and days > 0 else mf_rows
+    df = mf_rows.copy()
+    df["trade_date"] = df["trade_date"].astype(str)
+    last_dates = df["trade_date"].sort_values().drop_duplicates().tail(days)
+    return df[df["trade_date"].isin(set(last_dates))]
+
+
+def calc_fund_flow_strength(mf_rows: pd.DataFrame, days: int | None = None) -> tuple[float, float, float]:
+    """返回 (主力净流入万元, 资金流强度分 0-100, 净流入/成交额比)
+
+    days：仅统计最近 N 个交易日（默认 None=全部）。详情页「近5日」应传 days=5。
+    """
     if mf_rows is None or mf_rows.empty:
         return 0.0, 0.0, 0.0
+    if days and days > 0:
+        mf_rows = _tail_trading_days(mf_rows, days)
+        if mf_rows is None or mf_rows.empty:
+            return 0.0, 0.0, 0.0
     net = calc_main_net_inflow(mf_rows)
     # 同期成交额估算：优先 amount 列（万元）；缺失时回退为「完整主力成交额」
     # （买/卖超大单+大单合计 ≈ 主力双边成交额），避免仅用买入侧造成分母减半、比率翻倍。

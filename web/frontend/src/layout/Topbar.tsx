@@ -1,9 +1,15 @@
 import { FormEvent, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 
-const titles: Record<string, string> = {
-  '': '选股总览', stock: '个股详情',
+function pageMeta(pathname: string): { title: string; sub: string } {
+  if (pathname.startsWith('/lab')) {
+    return { title: '策略实验室', sub: '参数研究 · IS / OOS / 擂台 · 非下单' }
+  }
+  if (pathname.startsWith('/stock')) {
+    return { title: '个股详情', sub: 'K 线 · 箱体 · 资金流 · 交易卡片' }
+  }
+  return { title: '选股总览', sub: '技术形态 + 资金流 + 基本面 三层筛选' }
 }
 
 function normalizeTsCode(input: string): string | null {
@@ -21,6 +27,8 @@ function normalizeTsCode(input: string): string | null {
 export default function Topbar() {
   const { theme, toggle } = useTheme()
   const navigate = useNavigate()
+  const loc = useLocation()
+  const meta = pageMeta(loc.pathname)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
 
@@ -38,8 +46,8 @@ export default function Topbar() {
   return (
     <header className="topbar">
       <div>
-        <h1>横盘吸筹 → 启动 选股终端</h1>
-        <div className="asof">技术形态 + 资金流 + 基本面 三层筛选</div>
+        <h1>{meta.title}</h1>
+        <div className="asof">{meta.sub}</div>
       </div>
       <div className="right">
         <form className="stock-search" onSubmit={onSearch} title="跳转个股详情">

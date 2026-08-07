@@ -65,3 +65,24 @@ if __name__ == "__main__":
     test_freshness_trading_days()
     test_prefilter_and_split()
     print("\nPhase4 tests OK")
+
+
+def test_fund_flow_strength_last_5_days_only():
+    """回归：详情页「近5日资金流」必须只累计最近 5 个交易日，而非全部历史。"""
+    from scoring import calc_fund_flow_strength
+
+    # 构造 20 个交易日：前 15 天净流入 1000，后 5 天净流出 500
+    rows = []
+    for i in range(20):
+        rows.append({
+            "trade_date": f"20260{1 + i // 10}{1 + i % 10:02d}",
+            "net_mf_amount": 1000.0 if i < 15 else -500.0,
+            "amount": 10000.0,
+        })
+    mf = pd.DataFrame(rows)
+    net_all, _, _ = calc_fund_flow_strength(mf, days=None)
+    net_5, _, _ = calc_fund_flow_strength(mf, days=5)
+    assert net_all > 0, f"全部历史应累计为正：{net_all}"
+    assert net_5 < 0, f"最近5日应累计为负：{net_5}"
+    assert abs(net_5 - (-500.0 * 5)) < 1e-6, f"net_5={net_5}"
+    print(f"[PASS] 资金流近5日回归：all={net_all:.0f} last5={net_5:.0f}")

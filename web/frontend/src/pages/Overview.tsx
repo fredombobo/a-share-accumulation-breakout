@@ -47,6 +47,8 @@ export default function Overview() {
   const [topN, setTopN] = useState(prefParams?.topN ?? 20)
   const [days, setDays] = useState(prefParams?.days ?? 160)
   const c = useChartColors()
+  /** 扫描 API 尚未返回 task_id 时用户已点取消 */
+  const pendingCancelRef = useRef(false)
 
   // A5 竞态守卫：序号 + AbortController，保证只有最新一次请求用于渲染
   const overviewSeq = useRef(0)
@@ -131,11 +133,19 @@ export default function Overview() {
     api.scanStatus()
       .then((st) => {
         if (!mounted) return
-        if (st && (st.status === 'running' || st.status === 'pending') && st.id) {
+        if (
+          st &&
+          st.id &&
+          (st.status === 'running' || st.status === 'pending' || st.status === 'cancelling')
+        ) {
           setScanning(true)
           setScanTask(st.id)
           setScanStatus(st)
-          setCacheNote('检测到后台扫描进行中，已恢复进度显示')
+          setCacheNote(
+            st.status === 'cancelling' || st.cancel_requested
+              ? '检测到扫描正在取消，已恢复进度显示'
+              : '检测到后台扫描进行中，已恢复进度显示',
+          )
         } else if (st && st.status === 'done') {
           setCacheNote('上次后台扫描已完成，列表已可查看')
         }
@@ -159,19 +169,21 @@ export default function Overview() {
     saveParams(topN, days)
   }, [topN, days])
 
-  // 扫描进度轮询：in-flight 防重叠 + 失败指数退避（成功复位）
+  // 扫描进度轮询：取消中加速；客户端超时兜底；失败指数退避
   useEffect(() => {
     if (!scanning || !scanTask) return
     let stopped = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    let interval = 2000
+    let interval = 1500
     let inflight = false
+    let cancelSince = 0
+    let lastResend = 0
 
     const finish = (st: ScanStatus) => {
       setScanning(false)
       setScanTask(null)
+      pendingCancelRef.current = false
       if (st.status === 'done') {
-        // 先缓存 ALL 池全量，避免只看 A 时缓存被空列表覆盖
         api.overview('ALL')
           .then((all) => {
             if (all.items?.length) saveOverviewCache('ALL', all)
@@ -182,6 +194,14 @@ export default function Overview() {
           })
       } else if (st.status === 'error') {
         setErr(`扫描失败: ${st.error || ''}`)
+        setCacheNote('扫描失败，已保留上次列表')
+      } else if (st.status === 'cancelled') {
+        setErr('')
+        setCacheNote(
+          st.stage?.includes('强制')
+            ? '扫描已强制结束（卡住任务已解锁），已保留上次列表'
+            : '扫描已取消，已保留上次列表',
+        )
       }
     }
 
@@ -191,21 +211,43 @@ export default function Overview() {
       try {
         const st = await api.scanStatus(scanTask)
         if (stopped) return
-        interval = 2000 // 成功：间隔复位
         setScanStatus(st)
+        const cancelling = st.status === 'cancelling' || !!st.cancel_requested
+        interval = cancelling ? 600 : 1500
+        if (cancelling) {
+          if (!cancelSince) cancelSince = Date.now()
+          // 5s 仍未终态：再发一次 cancel（幂等）
+          if (Date.now() - lastResend > 5000) {
+            lastResend = Date.now()
+            api.cancelScan(scanTask).catch(() => undefined)
+          }
+          // 15s 客户端兜底：解锁 UI（后端看门狗约 10s）
+          if (Date.now() - cancelSince > 15000) {
+            finish({
+              id: scanTask,
+              status: 'cancelled',
+              stage: '已取消（前端超时收口）',
+              progress: st.progress ?? 0,
+              cancel_requested: true,
+            })
+            return
+          }
+        } else {
+          cancelSince = 0
+        }
         if (st.status === 'done' || st.status === 'error' || st.status === 'cancelled') {
           finish(st)
           return
         }
       } catch {
-        interval = Math.min(interval * 2, 30_000) // 失败：指数退避
+        interval = Math.min(interval * 2, 15_000)
       } finally {
         inflight = false
       }
       if (!stopped) timer = setTimeout(tick, interval)
     }
 
-    timer = setTimeout(tick, interval)
+    timer = setTimeout(tick, 400)
     return () => {
       stopped = true
       if (timer) clearTimeout(timer)
@@ -213,6 +255,7 @@ export default function Overview() {
   }, [scanning, scanTask, loadOverview])
 
   const onScan = async () => {
+    pendingCancelRef.current = false
     setScanning(true)
     setErr('')
     setCacheNote('扫描中…完成后将替换列表；取消/失败则保留上次结果')
@@ -220,15 +263,74 @@ export default function Overview() {
     try {
       const resp = await api.scan(topN, days, false)
       setScanTask(resp.task_id)
+      // 用户在拿到 task_id 前已点取消 → 立即发取消
+      if (pendingCancelRef.current) {
+        pendingCancelRef.current = false
+        setScanStatus({
+          id: resp.task_id,
+          status: 'cancelling',
+          stage: '取消中…正在停止工作进程',
+          progress: 0,
+          cancel_requested: true,
+        })
+        try {
+          await api.cancelScan(resp.task_id)
+        } catch (e) {
+          setErr(`取消失败: ${String(e)}`)
+        }
+      }
     } catch (e) {
       setErr(String(e))
       setScanning(false)
+      pendingCancelRef.current = false
     }
   }
 
   const onCancel = async () => {
-    if (scanTask) {
-      try { await api.cancelScan(scanTask) } catch { /* ignore */ }
+    pendingCancelRef.current = true
+    // 立即给反馈，避免「点了没反应」
+    setScanStatus((prev) => ({
+      id: scanTask || prev?.id || '',
+      status: 'cancelling',
+      stage: '取消中…正在停止工作进程',
+      progress: prev?.progress ?? 0,
+      cancel_requested: true,
+      result: prev?.result ?? null,
+      error: prev?.error ?? null,
+    }))
+    setCacheNote('已请求取消，等待当前分片/数据加载结束…')
+    setErr('')
+
+    let tid = scanTask
+    if (!tid) {
+      try {
+        const st = await api.scanStatus()
+        if (st?.id && (st.status === 'running' || st.status === 'pending' || st.status === 'cancelling')) {
+          tid = st.id
+          setScanTask(st.id)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!tid) {
+      // task_id 尚未返回：等 onScan 拿到 id 后自动 cancel（pendingCancelRef）
+      setCacheNote('已请求取消，等待任务号返回后停止…')
+      return
+    }
+    try {
+      const r = await api.cancelScan(tid)
+      setScanStatus((prev) => ({
+        id: tid!,
+        status: (r.status as ScanStatus['status']) || 'cancelling',
+        stage: r.stage || '取消中…正在停止工作进程',
+        progress: prev?.progress ?? 0,
+        cancel_requested: true,
+        result: prev?.result ?? null,
+        error: prev?.error ?? null,
+      }))
+    } catch (e) {
+      setErr(`取消失败: ${String(e)}`)
     }
   }
 
@@ -364,25 +466,53 @@ export default function Overview() {
             onChange={(e) => setDays(Number(e.target.value))}
             style={{ width: 72, background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '5px 8px' }} />
           <button className="btn primary" onClick={onScan} disabled={scanning}>
-            {scanning ? '扫描中…' : '🚀 扫描(A池优先)'}
+            {scanning
+              ? (scanStatus?.status === 'cancelling' || scanStatus?.cancel_requested
+                ? '取消中…'
+                : '扫描中…')
+              : '🚀 扫描(A池优先)'}
           </button>
-          {scanning && scanTask && (
-            <button className="btn" onClick={onCancel} style={{ borderColor: 'var(--up)', color: 'var(--up)' }}>⏹ 取消</button>
+          {scanning && (
+            <button
+              className="btn"
+              onClick={onCancel}
+              disabled={scanStatus?.status === 'cancelling' || !!scanStatus?.cancel_requested}
+              style={{ borderColor: 'var(--up)', color: 'var(--up)' }}
+              title={scanTask ? `取消任务 ${scanTask}` : '取消当前扫描'}
+            >
+              {scanStatus?.status === 'cancelling' || scanStatus?.cancel_requested
+                ? '⏹ 取消中…'
+                : '⏹ 取消'}
+            </button>
           )}
         </div>
         {scanning && scanStatus && (
           <div style={{ marginTop: 12 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>
-              <span>{scanStatus.stage}</span>
+              <span>
+                {scanStatus.stage}
+                {(scanStatus.status === 'cancelling' || scanStatus.cancel_requested) && (
+                  <span className="badge badge-warn" style={{ marginLeft: 8 }}>取消请求已发送</span>
+                )}
+              </span>
               <span>{scanStatus.progress}%</span>
             </div>
             <div style={{ height: 8, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
               <div style={{
-                height: '100%', width: `${scanStatus.progress}%`,
-                background: 'linear-gradient(90deg, var(--accent), var(--accent-2))',
+                height: '100%',
+                width: `${Math.max(scanStatus.progress, scanStatus.status === 'cancelling' ? 8 : 0)}%`,
+                background:
+                  scanStatus.status === 'cancelling' || scanStatus.cancel_requested
+                    ? 'linear-gradient(90deg, var(--warn), var(--up))'
+                    : 'linear-gradient(90deg, var(--accent), var(--accent-2))',
                 borderRadius: 4, transition: 'width 0.4s ease',
               }} />
             </div>
+            {scanTask && (
+              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }} className="mono">
+                task {scanTask}
+              </div>
+            )}
           </div>
         )}
         {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}

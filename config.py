@@ -8,11 +8,11 @@
   4. 基本面过滤：PE/PB 合理、市值适中
   5. 综合打分 → A池 Top15（strict）+ B池观察
 
-数据通道（全部免费、无需 token）：
-  - 全市场列表/快照：akshare（新浪源）
-  - 个股日线K线：腾讯 ifzq 接口
-  - 个股资金流：新浪 MoneyFlow 接口
-  - 实时行情/基本面：腾讯 qt.gtimg.cn
+数据通道（主路径）：
+  - 日线 / 基本面 / 资金流 / 列表：Tushare 直连（tushare_http + TUSHARE_TOKEN）
+  - 本地落库：runtime/stock_data.db（SQLite WAL）
+  - 历史扩容目标：HISTORY_SYNC_DAYS ≈ 730（完整 IS/OOS）
+  - 备用 URL 常量：腾讯 K 线 / 新浪资金流（见下方 TENCNET_* / SINA_*）
 """
 
 from __future__ import annotations

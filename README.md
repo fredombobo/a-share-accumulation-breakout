@@ -90,11 +90,13 @@ python test_signals.py
 
 ### 策略实验室（闭环优化，2026-08-06 新增）
 
-界面「🧪 策略实验室」页可一键触发：样本内网格优化 → 样本外验证 → 参数擂台赛回灌。
+界面「🧪 策略实验室」= **参数研究区**（非下单）。可交易候选仍在总览 **A 池**。  
+研究路线：`docs/RESEARCH-ROADMAP.md`。窗口由本地日线深度自动选择（不足则降级摸底）。
 
 ```powershell
-python sync_history.py                # 历史日线扩容到 3 年（约 2-4 小时，断点续传）
-python run_optimize_plan.py A 600 10  # 方案 A 全市场优化（B 同理；600=样本数,10=采样步长）
+python research_status.py             # 先看：mode=full|degraded|insufficient、Token、下一步
+python sync_history.py                # 历史日线扩容到 ~3 年（需有效 Token，约 2-4 小时，断点续传）
+python run_optimize_plan.py A 600 10  # 方案 A 优化（自动窗；600=样本数,10=采样步长）
 python pipeline_seed.py A             # WF 复核 + 参数播种 + 擂台赛干跑
 python strategy_store.py --weights    # 查看 active 参数权重（选股排序回灌）
 ```

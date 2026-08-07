@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import pandas as pd
 
-from parallel_scan import detect_many, prefilter_volume_parallel, resolve_workers
+from parallel_scan import _parent_alive, detect_many, prefilter_volume_parallel, resolve_workers
 from signals import detect_accumulation_breakout
 from test_signals import make_synthetic
 
@@ -99,9 +99,64 @@ def test_single_stock_detect_still_ok():
     print("[PASS] single detect ok")
 
 
+def test_parent_alive_probe_safe():
+    """回归：Windows 上 os.kill(ppid,0) 对受保护进程会误判父死导致 worker 自杀。
+
+    _parent_alive 只对确定不存在的 PID 返回 False；探测自己必须返回 True 且不得杀死本进程。
+    """
+    me = os.getpid()
+    assert _parent_alive(me) is True, "探测自己必须判定存活（且不能杀死自己）"
+    # 任意必然不存在的 PID：当前进程的 PID 翻转不可靠，用小于 1 的非法值兜底 + 999999 大概率不存在
+    assert _parent_alive(0) is False or _parent_alive(0) in (False, True)  # 0 无意义，不抛异常即可
+    # 找 3 个大概率不存在的 PID 验证不会误报存活
+    dead = [99999991, 99999992, 99999993]
+    for pid in dead:
+        # 若恰好被复用为真实进程（极低概率），跳过该断言
+        try:
+            os.kill(pid, 0)
+            continue  # 存在，跳过
+        except OSError:
+            assert _parent_alive(pid) is False, f"不存在的 PID {pid} 应判定死亡"
+    print("[PASS] _parent_alive 安全探测 ok（不会误杀/误判）")
+
+
+def test_full_scan_does_not_kill_pytest():
+    """回归：完整并行扫描运行不能杀死 pytest 进程（曾经 os.kill(ppid,0) 的副作用）。"""
+    me = os.getpid()
+    codes, daily = _build_market(n_stocks=220, flat_days=30)
+    res = detect_many(codes, daily, workers=2)
+    assert os.getpid() == me, "pytest 进程被杀死！"
+    assert set(res.keys()) == set(codes)
+    print(f"[PASS] 完整扫描不杀 pytest，检测 {len(res)} 只")
+
+
+def test_cancel_scan_returns_promptly():
+    """取消扫描：cancel_check 置 True 后 detect_many 必须快速返回，不挂死。"""
+    codes, daily = _build_market(n_stocks=220, flat_days=40)
+    state = {"cancelled": False}
+
+    def _cb():
+        return state["cancelled"]
+
+    def _set():
+        time.sleep(0.6)
+        state["cancelled"] = True
+
+    import threading
+    threading.Thread(target=_set, daemon=True).start()
+    t0 = time.time()
+    res = detect_many(codes, daily, workers=0, cancel_check=_cb)
+    elapsed = time.time() - t0
+    assert elapsed < 30, f"取消后未及时返回：{elapsed:.1f}s"
+    print(f"[PASS] 取消扫描 {elapsed:.1f}s 内返回（部分结果 {len(res)} 只）")
+
+
 if __name__ == "__main__":
     test_resolve_workers()
     test_single_stock_detect_still_ok()
+    test_parent_alive_probe_safe()
+    test_full_scan_does_not_kill_pytest()
     test_detect_serial_vs_parallel_same_hits()
     test_prefilter_parallel_matches_serial()
+    test_cancel_scan_returns_promptly()
     print("\n全部并行扫描测试通过 ✅")

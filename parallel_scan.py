@@ -21,6 +21,60 @@ _MIN_CODES_FOR_POOL = 200
 _WATCHDOG_STARTED = False
 
 
+def _parent_alive(ppid: int) -> bool:
+    """跨平台父进程存活探测（安全版）。
+
+    绝不裸用 os.kill(ppid, 0)：Windows 上该调用语义依赖实现版本，
+    旧版 CPython 曾将 sig=0 实现为 TerminateProcess(0) 直接杀死父进程；
+    且对受保护进程会抛 PermissionError，若一律当"父死"处理会把活着的 worker 自杀。
+
+    只把确定性的"进程不存在"视为父死，其余一律保守判定存活。
+    """
+    if ppid <= 0:
+        return False
+    try:
+        import psutil  # noqa: PLC0415
+
+        try:
+            p = psutil.Process(ppid)
+            return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+        except Exception:  # noqa: BLE001  # AccessDenied/ZombieProcess/其它 → 保守存活
+            return True
+    except ImportError:
+        pass
+
+    if os.name == "nt":
+        # Windows 兜底：OpenProcess + GetExitCodeProcess 探测，完全不触碰 TerminateProcess
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, wintypes.DWORD(ppid))
+        if not h:
+            # 87=参数错误（进程不存在）1168=未找到 → 父死；其余（如权限不足）保守存活
+            return ctypes.get_last_error() not in (87, 1168)
+        try:
+            code = wintypes.DWORD()
+            if kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return code.value == STILL_ACTIVE
+            return True
+        finally:
+            kernel32.CloseHandle(h)
+
+    # POSIX
+    try:
+        os.kill(ppid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:  # noqa: BLE001  # 保守存活，避免误杀 worker
+        return True
+
+
 def _watch_parent_or_exit(interval: float = 5.0) -> None:
     """spawn 子进程看门狗：父进程死亡（强杀/异常退出）时自动退出，防止孤儿 worker 永久挂机。
 
@@ -38,9 +92,7 @@ def _watch_parent_or_exit(interval: float = 5.0) -> None:
 
     def _watch() -> None:
         while True:
-            try:
-                os.kill(ppid, 0)  # sig=0 仅探测存活（Windows 下 OpenProcess 检测）
-            except OSError:
+            if not _parent_alive(ppid):
                 os._exit(0)  # 父进程已死：立即退出（worker 无共享状态，无需清理）
             time.sleep(interval)
 
@@ -48,12 +100,10 @@ def _watch_parent_or_exit(interval: float = 5.0) -> None:
 
 
 def resolve_workers(workers: int | None = None) -> int:
-    """workers<=0 或 None → 自动：cpu_count-1（至少 1，最多 16）。"""
-    cpu = os.cpu_count() or 4
-    auto = max(1, min(16, cpu - 1 if cpu > 2 else cpu))
-    if workers is None or workers <= 0:
-        return auto
-    return max(1, int(workers))
+    """workers<=0 或 None → 自动：cpu_count-1（至少 1，最多 8，稳健优先）。"""
+    from scan_runtime import safe_workers
+
+    return safe_workers(workers, hard_cap=8)
 
 
 def _chunk_list(items: list[str], n_chunks: int) -> list[list[str]]:
@@ -102,20 +152,24 @@ def _worker_detect_chunk(payload: tuple[list[str], pd.DataFrame, dict[str, Any]]
 
 
 def _terminate_pool(pool: ProcessPoolExecutor) -> None:
-    """尽力立即终止 ProcessPoolExecutor 的 worker 进程（不等当前分片跑完）。
+    from scan_runtime import terminate_pool_processes
 
-    cancel 场景：用户点取消需要立即响应，不能等 worker 把 1000 只分片算完。
-    worker 被 terminate 后对应 future 抛 BrokenProcessPool，由调用方按取消处理。
-    """
+    terminate_pool_processes(pool)
+
+
+def _abandon_pool(pool: ProcessPoolExecutor) -> None:
+    from scan_runtime import abandon_pool
+
+    abandon_pool(pool)
+
+
+def _cancelled(cancel_check: Callable[[], bool] | None) -> bool:
+    if cancel_check is None:
+        return False
     try:
-        procs = getattr(pool, "_processes", None) or {}
-        for p in procs.values():
-            try:
-                p.terminate()
-            except Exception:  # noqa: BLE001
-                pass
+        return bool(cancel_check())
     except Exception:  # noqa: BLE001
-        pass
+        return False
 
 
 def detect_many(
@@ -127,11 +181,14 @@ def detect_many(
     progress_cb: Callable[[str, int, str], None] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     label: str = "信号检测",
+    min_codes_for_pool: int = _MIN_CODES_FOR_POOL,
 ) -> dict[str, dict]:
     """对多只股票并行检测，返回 {ts_code: sig}。
 
     workers=1 或代码数很少时走单进程（便于调试/小样本）。
     cancel_check：返回 True 时停止派发并释放进程池（当前分片跑完后退出）。
+    min_codes_for_pool：小于该数量走单进程；Web 总览小样本（如 30 只）
+    可传 1 强制多进程，避免 30 只串行重算信号拖慢响应。
     """
     code_list = [str(c) for c in codes]
     if not code_list:
@@ -152,33 +209,62 @@ def detect_many(
     if sub is None or sub.empty:
         return {}
 
-    if n_workers == 1 or len(code_list) < _MIN_CODES_FOR_POOL:
+    if n_workers == 1 or len(code_list) < min_codes_for_pool:
         _prog(f"单进程扫描 {len(code_list)} 只…", 25)
-        pairs = _worker_detect_chunk((code_list, sub, kwargs))
-        return {c: s for c, s in pairs}
+        # 分批可取消，避免整表卡死
+        results: dict[str, dict] = {}
+        batch = 80
+        for i in range(0, len(code_list), batch):
+            if _cancelled(cancel_check):
+                _prog("已取消（单进程）", 100)
+                return results
+            part = code_list[i: i + batch]
+            pairs = _worker_detect_chunk((part, sub[sub["ts_code"].isin(part)], kwargs))
+            for c, s in pairs:
+                results[c] = s
+            pct = 25 + int(70 * min(i + batch, len(code_list)) / max(len(code_list), 1))
+            _prog(f"单进程 {min(i + batch, len(code_list))}/{len(code_list)}", pct)
+        return results
+
+    if _cancelled(cancel_check):
+        _prog("已取消", 100)
+        return {}
 
     chunks = _chunk_list(code_list, n_workers)
     # 每个 worker 只拿自己的子集，避免全表复制 × N
     tasks: list[tuple[list[str], pd.DataFrame, dict[str, Any]]] = []
     for ch in chunks:
+        if _cancelled(cancel_check):
+            _prog("已取消（准备分片）", 100)
+            return {}
         ch_set = set(ch)
         cdf = sub[sub["ts_code"].isin(ch_set)]
         tasks.append((ch, cdf, kwargs))
 
     _prog(f"多进程×{len(tasks)} 扫描 {len(code_list)} 只…", 25)
-    results: dict[str, dict] = {}
+    results = {}
     cancelled = False
     pool = ProcessPoolExecutor(max_workers=len(tasks))
-    futs = {pool.submit(_worker_detect_chunk, t): i for i, t in enumerate(tasks)}
-    pending = set(futs)
+    futs = {}
     try:
+        for i, t in enumerate(tasks):
+            if _cancelled(cancel_check):
+                cancelled = True
+                _prog("已请求取消，停止派发…", 90)
+                break
+            futs[pool.submit(_worker_detect_chunk, t)] = i
+        pending = set(futs)
         done = 0
-        # wait(timeout=2) 轮询：每 2 秒检查一次取消（不再等整个分片完成才响应 cancel）
-        while pending:
-            finished, pending = wait(pending, timeout=2.0, return_when=FIRST_COMPLETED)
+        # wait(timeout=0.8) 轮询：更频繁响应取消
+        while pending and not cancelled:
+            if _cancelled(cancel_check):
+                cancelled = True
+                _prog("已请求取消，正在终止进程…", 90)
+                break
+            finished, pending = wait(pending, timeout=0.8, return_when=FIRST_COMPLETED)
             for fut in finished:
                 try:
-                    pairs = fut.result()
+                    pairs = fut.result(timeout=0.1)
                 except Exception:  # noqa: BLE001  # worker 被终止/异常的分片跳过
                     pairs = []
                 for c, s in pairs:
@@ -186,16 +272,15 @@ def detect_many(
                 done += 1
                 pct = 25 + int(70 * done / max(len(tasks), 1))
                 _prog(f"完成分片 {done}/{len(tasks)}（累计 {len(results)} 只）", pct)
-            if cancel_check is not None and cancel_check():
-                cancelled = True
-                _prog("已请求取消，正在停止…", 90)
-                break
     finally:
-        if cancelled:
-            _terminate_pool(pool)  # 立即停 worker（不等当前分片）
-            pool.shutdown(wait=False, cancel_futures=True)
+        if cancelled or _cancelled(cancel_check):
+            cancelled = True
+            _abandon_pool(pool)
         else:
-            pool.shutdown(wait=True)
+            try:
+                pool.shutdown(wait=True)
+            except Exception:  # noqa: BLE001
+                _abandon_pool(pool)
 
     if cancelled:
         _prog("扫描已取消", 100)
@@ -250,50 +335,96 @@ def prefilter_volume_parallel(
     near_high_pct: float = 0.08,
     workers: int | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    progress_cb: Callable[[str, int, str], None] | None = None,
 ) -> set[str]:
-    """并行量能/近高点预筛。"""
+    """并行量能/近高点预筛。支持 cancel_check：取消后立即终止进程池并返回。"""
     code_list = [str(c) for c in codes]
     if not code_list or daily is None or daily.empty:
         return set(code_list)
+
+    def _prog(msg: str, pct: int = 18) -> None:
+        if progress_cb:
+            try:
+                progress_cb("预筛", pct, msg)
+            except Exception:  # noqa: BLE001
+                pass
+
+    if _cancelled(cancel_check):
+        _prog("已取消", 18)
+        return set()
 
     n_workers = resolve_workers(workers)
     sub = daily[daily["ts_code"].isin(set(code_list))]
     if sub.empty:
         return set()
 
+    # 单进程：分批跑，每批检查取消（全表 groupby 一次会卡住很久且无法中断）
     if n_workers == 1 or len(code_list) < _MIN_CODES_FOR_POOL:
         from prefilter_fast import volume_breakout_candidates
 
-        return volume_breakout_candidates(
-            sub, code_list, lookback=lookback, vol_ratio_min=vol_ratio_min, near_high_pct=near_high_pct
-        )
+        keep: set[str] = set()
+        batch = 150
+        total = len(code_list)
+        for i in range(0, total, batch):
+            if _cancelled(cancel_check):
+                _prog("已取消（单进程预筛）", 18)
+                return set()  # 取消则丢弃部分结果，让上层立刻退出
+            part = code_list[i: i + batch]
+            keep |= volume_breakout_candidates(
+                sub, part, lookback=lookback, vol_ratio_min=vol_ratio_min, near_high_pct=near_high_pct
+            )
+            _prog(f"预筛 {min(i + batch, total)}/{total}", 18)
+        return keep
+
+    if _cancelled(cancel_check):
+        return set()
 
     chunks = _chunk_list(code_list, n_workers)
     tasks = []
     for ch in chunks:
+        if _cancelled(cancel_check):
+            _prog("已取消（准备预筛分片）", 18)
+            return set()
         cdf = sub[sub["ts_code"].isin(set(ch))]
         tasks.append((ch, cdf, lookback, vol_ratio_min, near_high_pct))
 
-    keep: set[str] = set()
+    keep = set()
     cancelled = False
-    pool = ProcessPoolExecutor(max_workers=len(tasks))
-    futs = [pool.submit(_worker_prefilter_chunk, t) for t in tasks]
-    pending = set(futs)
+    pool = ProcessPoolExecutor(max_workers=max(1, len(tasks)))
+    futs = []
     try:
-        while pending:
-            finished, pending = wait(pending, timeout=2.0, return_when=FIRST_COMPLETED)
+        for t in tasks:
+            if _cancelled(cancel_check):
+                cancelled = True
+                _prog("已请求取消，停止派发预筛…", 18)
+                break
+            futs.append(pool.submit(_worker_prefilter_chunk, t))
+        pending = set(futs)
+        done = 0
+        while pending and not cancelled:
+            if _cancelled(cancel_check):
+                cancelled = True
+                _prog("已请求取消，正在终止预筛进程…", 18)
+                break
+            finished, pending = wait(pending, timeout=0.8, return_when=FIRST_COMPLETED)
             for fut in finished:
                 try:
-                    keep.update(fut.result())
+                    keep.update(fut.result(timeout=0.1))
                 except Exception:  # noqa: BLE001
                     pass
-            if cancel_check is not None and cancel_check():
-                cancelled = True
-                break
+                done += 1
+                _prog(f"预筛分片 {done}/{len(futs)}", 18)
     finally:
-        if cancelled:
-            _terminate_pool(pool)
-            pool.shutdown(wait=False, cancel_futures=True)
+        if cancelled or _cancelled(cancel_check):
+            cancelled = True
+            _abandon_pool(pool)
         else:
-            pool.shutdown(wait=True)
+            try:
+                pool.shutdown(wait=True)
+            except Exception:  # noqa: BLE001
+                _abandon_pool(pool)
+
+    if cancelled:
+        _prog("预筛已取消", 18)
+        return set()  # 上层 _stop_if_cancelled 立刻 return
     return keep

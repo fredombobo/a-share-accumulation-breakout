@@ -1,8 +1,8 @@
 import { useLocation, useNavigate } from 'react-router'
 
 const items = [
-  { path: '/', label: '📈 选股总览' },
-  { path: '/lab', label: '🧪 策略实验室' },
+  { path: '/', label: '📈 选股总览', hint: 'A池可交易' },
+  { path: '/lab', label: '🧪 策略实验室', hint: '研究 · 非下单' },
 ]
 
 export default function Sidebar() {
@@ -19,14 +19,17 @@ export default function Sidebar() {
           key={it.path}
           className={`nav-item ${active === it.path ? 'active' : ''}`}
           onClick={() => nav(it.path)}
+          title={it.hint}
         >
           {it.label}
+          <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>{it.hint}</div>
         </div>
       ))}
       <div className="spacer" />
-      <div className="muted" style={{ fontSize: 11, padding: '0 12px' }}>
-        A池可交易 / B池观察<br />
-        环境过滤 · 交易卡片
+      <div className="muted" style={{ fontSize: 11, padding: '0 12px', lineHeight: 1.45 }}>
+        <b>总览</b>：扫描 → A 池<br />
+        <b>实验室</b>：参数摸底<br />
+        二者勿混用
       </div>
     </aside>
   )

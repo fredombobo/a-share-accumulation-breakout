@@ -56,7 +56,21 @@ def main() -> int:
     args = p.parse_args()
     if args.check_only:
         print(gap_check())
+        from research_windows import recommend_research_plan
+
+        plan = recommend_research_plan()
+        print({"research_mode": plan.mode, "can_claim_edge": plan.can_claim_edge,
+               "is": f"{plan.is_start}~{plan.is_end}", "oos": f"{plan.oos_start}~{plan.oos_end}"})
         return 0
+    # Token 预检：失败则立即退出，避免空跑数小时
+    from research_windows import probe_tushare_token
+
+    tok = probe_tushare_token()
+    if not tok.get("ok"):
+        print(f"[sync_history] Token 不可用: {tok.get('error')}")
+        print("  请到 https://tushare.pro 个人中心复制 token，写入 .env 的 TUSHARE_TOKEN 后重试。")
+        print("  也可先: python research_status.py")
+        return 3
     backfill_daily(days_back=args.days)
     return 0
 

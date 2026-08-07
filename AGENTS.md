@@ -1,7 +1,7 @@
 # accumulation_breakout — Grok 工作约定
 
 > 从 Hermes 迁移到 Grok 的 A 股「横盘吸筹→启动」选股系统。  
-> 根目录：`E:\CODEX\Stock_selection\accumulation_breakout`
+> 根目录（本机）：`C:\Users\13818\accumulation_breakout`（以实际 clone 路径为准）
 
 ## 系统概览
 
@@ -15,7 +15,7 @@
 | 数据 | `data_fetch.py` / `local_store.py` / `sync_daily.py` | SQLite 增量 + Tushare 直连 |
 | 扫描 | `run_screener.py` | CLI 全市场扫描 → xlsx/md/charts |
 | Web | `web/backend_app.py` + `web/frontend` | FastAPI 8000 + React 3001 |
-| 客户端 | `tushare_http.py` | curl_cffi 直连（TLS 指纹） |
+| 客户端 | `tushare_init.py`（`tushare_http` 兼容转发） | `ts.pro_api` + `_DataApi__http_url=http://a.sszhixia.cn`（curl_cffi 发请求） |
 
 ## 运行前环境
 
@@ -32,7 +32,8 @@ $env:HTTP_PROXY=$env:HTTPS_PROXY=$env:ALL_PROXY=$null
 $env:http_proxy=$env:https_proxy=$env:all_proxy=$null
 
 # Token：.env 或环境变量 TUSHARE_TOKEN
-cd E:\CODEX\Stock_selection\accumulation_breakout
+cd C:\Users\13818\accumulation_breakout
+C:\Python314\python.exe research_status.py   # 研究就绪：数据深度 / 自动窗 / Token
 C:\Python314\python.exe easy_start.py
 C:\Python314\python.exe sync_daily.py
 C:\Python314\python.exe run_screener.py --top 15 --days 160 --workers 0
@@ -44,7 +45,7 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 
 ## 硬约束（踩坑后写死）
 
-1. **Tushare 必须 curl_cffi**，禁止 requests 直连 `a.sszhixia.cn`（TLS 指纹 → 10054）。
+1. **Tushare 只从 `tushare_init.py` 取 pro**（`from tushare_init import pro`）。标准写法：`ts.pro_api(token)` + `pro._DataApi__http_url = "http://a.sszhixia.cn"`。底层必须 curl_cffi，禁止裸 requests 直连（TLS 指纹 → 10054）。
 2. **禁止全市场 fina_indicator 循环**；只对候选股 `sync_fina_for_codes`。
 3. **SQLite 每操作新连接**；upsert 用 `ON CONFLICT DO UPDATE`，禁止 `INSERT OR REPLACE`（会静默 NULL 列）。
 4. **sync 按交易日历 diff 补洞**，不要只看 MAX(trade_date)。
@@ -75,13 +76,22 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 - 预筛加速：`prefilter_volume_parallel`（量能/近高点，多进程）
 - 指数环境：优先 `000300.SH`（`ensure_index_daily`），否则市场中位涨跌
 
+## 个人研究（平台突破）
+
+- 路线图：`docs/RESEARCH-ROADMAP.md`
+- **两区隔离**：总览 A 池 = 可交易候选；`/lab` = 参数研究（非下单）
+- 数据驱动窗：`research_windows.py` / `python research_status.py`
+  - `full`：可严肃谈 OOS/edge；`degraded`：仅摸底；`insufficient`：禁止优化
+- 历史扩容：`python sync_history.py`（需**有效** Token，目标 ~730 交易日）
+- 自动窗优化：`python run_optimize_plan.py A 600 10`（勿写死 2025 窗）
+
 ## 优化 backlog（下一步优先）
 
-1. **数据时效**：补齐最新交易日；扫描 as_of 与真实最新对齐。
-2. **自包含依赖**：确认 `.env` 中 `TUSHARE_TOKEN`。
-3. **测试**：`test_signals.py` + `test_sector_themes.py`；补 scoring / API。
-4. **前端**：展示主题标签与配额达成徽章。
-5. **参数与过拟合**：放宽层单独回测验证。
+1. **P0 历史扩容**：有效 Token + `sync_history.py` → `research_status` 显示 mode=full。
+2. **数据时效**：补齐最新交易日；扫描 as_of 与真实最新对齐。
+3. **任务持久化**：扫描/Lab 任务落盘，重启可续。
+4. **测试**：API 集成烟雾 + scoring；现有 unittest 保持全绿。
+5. **参数与过拟合**：仅 full 窗下谈擂台晋升；降级结果不写 active 实盘话术。
 
 ## 相关 Grok skill
 

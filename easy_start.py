@@ -233,6 +233,59 @@ def _wait_health(timeout: float = 40.0) -> bool:
     return False
 
 
+def _health_build_version() -> str:
+    """读取运行中后端的 build_version；异常返回空串。"""
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=3) as r:  # noqa: S310
+            return str((json.loads(r.read().decode("utf-8")) or {}).get("build_version") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _restart_backend(py: str, reason: str) -> None:
+    """停止运行中的后端进程（按 pid 文件 + 端口进程兜底），随后由 main 重新拉起。"""
+    print(f"[版本] {reason}")
+    pid_file = RUNTIME / "backend.pid"
+    killed: list[str] = []
+    if pid_file.is_file():
+        try:
+            pid = int(pid_file.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            pid = None
+        if pid:
+            for tool in (["taskkill", "/F", "/T", "/PID", str(pid)],
+                         ["taskkill", "/F", "/PID", str(pid)]):
+                r = subprocess.run(tool, capture_output=True, timeout=10, check=False)
+                if r.returncode == 0:
+                    killed.append(str(pid))
+                    break
+    if not killed:
+        # 兜底：找监听 8000 的进程
+        try:
+            import socket
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(("127.0.0.1", 8000)) == 0:
+                    out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
+                    for line in out.stdout.splitlines():
+                        if ":8000" in line and "LISTEN" in line:
+                            pid = line.split()[-1]
+                            subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
+                                           capture_output=True, timeout=10, check=False)
+                            killed.append(pid)
+                            break
+        except Exception:  # noqa: BLE001
+            pass
+    if killed:
+        print(f"[版本] 已停止旧后端进程: {', '.join(killed)}")
+    else:
+        print("[版本] 未找到旧后端进程，直接重启…")
+    time.sleep(1.0)
+
+
 def main(argv: list[str] | None = None) -> int:
     """兼容入口：有 --token/--yes 时转交 bootstrap（Agent 友好）。"""
     argv = list(argv or sys.argv[1:])
@@ -273,6 +326,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if _wait_health(timeout=4.0):
         print("[启动] 服务已在运行")
+        # 版本检测：源码或前端产物更新 → 自动重启后端
+        try:
+            from build_version import build_version as local_bv
+
+            local = local_bv()
+            remote = _health_build_version()
+            if local and remote and local != remote:
+                print(f"[启动] 检测到更新：本地 {local} ≠ 运行中 {remote}")
+                _restart_backend(py, "源码或前端产物已更新，自动重启后端以加载新版本")
+                proc = _start_server(py)
+                if not _wait_health(timeout=45):
+                    print("[错误] 重启后服务未就绪，请查看 runtime/easy_backend.err.log")
+                    return 1
+                print("[启动] 后端已按新版本重启")
+            elif local and not remote:
+                print("[启动] 运行中后端未报告版本号（旧版本），无法比对，保持现状")
+        except ImportError:
+            pass  # 无 build_version 模块时保持旧行为
         if not no_browser:
             webbrowser.open("http://127.0.0.1:8000/")
         print("打开: http://127.0.0.1:8000/")

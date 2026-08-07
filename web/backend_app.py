@@ -49,6 +49,12 @@ from scoring import (  # noqa: E402
 )
 from signals import detect_accumulation_breakout  # noqa: E402
 
+from build_version import build_version as _compute_build_version  # noqa: E402
+
+# 后端构建版本与启动时间：启动器据此检测「源码或前端产物更新」并自动重启
+_BUILD_VERSION = _compute_build_version()
+_STARTED_AT = datetime.now().isoformat(timespec="seconds")
+
 app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -62,6 +68,11 @@ app.add_middleware(
 _store = LocalStore()
 _SECTOR_FLOW_CACHE: dict = {}  # {(days, data_version): (dates, pivot_df)}
 _SIG_CACHE: dict = {}          # {(ts_code, as_of): sig} 个股信号缓存，避免每次 overview 重算
+
+# 阶段0：overview 轻量列表缓存（按数据日期失效），避免每次请求重复全表查询
+_OVERVIEW_CACHE: dict = {"key": None, "payload": None}   # key=(as_of, pool)
+_SCAN_RESULT_CACHE: dict = {"key": None, "df": None}     # key=max(trade_date)
+_DATES_CACHE: dict = {"key": None, "dates": None}        # key=max(trade_date) 全量日期
 
 # ── 异步扫描任务管理 ──
 _SCAN_TASKS: dict[str, dict] = {}
@@ -93,10 +104,11 @@ def _new_task(top: int, days: int) -> str:
 
 
 def _running_task_id() -> str | None:
-    """当前是否有排队/运行中的扫描；有则返回其 task_id。"""
+    """当前是否有排队/运行/取消中的扫描；有则返回其 task_id。"""
     with _SCAN_LOCK:
         for tid, t in _SCAN_TASKS.items():
-            if t.get("status") in ("pending", "running"):
+            # cancelling：取消请求已发出但工作线程尚未退出，仍互斥
+            if t.get("status") in ("pending", "running", "cancelling"):
                 return tid
     return None
 
@@ -124,7 +136,23 @@ def _log(task: dict, msg: str) -> None:
 
 
 def _run_scan_worker(task_id: str, top: int, days: int) -> None:
-    """后台线程：A 池可交易 + B 池观察（支持取消）。"""
+    """后台线程：拉起「可杀」扫描子进程，轮询进度；取消时 taskkill 整树。
+
+    关键：旧实现在同进程内跑 run_scan，阻塞在预筛/排序时线程无法响应取消。
+    现改为独立进程 + 进度文件，cancel 可强制结束整棵进程树。
+    """
+    import json
+    import subprocess
+    import time as _time
+
+    from scan_runtime import (
+        cancel_flag_check,
+        clamp_progress,
+        force_terminal,
+        is_terminal,
+        kill_process_tree,
+    )
+
     with _SCAN_LOCK:
         task = _SCAN_TASKS.get(task_id)
         cancel_ev = _SCAN_CANCEL_EVENTS.get(task_id)
@@ -135,87 +163,196 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
         with _SCAN_LOCK:
             _SCAN_CANCEL_EVENTS[task_id] = cancel_ev
 
-    def cancel_requested() -> bool:
-        return cancel_ev.is_set() if cancel_ev is not None else False
+    runtime_dir = _PARENT / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = runtime_dir / f"scan_{task_id}.progress.json"
+    result_path = runtime_dir / f"scan_{task_id}.result.json"
+    cancel_path = runtime_dir / f"scan_{task_id}.cancel"
+    for p in (progress_path, result_path, cancel_path):
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError:
+            pass
 
-    def report(stage: str, progress: int, msg: str = "") -> None:
+    def cancel_requested() -> bool:
+        with _SCAN_LOCK:
+            t = _SCAN_TASKS.get(task_id)
+        return cancel_flag_check(t, cancel_ev)
+
+    def _mark_cancelled(stage: str = "已取消", msg: str = "扫描已取消") -> None:
         with _SCAN_LOCK:
             t = _SCAN_TASKS.get(task_id)
             if t is None:
                 return
-            t["status"] = "running"
-            t["stage"] = stage
-            t["progress"] = int(progress)
+            force_terminal(t, "cancelled", stage=stage, log_fn=_log, msg=msg)
+            t["cancel_requested"] = True
+            t["worker_pid"] = None
+        _prune_scan_tasks()
+
+    def report(stage: str, progress: int, msg: str = "") -> None:
+        with _SCAN_LOCK:
+            t = _SCAN_TASKS.get(task_id)
+            if t is None or is_terminal(t.get("status")):
+                return
+            if t.get("cancel_requested") or t.get("status") == "cancelling":
+                t["status"] = "cancelling"
+                base = stage or t.get("stage") or ""
+                t["stage"] = base if "取消" in str(base) else (f"取消中…{base}" if base else "取消中…")
+            else:
+                t["status"] = "running"
+                t["stage"] = stage
+            t["progress"] = clamp_progress(progress)
             if msg:
                 _log(t, msg)
 
-    try:
-        import importlib
-        import sys
-
-        # 长驻后端可能缓存旧 config（无 SCAN_WORKERS 等字段），扫描前强制重载
-        for mod_name in (
-            "config",
-            "parallel_scan",
-            "signals",
-            "scoring",
-            "pool_select",
-            "market_regime",
-            "run_screener",
-        ):
-            if mod_name in sys.modules:
-                try:
-                    importlib.reload(sys.modules[mod_name])
-                except Exception:  # noqa: BLE001
-                    pass
-        import run_screener  # noqa: E402
-        run_screener = importlib.reload(run_screener)
-
-        task["started_at"] = datetime.now().isoformat()
-        report("数据准备", 5, f"扫描 A池top={top} days={days}（多核并行）")
-
+    def _kill_job(proc: subprocess.Popen | None) -> None:
         try:
-            from local_store import sync_from_tushare
-            report("数据准备", 8, "增量同步最新数据…")
-            sync_from_tushare(days_back=10, verbose=False)
-        except Exception as e:  # noqa: BLE001
-            _log(task, f"[warn] 增量同步失败(继续用库内数据): {str(e)[:80]}")
+            cancel_path.write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+        pid = None
+        with _SCAN_LOCK:
+            t = _SCAN_TASKS.get(task_id)
+            if t:
+                pid = t.get("worker_pid")
+        if pid:
+            kill_process_tree(int(pid))
+        if proc is not None and proc.poll() is None:
+            try:
+                kill_process_tree(proc.pid)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
 
-        def progress_cb(stage: str, pct: int, msg: str = "") -> None:
-            report(stage, pct, msg)
+    proc: subprocess.Popen | None = None
+    try:
+        with _SCAN_LOCK:
+            task["started_at"] = datetime.now().isoformat()
+        report("数据准备", 2, f"启动子进程扫描 top={top} days={days}")
 
-        # workers=None → config.SCAN_WORKERS（0=自动 cpu-1）
-        result = run_screener.run_scan(
-            top=top, days=days, force=False,
-            progress_cb=progress_cb, cancel_check=cancel_requested,
-        )
         if cancel_requested():
-            report("已取消", 0, "扫描已取消（当前分片结束后停止）")
-            with _SCAN_LOCK:
-                task["status"] = "cancelled"
-                task["finished_at"] = datetime.now().isoformat()
-            _prune_scan_tasks()
+            _mark_cancelled(msg="启动前已取消")
             return
-        df_a = result.get("df_a")
-        df_b = result.get("df_b")
-        count_a = 0 if df_a is None or getattr(df_a, "empty", True) else len(df_a)
-        count_b = 0 if df_b is None or getattr(df_b, "empty", True) else len(df_b)
 
-        report(
-            "完成",
-            100,
-            f"A={count_a} B={count_b} 环境={result.get('regime', {}).get('label')} "
-            f"workers={result.get('workers')} {result.get('elapsed_sec')}s",
+        runner = _PARENT / "scan_job_runner.py"
+        cmd = [
+            sys.executable,
+            str(runner),
+            "--task-id", task_id,
+            "--top", str(top),
+            "--days", str(days),
+            "--progress", str(progress_path),
+            "--result", str(result_path),
+            "--cancel-file", str(cancel_path),
+        ]
+        # CREATE_NEW_PROCESS_GROUP 便于 Windows 整树结束
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(_PARENT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
         )
         with _SCAN_LOCK:
-            task["status"] = "done"
-            task["progress"] = 100
-            task["finished_at"] = datetime.now().isoformat()
-            task["result"] = {
+            t = _SCAN_TASKS.get(task_id)
+            if t:
+                t["worker_pid"] = proc.pid
+                _log(t, f"scan subprocess pid={proc.pid}")
+
+        # 轮询：进度文件 + 取消 + 子进程退出
+        while True:
+            if cancel_requested():
+                pct = 0
+                try:
+                    if progress_path.exists():
+                        pct = int(json.loads(progress_path.read_text(encoding="utf-8")).get("progress") or 0)
+                except Exception:  # noqa: BLE001
+                    pct = 0
+                report("取消中", clamp_progress(pct), "正在终止扫描进程树…")
+                _kill_job(proc)
+                try:
+                    if proc:
+                        proc.wait(timeout=5)
+                except Exception:  # noqa: BLE001
+                    _kill_job(proc)
+                _mark_cancelled(msg="已终止扫描子进程")
+                return
+
+            rc = proc.poll() if proc else 0
+            if progress_path.exists():
+                try:
+                    prog = json.loads(progress_path.read_text(encoding="utf-8"))
+                    report(
+                        str(prog.get("stage") or "运行中"),
+                        int(prog.get("progress") or 0),
+                        str(prog.get("message") or ""),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+            if rc is not None:
+                break
+            _time.sleep(0.35)
+
+        # 子进程已退出
+        if cancel_requested():
+            _mark_cancelled(msg="子进程退出时检测到取消")
+            return
+
+        result: dict = {}
+        if result_path.exists():
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except Exception as e:  # noqa: BLE001
+                result = {"status": "error", "error": f"result parse: {e}"}
+
+        if result.get("cancelled") or result.get("status") == "cancelled":
+            _mark_cancelled(msg="子进程报告已取消")
+            return
+
+        if result.get("status") == "error" or (proc and proc.returncode not in (0, None) and not result):
+            with _SCAN_LOCK:
+                t = _SCAN_TASKS.get(task_id)
+                if t:
+                    force_terminal(
+                        t, "error", stage="失败",
+                        error=str(result.get("error") or f"exit={proc.returncode if proc else '?'}"),
+                        log_fn=_log, msg="scan subprocess error",
+                    )
+            return
+
+        count_a = int(result.get("count_a") or result.get("count") or 0)
+        count_b = int(result.get("count_b") or 0)
+        report(
+            "完成", 100,
+            f"A={count_a} B={count_b} 环境={(result.get('regime') or {}).get('label')} "
+            f"{result.get('elapsed_sec')}s",
+        )
+        with _SCAN_LOCK:
+            t = _SCAN_TASKS.get(task_id)
+            if t is None:
+                return
+            if t.get("cancel_requested"):
+                force_terminal(t, "cancelled", stage="已取消", log_fn=_log, msg="完成写入前取消")
+                return
+            t["status"] = "done"
+            t["progress"] = 100
+            t["stage"] = "完成"
+            t["finished_at"] = datetime.now().isoformat()
+            t["worker_pid"] = None
+            t["result"] = {
                 "status": "ok",
                 "latest_date": result.get("latest_date"),
                 "total_candidates": result.get("total_candidates", 0),
-                "hits": len(result.get("hits") or []),
+                "hits": result.get("hits", 0),
                 "count": count_a,
                 "count_a": count_a,
                 "count_b": count_b,
@@ -224,24 +361,50 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
                 "pool_report": result.get("pool_report"),
                 "elapsed_sec": result.get("elapsed_sec"),
             }
+            # 新扫描完成：清除 overview 轻量缓存，避免展示旧数据
+            _OVERVIEW_CACHE["key"] = None
+            _OVERVIEW_CACHE["payload"] = None
 
     except Exception as e:  # noqa: BLE001
+        _kill_job(proc)
         with _SCAN_LOCK:
             t = _SCAN_TASKS.get(task_id)
-            if t:
-                t["status"] = "error"
-                t["error"] = str(e)
-                t["finished_at"] = datetime.now().isoformat()
+            if t is None:
+                return
+            if t.get("cancel_requested") or cancel_flag_check(t, cancel_ev):
+                force_terminal(t, "cancelled", stage="已取消", log_fn=_log, msg=f"异常中取消: {e}")
+            else:
+                force_terminal(t, "error", stage="失败", error=str(e)[:500], log_fn=_log, msg=str(e)[:200])
     finally:
+        with _SCAN_LOCK:
+            t = _SCAN_TASKS.get(task_id)
+            if t is not None and not is_terminal(t.get("status")):
+                if t.get("cancel_requested") or cancel_flag_check(t, cancel_ev):
+                    force_terminal(t, "cancelled", stage="已取消", log_fn=_log, msg="finally 收口 cancelled")
+                else:
+                    force_terminal(
+                        t, "error", stage="异常退出",
+                        error="worker exited without terminal status",
+                        log_fn=_log, msg="finally 收口 error",
+                    )
+            if t is not None:
+                t["worker_pid"] = None
         _prune_scan_tasks()
 
 # ── 数据读取（SQLite） ──
 
-def _kline_series_for(code: str) -> list[dict]:
-    df = _store.load_daily(ts_codes=[code])
+def _kline_series_for(code: str, limit: int | None = None, start: str | None = None) -> list[dict]:
+    # SQL 层直接取最近 limit 个交易日，避免全量 K 线拖慢总览。
+    # start 由调用方预计算（distinct_dates 全表扫描较贵，不应在循环内重复调用）。
+    if limit and limit > 0:
+        df = _store.load_daily(ts_codes=[code], start=start) if start else _store.load_daily(ts_codes=[code])
+    else:
+        df = _store.load_daily(ts_codes=[code])
     if df.empty:
         return []
     df = df.sort_values("trade_date")
+    if limit and limit > 0 and len(df) > limit:
+        df = df.tail(limit)
     out = []
     for _, r in df.iterrows():
         out.append({
@@ -275,6 +438,55 @@ def _sig_for(code: str) -> dict:
     while len(_SIG_CACHE) > 300:
         _SIG_CACHE.pop(next(iter(_SIG_CACHE)))
     return sig
+
+
+def _sig_for_many(codes: list[str]) -> dict[str, dict]:
+    """批量信号检测（进程池并行，冷请求 30 只从 ~6s 降到 ~1s）。
+
+    未命中缓存的小样本也强制多进程（min_codes_for_pool=1），
+    命中缓存的不重算；结果写回 _SIG_CACHE 供后续复用。
+    数量很少（<5）时用串行单只计算——spawn 进程池的开销远大于直接算。
+    """
+    if not codes:
+        return {}
+    from parallel_scan import detect_many
+
+    as_of = _store.max_trade_date("daily") or ""
+    out: dict[str, dict] = {}
+    todo: list[str] = []
+    for c in codes:
+        key = (c, as_of)
+        if key in _SIG_CACHE:
+            out[c] = _SIG_CACHE[key]
+        else:
+            todo.append(c)
+    if todo:
+        if len(todo) < 5:
+            # 少量缺失：串行单只计算，避免 spawn 进程池（~3.5s 开销）
+            for c in todo:
+                try:
+                    df = _store.load_daily(ts_codes=[c])
+                    if df.empty:
+                        sig: dict = {}
+                    else:
+                        df = df.sort_values("trade_date").copy()
+                        df["date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+                        sig = detect_accumulation_breakout(df)
+                except Exception:  # noqa: BLE001
+                    sig = {}
+                _SIG_CACHE[(c, as_of)] = sig
+                out[c] = sig
+        else:
+            daily = _store.load_daily(ts_codes=todo)
+            if not daily.empty:
+                sigs = detect_many(todo, daily, workers=None, min_codes_for_pool=1, label="总览信号")
+                for c in todo:
+                    sig = sigs.get(c) or {}
+                    _SIG_CACHE[(c, as_of)] = sig
+                    out[c] = sig
+        while len(_SIG_CACHE) > 400:
+            _SIG_CACHE.pop(next(iter(_SIG_CACHE)))
+    return out
 
 
 def _fina_for(code: str, limit: int = 4) -> list[dict]:
@@ -350,28 +562,67 @@ def scan_status(task_id: str | None = None):
             task = _SCAN_TASKS.get(task_id)
             if task is None:
                 raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
-            return {k: task[k] for k in ("id", "status", "stage", "progress", "cancel_requested", "result", "error")}
+            keys = ("id", "status", "stage", "progress", "cancel_requested", "result", "error", "worker_pid")
+            return {k: task.get(k) for k in keys}
         if not _SCAN_TASKS:
             return {"status": "idle", "stage": "无任务", "progress": 0}
         # 返回最新任务
         latest = max(_SCAN_TASKS.values(), key=lambda t: t.get("started_at") or "")
-        return {k: latest[k] for k in ("id", "status", "stage", "progress", "cancel_requested", "result", "error")}
+        keys = ("id", "status", "stage", "progress", "cancel_requested", "result", "error", "worker_pid")
+        return {k: latest.get(k) for k in keys}
 
 
 @app.post("/api/scan/{task_id}/cancel")
 def cancel_scan(task_id: str):
+    from scan_runtime import is_terminal, kill_process_tree, request_cancel, start_cancel_watchdog
+
+    worker_pid = None
     with _SCAN_LOCK:
         task = _SCAN_TASKS.get(task_id)
         if task is None:
             raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
-        if task["status"] in ("done", "error", "cancelled"):
-            return {"status": task["status"], "stage": task["stage"]}
-        task["cancel_requested"] = True
+        if is_terminal(task.get("status")):
+            return {
+                "status": task["status"],
+                "stage": task.get("stage"),
+                "task_id": task_id,
+                "cancel_requested": bool(task.get("cancel_requested")),
+            }
         ev = _SCAN_CANCEL_EVENTS.get(task_id)
-    # 真正触发取消：通知扫描线程，分片粒度停止并释放进程池
-    if ev is not None:
-        ev.set()
-    return {"status": "cancelling", "stage": task["stage"], "task_id": task_id}
+        if ev is None:
+            ev = threading.Event()
+            _SCAN_CANCEL_EVENTS[task_id] = ev
+        request_cancel(task, ev)
+        task["stage"] = "取消中…正在终止扫描进程"
+        worker_pid = task.get("worker_pid")
+        stage = task["stage"]
+
+    # 立刻写 cancel 文件 + 杀进程树（不等 worker 线程醒来）
+    try:
+        cancel_file = _PARENT / "runtime" / f"scan_{task_id}.cancel"
+        cancel_file.parent.mkdir(parents=True, exist_ok=True)
+        cancel_file.write_text("1", encoding="utf-8")
+    except OSError:
+        pass
+    if worker_pid:
+        kill_process_tree(int(worker_pid))
+
+    # 看门狗兜底：3s 仍非终态则强制 cancelled
+    start_cancel_watchdog(
+        task_id=task_id,
+        get_task=lambda: _SCAN_TASKS.get(task_id),
+        lock=_SCAN_LOCK,
+        timeout_sec=3.0,
+        prune=_prune_scan_tasks,
+        log_fn=_log,
+    )
+    return {
+        "status": "cancelling",
+        "stage": stage,
+        "task_id": task_id,
+        "cancel_requested": True,
+        "killed_pid": worker_pid,
+    }
 
 
 class ScanRequest(BaseModel):
@@ -434,6 +685,8 @@ def health():
         "as_of": as_of,
         "freshness": fresh,
         "regime": reg,
+        "build_version": _BUILD_VERSION,
+        "started_at": _STARTED_AT,
     }
 
 
@@ -446,6 +699,13 @@ def overview(pool: str = "A"):
     from market_regime import data_freshness, detect_regime
     from trade_plan import build_trade_card
 
+    pool = pool.upper()
+    as_of_key = _store.max_trade_date("daily") or ""
+    # 轻量列表缓存：数据日期 + 池 不变则直接返回（本机热请求 <1s）
+    cache_key = (as_of_key, pool)
+    if _OVERVIEW_CACHE["key"] == cache_key and _OVERVIEW_CACHE["payload"] is not None:
+        return _OVERVIEW_CACHE["payload"]
+
     df = _store.load_scan_result()
     if df is None or getattr(df, "empty", True):
         as_of = _store.max_trade_date("daily") or ""
@@ -457,7 +717,7 @@ def overview(pool: str = "A"):
             regime = detect_regime(store=_store).to_dict()
         except Exception:  # noqa: BLE001
             regime = {"regime": "neutral", "label": "中性"}
-        return {
+        payload = {
             "as_of": as_of,
             "count": 0,
             "pool": pool.upper(),
@@ -466,6 +726,9 @@ def overview(pool: str = "A"):
             "regime": regime,
             "empty_reason": "暂无扫描结果，请先运行扫描",
         }
+        _OVERVIEW_CACHE["key"] = cache_key
+        _OVERVIEW_CACHE["payload"] = payload
+        return payload
 
     latest = str(df["trade_date"].iloc[0]) if "trade_date" in df.columns else ""
     # 交易日滞后（排除周末/节假日）
@@ -477,6 +740,8 @@ def overview(pool: str = "A"):
 
     items = []
     n_a = n_b = 0
+    # 第一遍：筛选池 + 统计，收集候选代码
+    pool_codes: list[str] = []
     for _, row in df.iterrows():
         code = row["ts_code"]
         reasons = str(row.get("reasons") or "")
@@ -489,7 +754,76 @@ def overview(pool: str = "A"):
             continue
         if pool.upper() == "B" and pool_tag != "B":
             continue
-        sig = _sig_for(code)
+        pool_codes.append(code)
+
+    # 信号字段：优先读 scan_result 持久化的 box_high/box_low/ma5/ma20（零计算），
+    # 缺失（老数据）才批量并行重算
+    sig_map: dict[str, dict] = {}
+    need_recalc: list[str] = []
+    for _, row in df.iterrows():
+        code = row["ts_code"]
+        reasons = str(row.get("reasons") or "")
+        pool_tag, _tier = _parse_pool_tier(reasons)
+        if pool.upper() == "A" and pool_tag != "A":
+            continue
+        if pool.upper() == "B" and pool_tag != "B":
+            continue
+        bh = row.get("box_high")
+        calculated = row.get("sig_calculated")
+        if (bh is not None and pd.notna(bh)) or calculated == 1:
+            # 已计算过：直接用持久化字段（box_high 为 NULL 但 sig_calculated=1 是无箱体，合法）
+            sig_map[code] = {
+                "box_high": float(bh) if bh is not None and pd.notna(bh) else None,
+                "box_low": float(row["box_low"]) if pd.notna(row.get("box_low")) else None,
+                "ma5": float(row["ma5"]) if pd.notna(row.get("ma5")) else None,
+                "ma20": float(row["ma20"]) if pd.notna(row.get("ma20")) else None,
+            }
+        else:
+            need_recalc.append(code)
+    if need_recalc:
+        sig_map.update(_sig_for_many(need_recalc))
+
+    # 日期窗口只算一次（distinct_dates 全表扫描较贵，避免在循环内重复）
+    kline_start = None
+    try:
+        kline_start = _store.distinct_dates("daily", limit=60)[0]
+    except Exception:  # noqa: BLE001
+        kline_start = None
+
+    # 批量加载 K 线一次（30 只 × 60 天），按 code 分组复用，避免循环内 30 次串行查库
+    kline_by_code: dict[str, list[dict]] = {}
+    if pool_codes:  # 空列表时跳过，避免 IN () 退化为全表扫描
+        try:
+            _kd = _store.load_daily(ts_codes=pool_codes, start=kline_start)
+            if not _kd.empty:
+                _kd = _kd.sort_values(["ts_code", "trade_date"])
+                for _c, _g in _kd.groupby("ts_code", sort=False):
+                    _rows = []
+                    for _, _r in _g.iterrows():
+                        _rows.append({
+                            "trade_date": str(_r["trade_date"]),
+                            "open": float(_r["open"]),
+                            "high": float(_r["high"]),
+                            "low": float(_r["low"]),
+                            "close": float(_r["close"]),
+                            "vol": float(_r["vol"]),
+                            "amount": float(_r["amount"]) if pd.notna(_r.get("amount")) else None,
+                        })
+                    kline_by_code[str(_c)] = _rows
+        except Exception:  # noqa: BLE001
+            kline_by_code = {}
+
+    # 第二遍：组装轻量条目（不再逐只串行重算信号/加载全量 K 线）
+    for _, row in df.iterrows():
+        code = row["ts_code"]
+        reasons = str(row.get("reasons") or "")
+        pool_tag, _tier = _parse_pool_tier(reasons)
+        if pool.upper() == "A" and pool_tag != "A":
+            continue
+        if pool.upper() == "B" and pool_tag != "B":
+            continue
+        tier = _tier
+        sig = sig_map.get(code) or {}
         price = None if pd.isna(row["price"]) else float(row["price"])
         card = build_trade_card(
             price=price,
@@ -522,8 +856,9 @@ def overview(pool: str = "A"):
             "tier": tier,
             "tradeable": card["tradeable"],
             "trade": card,
-            "fina": _fina_for(code, limit=1),
-            "kline": _kline_series_for(code),
+            # 总览为轻量列表：不返回 fina（财务详情走 /api/stock/{ts_code}），
+            # kline 只返回最近 60 条供迷你图，避免 30 个候选全量 K 线 + 财务拖慢响应
+            "kline": kline_by_code.get(code) or _kline_series_for(code, limit=60, start=kline_start),
             "box_high": sig.get("box_high"),
             "box_low": sig.get("box_low"),
             "ma5": sig.get("ma5"),
@@ -539,7 +874,7 @@ def overview(pool: str = "A"):
             empty_reason = f"当前 A 池为空（库内 B 池 {n_b} 只，可切换到 B 或全部）"
         elif pool.upper() == "B" and n_a > 0:
             empty_reason = f"当前 B 池为空（库内 A 池 {n_a} 只，可切换到 A 或全部）"
-    return {
+    payload = {
         "as_of": latest,
         "count": len(items),
         "pool": pool.upper(),
@@ -549,6 +884,9 @@ def overview(pool: str = "A"):
         "empty_reason": empty_reason,
         "items": items,
     }
+    _OVERVIEW_CACHE["key"] = cache_key
+    _OVERVIEW_CACHE["payload"] = payload
+    return payload
 
 
 @app.get("/api/portfolio")
@@ -605,10 +943,10 @@ def stock_detail(ts_code: str):
     fund_row = db[db["trade_date"] == latest_date] if latest_date and not db.empty else db
     fund_row = fund_row.iloc[0] if not fund_row.empty else None
 
-    # 资金流（近5日）
+    # 资金流（近5日）：只取最近 5 个交易日，修复原来累计全部历史的 bug
     mf = _store.load_moneyflow(ts_codes=[code])
     mf_rows = mf if not mf.empty else pd.DataFrame()
-    fund_net, fund_score, fund_ratio = calc_fund_flow_strength(mf_rows)
+    fund_net, fund_score, fund_ratio = calc_fund_flow_strength(mf_rows, days=5)
 
     meta = row_meta.iloc[0]
     from trade_plan import build_trade_card
@@ -667,7 +1005,7 @@ def stock_detail(ts_code: str):
             "net_wan": round(fund_net, 0),
             "score": fund_score,
             "ratio_pct": round(fund_ratio * 100, 3),
-            "days": len(mf_rows),
+            "days": 5,
         },
         "fina": fina,
         "trade": trade,
@@ -810,57 +1148,318 @@ def setup_status():
 
 # ── 策略实验室（P6：闭环优化 → 验证 → 擂台赛） ──
 _LAB_TASKS: dict[str, dict] = {}
+_LAB_LOCK = threading.Lock()
 _LAB_TASKS_MAX = 10
 
 
 class LabOptimizeRequest(BaseModel):
     strategy: str = "A"  # A: 形态入场+标杆量出场 | B: 五步抓主升+标杆量出场
-    is_start: str = "20250101"
-    is_end: str = "20251231"
-    oos_start: str = "20260101"
-    oos_end: str = "20260803"
+    # 空字符串 = 使用 research_windows 自动窗；也可手填 YYYYMMDD
+    is_start: str = ""
+    is_end: str = ""
+    oos_start: str = ""
+    oos_end: str = ""
     max_codes: int = 4500
     step: int = 5
+    # grid=网格搜索 | single=单组人工试跑
+    mode: str = "grid"
+    # 自定义网格（键 → 取值列表）；空则用 config.GRID_BENCH
+    grid: dict | None = None
+    # 单组参数（mode=single 时必填）
+    vol_ratio_min: float | None = None
+    strong_reset: int | None = None
+    exit_window: int | None = None
+    stop_pct: float | None = None
 
 
 def _lab_running() -> str | None:
     for tid, t in _LAB_TASKS.items():
-        if t.get("status") in ("running", "pending"):
+        if t.get("status") in ("running", "pending", "cancelling"):
             return tid
     return None
 
 
-def _run_lab_worker(task_id: str, req: LabOptimizeRequest) -> None:
+def _resolve_lab_windows(req: LabOptimizeRequest) -> dict:
+    """解析 Lab 窗口：缺省走数据驱动 plan。"""
+    from research_windows import recommend_research_plan
+
+    plan = recommend_research_plan()
+    use_auto = not (req.is_start and req.is_end and req.oos_start and req.oos_end)
+    if use_auto:
+        return {
+            "is_start": plan.is_start,
+            "is_end": plan.is_end,
+            "oos_start": plan.oos_start,
+            "oos_end": plan.oos_end,
+            "mode": plan.mode,
+            "can_claim_edge": plan.can_claim_edge,
+            "label": plan.label,
+            "notes": plan.notes,
+            "n_dates": plan.n_dates,
+        }
+    return {
+        "is_start": req.is_start,
+        "is_end": req.is_end,
+        "oos_start": req.oos_start,
+        "oos_end": req.oos_end,
+        "mode": "manual",
+        "can_claim_edge": False,
+        "label": "手动窗口",
+        "notes": ["手动指定窗口，请自行确认无未来函数与覆盖充足"],
+        "n_dates": plan.n_dates,
+    }
+
+
+def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> None:
+    from scan_runtime import clamp_progress, force_terminal, is_terminal
     from walkforward import run_is_oos  # 延迟导入避免启动耦合
 
     def prog(msg: str, pct: int) -> None:
         t = _LAB_TASKS.get(task_id)
-        if t:
-            t["progress"] = pct
-            t["message"] = msg
+        if not t:
+            return
+        if t.get("status") == "cancelled" or t.get("cancel_requested"):
+            raise RuntimeError("用户取消")
+        t["progress"] = clamp_progress(pct)
+        t["message"] = msg
 
     try:
         t = _LAB_TASKS.get(task_id)
         if t:
+            if t.get("status") == "cancelled" or t.get("cancel_requested"):
+                return
             t["status"] = "running"
-        r = run_is_oos(strategy=req.strategy, step=req.step, max_codes=req.max_codes,
-                       top_n=3, progress_cb=prog,
-                       is_start=req.is_start, is_end=req.is_end,
-                       oos_start=req.oos_start, oos_end=req.oos_end)
+            t["windows"] = windows
+        if windows.get("mode") == "insufficient":
+            raise RuntimeError(
+                "日线覆盖不足，无法优化。请更新 TUSHARE_TOKEN 后执行 python sync_history.py"
+            )
+        # 采样上限硬封顶，防 OOM
+        max_codes = max(20, min(int(req.max_codes or 200), 4500))
+        step = max(1, min(int(req.step or 10), 60))
+        single = None
+        grid = req.grid
+        if (req.mode or "grid").lower() == "single":
+            if None in (req.vol_ratio_min, req.strong_reset, req.exit_window, req.stop_pct):
+                raise RuntimeError("单组试跑需要填写：量比 / 清零 / 出场窗 / 止损")
+            single = {
+                "vol_ratio_min": float(req.vol_ratio_min),
+                "strong_reset": int(req.strong_reset),
+                "exit_window": int(req.exit_window),
+                "stop_pct": float(req.stop_pct),
+            }
+            grid = None
+        elif grid:
+            allowed = ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
+            clean = {}
+            for k in allowed:
+                vals = grid.get(k) if isinstance(grid, dict) else None
+                if isinstance(vals, list) and vals:
+                    # 每档最多 8 个值，防组合爆炸
+                    clean[k] = list(vals)[:8]
+            grid = clean or None
+            if grid:
+                n = 1
+                for v in grid.values():
+                    n *= max(1, len(v))
+                if n > 120:
+                    raise RuntimeError(f"网格组合过多({n}>120)，请减少勾选档位")
+
+        r = run_is_oos(
+            strategy=req.strategy,
+            step=step,
+            max_codes=max_codes,
+            top_n=3,
+            progress_cb=prog,
+            is_start=windows["is_start"],
+            is_end=windows["is_end"],
+            oos_start=windows["oos_start"],
+            oos_end=windows["oos_end"],
+            grid=grid,
+            single=single,
+        )
         t = _LAB_TASKS.get(task_id)
+        if t and (t.get("status") == "cancelled" or t.get("cancel_requested")):
+            return
         if t:
+            is_all = r["is"].to_dict("records") if not r["is"].empty else []
             t["status"] = "done"
+            t["progress"] = 100
             t["result"] = {
-                "is_top": r["is"].head(8).to_dict("records") if not r["is"].empty else [],
+                "is_top": is_all[:12],
+                "is_all": is_all[:40],
                 "oos": r["oos"].to_dict("records") if not r["oos"].empty else [],
                 "msg": r.get("msg"),
+                "run_mode": r.get("mode") or req.mode,
+                "research_mode": windows.get("mode"),
+                "can_claim_edge": windows.get("can_claim_edge"),
+                "params_used": single or grid,
+                "windows": {
+                    k: windows[k]
+                    for k in ("is_start", "is_end", "oos_start", "oos_end", "mode", "label")
+                },
             }
             t["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    except RuntimeError as e:
+        t = _LAB_TASKS.get(task_id)
+        if t and ("取消" in str(e) or t.get("cancel_requested")):
+            force_terminal(t, "cancelled", stage="已取消", msg=str(e)[:120])
+            return
+        if t:
+            force_terminal(t, "error", stage="失败", error=str(e)[:500], msg=str(e)[:120])
     except Exception as e:  # noqa: BLE001
         t = _LAB_TASKS.get(task_id)
         if t:
-            t["status"] = "error"
-            t["error"] = str(e)[:500]
+            if t.get("cancel_requested"):
+                force_terminal(t, "cancelled", stage="已取消", msg=str(e)[:120])
+            else:
+                force_terminal(t, "error", stage="失败", error=str(e)[:500], msg=str(e)[:120])
+    finally:
+        t = _LAB_TASKS.get(task_id)
+        if t is not None and not is_terminal(t.get("status")):
+            if t.get("cancel_requested"):
+                force_terminal(t, "cancelled", stage="已取消", msg="lab finally 收口")
+            else:
+                force_terminal(t, "error", stage="异常退出", error="lab worker non-terminal", msg="lab finally")
+
+
+@app.get("/api/lab/research-status")
+def lab_research_status(probe_token: bool = False):
+    """研究就绪：日线深度、推荐窗、是否可声称 edge。默认不探 Token（避免拖慢 UI）。"""
+    from research_windows import research_status_dict
+
+    return research_status_dict(probe_token=probe_token)
+
+
+@app.get("/api/lab/catalog")
+def lab_catalog():
+    """方案说明 + 默认可调参数 + 网格选项（前端研究台用）。"""
+    from config import (
+        BENCH_EXIT_WINDOW,
+        BENCH_MAX_HOLD_DAYS,
+        BENCH_STOP_PCT,
+        BENCH_STRONG_RESET,
+        BENCH_VOL_RATIO_MIN,
+        BOX_MAX_AMP,
+        BOX_MAX_DAYS,
+        BOX_MIN_DAYS,
+        BREAKOUT_VOL_RATIO,
+        GRID_BENCH,
+        PLAN_B_CHG_MIN,
+        PLAN_B_CROSS_LOOKBACK,
+        PLAN_B_MIN_BUILD_DAYS,
+        PLAN_B_REATTACK_RATIO,
+    )
+    from optimizer import grid_combos
+
+    param_docs = [
+        {
+            "key": "vol_ratio_min",
+            "name": "建仓量比门槛",
+            "unit": "倍",
+            "meaning": "当日量 / 近5日均量 ≥ 此值 且收阳，才记为建仓放量日。越高越严，信号更少。",
+            "affects": "A/B 共用（B 还影响建仓序列识别档位）",
+            "default": BENCH_VOL_RATIO_MIN,
+            "options": list(GRID_BENCH["vol_ratio_min"]),
+            "range_hint": "1.2 ~ 2.0",
+        },
+        {
+            "key": "strong_reset",
+            "name": "强势日清零根数",
+            "unit": "根",
+            "meaning": "持仓期量<标杆的连续强势日达到此数，出货计数清零（洗盘后可重新计）。",
+            "affects": "出场（标杆量）",
+            "default": BENCH_STRONG_RESET,
+            "options": list(GRID_BENCH["strong_reset"]),
+            "range_hint": "2 ~ 5",
+        },
+        {
+            "key": "exit_window",
+            "name": "二次出货窗口",
+            "unit": "交易日",
+            "meaning": "窗口内累计 2 次「量≥标杆」出货预警则清仓；超时未达则按规则重计/强平。",
+            "affects": "出场（标杆量）",
+            "default": BENCH_EXIT_WINDOW,
+            "options": list(GRID_BENCH["exit_window"]),
+            "range_hint": "5 ~ 20",
+        },
+        {
+            "key": "stop_pct",
+            "name": "兜底止损",
+            "unit": "比例",
+            "meaning": "相对入场价最大回撤；触及则优先止损，压过标杆量出场。0.07 = -7%。",
+            "affects": "出场（风控）",
+            "default": BENCH_STOP_PCT,
+            "options": list(GRID_BENCH["stop_pct"]),
+            "range_hint": "0.04 ~ 0.12",
+        },
+    ]
+
+    strategies = {
+        "A": {
+            "id": "A",
+            "name": "形态突破 + 标杆量出场",
+            "tagline": "横盘吸筹平台 → 放量突破上沿 → 标杆量管出场",
+            "entry_title": "入场（固定规则，网格不改）",
+            "entry_steps": [
+                f"箱体横盘 {BOX_MIN_DAYS}~{BOX_MAX_DAYS} 交易日（约 1~6 个月）",
+                f"稳健振幅 ≤ {BOX_MAX_AMP:.0%}，支撑/压力多次触及，拒绝单边通道",
+                f"近 5 日收盘有效突破阻力 + 放量 ≥ {BREAKOUT_VOL_RATIO}× 箱体均量",
+                "涨幅适中、站稳、均线多头（收盘>MA20 且 MA5>MA20）",
+                "位置约束：避免下跌中继低位假平台",
+            ],
+            "exit_title": "出场（网格可调 · 标杆量四象限）",
+            "exit_steps": [
+                "锁定标杆量：建仓放量序列内倒数第 2 根放量柱的量能",
+                "量<标杆且阳 → 拉升(持有)；量<标杆且阴 → 洗盘(持有)",
+                "量≥标杆 → 出货预警；窗口内累计 2 次 → 清仓",
+                f"连续 {BENCH_STRONG_RESET} 根强势日可清零出货计数（参数可调）",
+                f"止损 {BENCH_STOP_PCT:.0%} / 最长持有 {BENCH_MAX_HOLD_DAYS} 日强平",
+            ],
+            "fixed_note": "入场形态阈值在 config/signals，实验室网格只扫出场相关参数。",
+        },
+        "B": {
+            "id": "B",
+            "name": "五步抓主升 + 标杆量出场",
+            "tagline": "金叉定趋势 → 建仓辨强弱 → 破五再进攻 → 同套标杆量出场",
+            "entry_title": "入场（方案 B · 部分受量比档影响）",
+            "entry_steps": [
+                f"近 {PLAN_B_CROSS_LOOKBACK} 日发生过 MA5 上穿 MA10（金叉），且收盘 > MA20",
+                f"信号日前存在已终止建仓序列，放量柱 ≥ {PLAN_B_MIN_BUILD_DAYS} 根",
+                f"破五：当日量 ≥ 标杆量 × {PLAN_B_REATTACK_RATIO}，涨幅 ≥ {PLAN_B_CHG_MIN:.0%}",
+                "建仓量比门槛 vol_ratio_min 参与网格（影响建仓识别松紧）",
+            ],
+            "exit_title": "出场（与 A 相同标杆量体系，可对照）",
+            "exit_steps": [
+                "同一套：标杆量锁定 → 四象限持有/出货 → 二次出货清仓",
+                "同一套：强势清零 / 止损 / 最长持有强平",
+                "便于 A/B 对照：只换入场，出场口径一致",
+            ],
+            "fixed_note": "B 的入场对 vol_ratio_min 敏感；其余出场参数与 A 同网格。",
+        },
+    }
+
+    n_default = len(grid_combos("A"))
+    return {
+        "strategies": strategies,
+        "params": param_docs,
+        "grid_default": GRID_BENCH,
+        "grid_combo_count": n_default,
+        "defaults": {
+            "vol_ratio_min": BENCH_VOL_RATIO_MIN,
+            "strong_reset": BENCH_STRONG_RESET,
+            "exit_window": BENCH_EXIT_WINDOW,
+            "stop_pct": BENCH_STOP_PCT,
+            "max_hold_days": BENCH_MAX_HOLD_DAYS,
+        },
+        "pipeline": [
+            {"id": "is", "name": "样本内 IS", "desc": "只在 IS 窗网格/试跑，按 PF 排序"},
+            {"id": "filter", "name": "过滤", "desc": "胜率≥30% 且 最大回撤≤25%（网格模式）"},
+            {"id": "oos", "name": "样本外 OOS", "desc": "Top 组合到 OOS 窗一次性验证，不再调参"},
+            {"id": "arena", "name": "擂台", "desc": "CLI pipeline_seed 写入 active/candidate"},
+        ],
+        "disclaimer": "研究辅助，不是投资建议。可调参数只影响历史回放统计，不直接下单。",
+    }
 
 
 @app.post("/api/lab/optimize")
@@ -872,17 +1471,35 @@ def lab_optimize(req: LabOptimizeRequest):
     lab_run = _lab_running()
     if lab_run:
         raise HTTPException(status_code=409, detail=f"已有优化任务进行中（{lab_run}）")
+    windows = _resolve_lab_windows(req)
+    if windows.get("mode") == "insufficient":
+        raise HTTPException(
+            status_code=400,
+            detail="日线覆盖不足，无法启动优化。请更新 Token 后 python sync_history.py",
+        )
     if len(_LAB_TASKS) > _LAB_TASKS_MAX:
-        for tid in [k for k, v in _LAB_TASKS.items() if v.get("status") in ("done", "error")]:
+        for tid in [k for k, v in _LAB_TASKS.items() if v.get("status") in ("done", "error", "cancelled")]:
             _LAB_TASKS.pop(tid, None)
             if len(_LAB_TASKS) <= _LAB_TASKS_MAX:
                 break
     task_id = uuid.uuid4().hex[:12]
-    _LAB_TASKS[task_id] = {"status": "pending", "progress": 0, "message": "排队中",
-                           "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                           "strategy": req.strategy}
-    threading.Thread(target=_run_lab_worker, args=(task_id, req), daemon=True).start()
-    return {"status": "started", "task_id": task_id, "strategy": req.strategy}
+    _LAB_TASKS[task_id] = {
+        "status": "pending",
+        "progress": 0,
+        "message": f"排队中 · {windows.get('label', '')}",
+        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "strategy": req.strategy,
+        "windows": windows,
+    }
+    threading.Thread(target=_run_lab_worker, args=(task_id, req, windows), daemon=True).start()
+    return {
+        "status": "started",
+        "task_id": task_id,
+        "strategy": req.strategy,
+        "research_mode": windows.get("mode"),
+        "can_claim_edge": windows.get("can_claim_edge"),
+        "windows": windows,
+    }
 
 
 @app.get("/api/lab/status")
@@ -896,6 +1513,32 @@ def lab_status(task_id: str | None = None):
         return {"task_id": None, "status": "idle"}
     latest = max(_LAB_TASKS.values(), key=lambda t: t.get("started_at") or "")
     return {"task_id": next(k for k, v in _LAB_TASKS.items() if v is latest), **latest}
+
+
+@app.post("/api/lab/{task_id}/cancel")
+def lab_cancel(task_id: str):
+    """取消正在运行的优化任务。"""
+    from scan_runtime import is_terminal, start_cancel_watchdog
+
+    with _LAB_LOCK:
+        t = _LAB_TASKS.get(task_id)
+        if not t:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        if is_terminal(t.get("status")):
+            return {"status": t["status"], "msg": "任务已结束，无需取消", "task_id": task_id}
+        t["cancel_requested"] = True
+        t["status"] = "cancelling"
+        t["message"] = "取消中…"
+    # lab 靠 prog 检查 cancel_requested；卡死时看门狗强制 cancelled
+    start_cancel_watchdog(
+        task_id=task_id,
+        get_task=lambda: _LAB_TASKS.get(task_id),
+        lock=_LAB_LOCK,
+        timeout_sec=15.0,
+        prune=None,
+        log_fn=lambda task, msg: task.__setitem__("message", (msg or "")[:200]),
+    )
+    return {"status": "cancelling", "task_id": task_id, "msg": "取消请求已发送"}
 
 
 @app.get("/api/lab/leaderboard")
