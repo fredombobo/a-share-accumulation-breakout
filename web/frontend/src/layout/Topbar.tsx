@@ -3,6 +3,9 @@ import { useLocation, useNavigate } from 'react-router'
 import { useTheme } from '../theme/ThemeContext'
 
 function pageMeta(pathname: string): { title: string; sub: string } {
+  if (pathname.startsWith('/paper')) {
+    return { title: '纸面交易', sub: '仿真撮合 · 持仓 · 对账 · 不下单' }
+  }
   if (pathname.startsWith('/lab')) {
     return { title: '策略实验室', sub: '参数研究 · IS / OOS / 擂台 · 非下单' }
   }

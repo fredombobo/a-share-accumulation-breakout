@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -80,15 +80,11 @@ def refresh_trade_cal(
     source = "local_infer"
     try:
         if store is not None:
-            pro = store._pro  # type: ignore[attr-defined]
+            pro_client = store._pro  # type: ignore[attr-defined]
         else:
-            import sys
-
-            from local_store import LocalStore
-            from tushare_http import pro  # noqa: F401
-
-            LocalStore  # noqa: B018  # 确保依赖可用
-        cal = pro.trade_cal(
+            from tushare_http import pro as _pro
+            pro_client = _pro
+        cal = pro_client.trade_cal(
             exchange="", start_date=start_d.strftime("%Y%m%d"),
             end_date=end_d.strftime("%Y%m%d"), fields="cal_date,is_open",
         )

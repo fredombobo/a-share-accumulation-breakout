@@ -55,7 +55,7 @@ _stmt("""CREATE TABLE IF NOT EXISTS pt_order (
   side TEXT NOT NULL CHECK (side IN ('BUY','SELL')),
   qty INTEGER NOT NULL CHECK (qty > 0),
   state TEXT NOT NULL CHECK (state IN ('DRAFT','CONFIRMED','QUEUED','FILLED',
-        'PARTIALLY_FILLED_EXPIRED','EXPIRED','REJECTED')),
+        'PARTIALLY_FILLED_EXPIRED','EXPIRED','REJECTED','CANCELLED')),
   reserve_fen INTEGER NOT NULL DEFAULT 0 CHECK (reserve_fen >= 0),
   reject_reason TEXT,
   created_at TEXT NOT NULL,

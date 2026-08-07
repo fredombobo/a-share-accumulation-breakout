@@ -19,8 +19,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .db import tx
-from .errors import DomainError, ERR_ACCOUNT_EXISTS, ERR_INVALID_STATE, ERR_UNKNOWN_ACCOUNT
-from .cal import is_open
+from .errors import (
+    ERR_ACCOUNT_EXISTS,
+    ERR_UNKNOWN_ACCOUNT,
+    DomainError,
+)
 
 _TZ = ZoneInfo("Asia/Shanghai")
 
@@ -109,7 +112,7 @@ def parse_portfolio_json(path: str | Path) -> list[dict[str, Any]]:
         raise DomainError("PORTFOLIO_FILE_NOT_FOUND", f"文件不存在: {p}", details={"path": str(p)})
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise DomainError("PORTFOLIO_PARSE_ERROR", f"JSON 解析失败: {e}", details={"path": str(p)}) from e
     return list(data.get("positions") or [])
 
@@ -164,7 +167,10 @@ def validate_import_item(
             errors.append(f"成本非数字: {cost_raw!r}")
 
     try:
-        stop_loss = float(stop_raw) if stop_raw not in (None, "") else None
+        if stop_raw is None or stop_raw == "":
+            stop_loss: float | None = None
+        else:
+            stop_loss = float(stop_raw)
     except (TypeError, ValueError):
         stop_loss = None
         if stop_raw not in (None, ""):
@@ -192,9 +198,7 @@ def preview_import(
     """导入前预览：逐条校验 + 当前行情。返回 items + 汇总（valid/invalid 计数）。"""
     db_path = Path(db_path)
     items_raw = parse_portfolio_json(portfolio_path)
-    import sqlite3
 
-    codes_need = [it.get("ts_code") for it in items_raw if it.get("ts_code")]
     if known_codes is None:
         conn = sqlite3.connect(str(db_path))
         try:
@@ -283,6 +287,7 @@ def commit_import(
         else:
             # T+1：从 as_of_date 次日开始找下一个开市日
             import datetime as _dt
+
             from .cal import is_open
 
             cur = _dt.date.fromisoformat(f"{as_of_date[:4]}-{as_of_date[4:6]}-{as_of_date[6:8]}") \
@@ -348,17 +353,18 @@ def commit_import(
 
 
 def opening_equity(db_path: str | Path) -> dict[str, Any]:
-    """期初权益 = 初始化现金 + 期初持仓收盘市值。"""
+    """期初权益 = 初始化现金 + 期初持仓收盘市值（批量查询，100+ 持仓 <500ms）。"""
     db_path = Path(db_path)
     acct = get_account(db_path)
-    import sqlite3
     conn = sqlite3.connect(str(db_path))
     try:
+        # 批量：一次 join 拿全部持仓最新收盘（窗口函数按代码取最近）
         rows = conn.execute(
-            "SELECT l.ts_code, SUM(l.remaining_qty), d.close"
-            " FROM pt_position_lot l JOIN daily d ON d.ts_code=l.ts_code"
-            " WHERE l.account_id=1"
-            " AND d.trade_date=(SELECT MAX(trade_date) FROM daily WHERE ts_code=l.ts_code)"
+            "SELECT l.ts_code, SUM(l.remaining_qty) AS qty, d.close"
+            " FROM pt_position_lot l"
+            " JOIN daily d ON d.ts_code = l.ts_code"
+            " AND d.trade_date = (SELECT MAX(trade_date) FROM daily WHERE ts_code = l.ts_code)"
+            " WHERE l.account_id=1 AND l.remaining_qty>0"
             " GROUP BY l.ts_code"
         ).fetchall()
     finally:

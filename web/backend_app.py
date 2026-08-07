@@ -18,7 +18,6 @@ from __future__ import annotations
 import os
 import sys
 import threading
-import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,23 +32,19 @@ for _p in (str(_BASE), str(_PARENT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import pandas as pd  # noqa: E402
-from fastapi import FastAPI, HTTPException  # noqa: E402
-from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse  # noqa: E402
-from fastapi.staticfiles import StaticFiles  # noqa: E402
-from pydantic import BaseModel  # noqa: E402
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from local_store import LocalStore, sync_fina_for_codes  # noqa: E402
-from scoring import (  # noqa: E402
+from build_version import build_version as _compute_build_version
+from local_store import LocalStore
+from scoring import (
     calc_fund_flow_strength,
-    fundamental_filter_passes,
-    is_delisted_name,
-    is_st_name,
 )
-from signals import detect_accumulation_breakout  # noqa: E402
-
-from build_version import build_version as _compute_build_version  # noqa: E402
+from signals import detect_accumulation_breakout
 
 # 后端构建版本与启动时间：启动器据此检测「源码或前端产物更新」并自动重启
 _BUILD_VERSION = _compute_build_version()
@@ -574,7 +569,12 @@ def scan_status(task_id: str | None = None):
 
 @app.post("/api/scan/{task_id}/cancel")
 def cancel_scan(task_id: str):
-    from scan_runtime import is_terminal, kill_process_tree, request_cancel, start_cancel_watchdog
+    from scan_runtime import (
+        is_terminal,
+        kill_process_tree,
+        request_cancel,
+        start_cancel_watchdog,
+    )
 
     worker_pid = None
     with _SCAN_LOCK:
@@ -891,7 +891,7 @@ def overview(pool: str = "A"):
 
 @app.get("/api/portfolio")
 def get_portfolio():
-    from portfolio import load_portfolio, check_stops
+    from portfolio import check_stops, load_portfolio
     data = load_portfolio()
     # 最新价
     prices = {}
@@ -907,7 +907,7 @@ def get_portfolio():
 
 @app.post("/api/portfolio")
 def post_portfolio(body: dict):
-    from portfolio import upsert_position, remove_position, load_portfolio
+    from portfolio import remove_position, upsert_position
     action = body.get("action", "upsert")
     code = body.get("ts_code") or body.get("code")
     if not code:
@@ -965,7 +965,7 @@ def paper_create_account(body: dict):
 def paper_dashboard():
     """账户摘要 + 持仓 + 期初权益 + 风险状态。"""
     from paper_trading.account import get_account, opening_equity
-    from paper_trading.errors import DomainError, ERR_UNKNOWN_ACCOUNT
+    from paper_trading.errors import ERR_UNKNOWN_ACCOUNT, DomainError
 
     try:
         acct = get_account(_DB)
@@ -1028,6 +1028,168 @@ def paper_gates_status():
     }
 
 
+@app.get("/api/paper/orders")
+def paper_orders(state: str | None = None, ts_code: str | None = None, limit: int = 50):
+    """查询订单：按状态/标的过滤。"""
+    from paper_trading.orders import list_orders
+
+    try:
+        return {"orders": list_orders(_DB, state=state, ts_code=ts_code, limit=limit)}
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/orders/drafts")
+def paper_create_draft(body: dict):
+    """创建草稿：{side:'BUY', ts_code, trade_date, suggested_pos_pct?, qty?} 或 {side:'SELL', ts_code, qty}。"""
+    from paper_trading.orders import create_buy_draft, create_sell_draft
+
+    try:
+        side = (body.get("side") or "BUY").upper()
+        if side == "BUY":
+            return create_buy_draft(
+                _DB, ts_code=body["ts_code"], trade_date=body.get("trade_date")
+                or datetime.now().strftime("%Y%m%d"),
+                suggested_pos_pct=body.get("suggested_pos_pct"),
+                input_hash=body.get("input_hash") or "",
+                qty=body.get("qty"),
+            )
+        return create_sell_draft(_DB, ts_code=body["ts_code"], qty=int(body["qty"]))
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/orders/{order_id}/confirm")
+def paper_confirm_order(order_id: str):
+    """确认订单：预交易检查 + 预留资产。"""
+    from paper_trading.orders import confirm_order
+
+    try:
+        return confirm_order(_DB, order_id)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/orders/{order_id}/cancel")
+def paper_cancel_order(order_id: str):
+    """取消订单：释放预留。"""
+    from paper_trading.orders import cancel_order
+
+    try:
+        return cancel_order(_DB, order_id)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.get("/api/paper/positions")
+def paper_positions():
+    """持仓汇总。"""
+    from paper_trading.settlement import get_positions
+
+    try:
+        return {"positions": get_positions(_DB)}
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/cycles/run")
+def paper_run_cycle(body: dict):
+    """手动补跑日结：{trade_date}。幂等（同日期已 DONE 返回原结果）。"""
+    from paper_trading.settlement import run_settlement
+
+    try:
+        trade_date = body.get("trade_date") or datetime.now().strftime("%Y%m%d")
+        return run_settlement(_DB, trade_date)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.get("/api/paper/cycles/{trade_date}")
+def paper_cycle_status(trade_date: str):
+    """查看日结状态。"""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(_DB))
+        row = conn.execute(
+            "SELECT cycle_id, run_date, phase, retry_count, data_version,"
+            " started_at, finished_at FROM pt_cycle WHERE run_date=?",
+            (trade_date,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return {"trade_date": trade_date, "phase": None, "blocked_reason": "未运行"}
+        return {"trade_date": trade_date, "phase": row[2], "cycle_id": row[0],
+                "retry_count": row[3], "data_version": row[4], "started_at": row[5],
+                "finished_at": row[6]}
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/reconciliation/run")
+def paper_run_reconciliation(body: dict):
+    """独立重跑对账。"""
+    from paper_trading.settlement import run_reconciliation
+
+    try:
+        trade_date = body.get("trade_date") or datetime.now().strftime("%Y%m%d")
+        return run_reconciliation(_DB, trade_date)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.get("/api/paper/reconciliation")
+def paper_reconciliation(trade_date: str | None = None):
+    """查询对账记录及差异。"""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(_DB))
+        if trade_date:
+            rows = conn.execute(
+                "SELECT rec_id, run_date, result, diff_json, severity, status, checked_at"
+                " FROM pt_reconciliation WHERE run_date=? ORDER BY rec_id DESC LIMIT 20",
+                (trade_date,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT rec_id, run_date, result, diff_json, severity, status, checked_at"
+                " FROM pt_reconciliation ORDER BY rec_id DESC LIMIT 20"
+            ).fetchall()
+        conn.close()
+        return {"items": [
+            {"rec_id": r[0], "run_date": r[1], "result": r[2], "diff_json": r[3],
+             "severity": r[4], "status": r[5], "checked_at": r[6]}
+            for r in rows
+        ]}
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.get("/api/paper/fills")
+def paper_fills(limit: int = 50):
+    """查询成交记录。"""
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(str(_DB))
+        rows = conn.execute(
+            "SELECT fill_id, order_id, ref_open_price_micro, fill_price_micro, qty,"
+            " commission_fen, tax_fen, fill_model_version, quote_revision, filled_at"
+            " FROM pt_fill ORDER BY filled_at DESC LIMIT ?", (limit,),
+        ).fetchall()
+        conn.close()
+        return {"fills": [
+            {"fill_id": r[0], "order_id": r[1], "ref_open_price_micro": r[2],
+             "fill_price_micro": r[3], "qty": r[4], "commission_fen": r[5],
+             "tax_fen": r[6], "fill_model_version": r[7], "quote_revision": r[8],
+             "filled_at": r[9]}
+            for r in rows
+        ]}
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
 @app.get("/api/stock/{ts_code}")
 def stock_detail(ts_code: str):
     """个股详情：K线/信号/资金流/基本面/财报"""
@@ -1053,8 +1215,8 @@ def stock_detail(ts_code: str):
     fund_net, fund_score, fund_ratio = calc_fund_flow_strength(mf_rows, days=5)
 
     meta = row_meta.iloc[0]
-    from trade_plan import build_trade_card
     from market_regime import detect_regime
+    from trade_plan import build_trade_card
     try:
         reg = detect_regime(store=_store).regime
     except Exception:  # noqa: BLE001
@@ -1346,11 +1508,17 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
         if (req.mode or "grid").lower() == "single":
             if None in (req.vol_ratio_min, req.strong_reset, req.exit_window, req.stop_pct):
                 raise RuntimeError("单组试跑需要填写：量比 / 清零 / 出场窗 / 止损")
+            v_ratio = req.vol_ratio_min
+            s_reset = req.strong_reset
+            e_window = req.exit_window
+            s_pct = req.stop_pct
+            if v_ratio is None or s_reset is None or e_window is None or s_pct is None:
+                raise RuntimeError("单组试跑参数不完整")
             single = {
-                "vol_ratio_min": float(req.vol_ratio_min),
-                "strong_reset": int(req.strong_reset),
-                "exit_window": int(req.exit_window),
-                "stop_pct": float(req.stop_pct),
+                "vol_ratio_min": float(v_ratio),
+                "strong_reset": int(s_reset),
+                "exit_window": int(e_window),
+                "stop_pct": float(s_pct),
             }
             grid = None
         elif grid:
@@ -1648,7 +1816,6 @@ def lab_cancel(task_id: str):
 @app.get("/api/lab/leaderboard")
 def lab_leaderboard(kind: str = "IS", strategy: str = "A", limit: int = 20):
     """参数排行榜（param_eval 表或最近一次优化结果）。"""
-    import pandas as pd
     from local_store import LocalStore
 
     st = LocalStore()
@@ -1735,6 +1902,53 @@ if _HAS_DIST:
         if candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(_DIST / "index.html")
+
+
+# ── 自动日终调度器（阶段5）：交易日 16:15 后轮询，每账户/交易日最多成功一次 ──
+
+def _auto_settle_loop() -> None:
+    """后台线程：每日 16:15 后尝试对最近已完成交易日执行日结；幂等（已 DONE 跳过）。"""
+    import time as _t
+    from zoneinfo import ZoneInfo as _ZI
+
+    tz = _ZI("Asia/Shanghai")
+    while True:
+        try:
+            now = datetime.now(tz)
+            # 交易日且已过 16:15
+            if now.hour > 16 or (now.hour == 16 and now.minute >= 15):
+                from paper_trading.cal import is_open as _cal_is_open
+                from paper_trading.settlement import run_settlement
+
+                today = now.strftime("%Y%m%d")
+                try:
+                    if _cal_is_open(_DB, today):
+                        # 最近已收盘交易日 = 今天的前一交易日（今天 16:15 后撮合的是今早确认的单）
+                        import sqlite3 as _sq
+                        conn = _sq.connect(str(_DB))
+                        row = conn.execute(
+                            "SELECT trade_date FROM pt_cycle WHERE phase='DONE'"
+                            " ORDER BY trade_date DESC LIMIT 1"
+                        ).fetchone()
+                        conn.close()
+                        last_done = row[0] if row else None
+                        target = today
+                        if last_done and last_done >= target:
+                            pass  # 已日结，跳过
+                        else:
+                            try:
+                                run_settlement(_DB, target)
+                            except Exception:  # noqa: BLE001
+                                pass  # 数据未就绪则下次轮询重试
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        _t.sleep(60)  # 每分钟轮询
+
+
+if os.environ.get("PAPER_TRADING_ENABLED", "true").lower() != "false":
+    threading.Thread(target=_auto_settle_loop, daemon=True, name="paper-auto-settle").start()
 
 
 if __name__ == "__main__":

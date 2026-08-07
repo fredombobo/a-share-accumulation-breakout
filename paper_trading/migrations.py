@@ -12,9 +12,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable
 from zoneinfo import ZoneInfo
 
 from .db import tx
@@ -146,6 +146,54 @@ def mig_paper_tables(conn: sqlite3.Connection) -> None:
         conn.execute(sql)
 
 
+# ── M005：pt_order 状态机补 CANCELLED（SQLite 无法 ALTER CHECK，重建表） ──
+
+_PT_ORDER_NEW_DDL = (
+    "CREATE TABLE pt_order_new ("
+    " order_id TEXT PRIMARY KEY,"
+    " idempotency_key TEXT NOT NULL UNIQUE,"
+    " account_id INTEGER NOT NULL REFERENCES pt_account(account_id),"
+    " source TEXT NOT NULL,"
+    " ts_code TEXT NOT NULL,"
+    " side TEXT NOT NULL CHECK (side IN ('BUY','SELL')),"
+    " qty INTEGER NOT NULL CHECK (qty > 0),"
+    " state TEXT NOT NULL CHECK (state IN ('DRAFT','CONFIRMED','QUEUED','FILLED',"
+    "   'PARTIALLY_FILLED_EXPIRED','EXPIRED','REJECTED','CANCELLED')),"
+    " reserve_fen INTEGER NOT NULL DEFAULT 0 CHECK (reserve_fen >= 0),"
+    " reject_reason TEXT,"
+    " created_at TEXT NOT NULL,"
+    " updated_at TEXT NOT NULL"
+    ")"
+)
+
+
+def mig_order_cancelled_state(conn: sqlite3.Connection) -> None:
+    """M005：pt_order 状态机加入 CANCELLED（重建表保留数据）。"""
+    if not _table_exists(conn, "pt_order"):
+        return
+    # 检查现有 CHECK 是否已含 CANCELLED（幂等）
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='pt_order'"
+    ).fetchone()
+    if sql and "CANCELLED" in (sql[0] or ""):
+        return
+    # 重建：拷贝数据 → drop 旧表 → 建新表
+    conn.execute("PRAGMA foreign_keys=OFF")
+    conn.execute(_PT_ORDER_NEW_DDL)
+    conn.execute(
+        "INSERT INTO pt_order_new (order_id, idempotency_key, account_id, source,"
+        " ts_code, side, qty, state, reserve_fen, reject_reason, created_at, updated_at)"
+        " SELECT order_id, idempotency_key, account_id, source, ts_code, side, qty,"
+        " state, reserve_fen, reject_reason, created_at, updated_at FROM pt_order"
+    )
+    conn.execute("DROP TABLE pt_order")
+    conn.execute("ALTER TABLE pt_order_new RENAME TO pt_order")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pt_order_acct ON pt_order(account_id, state)"
+    )
+    conn.execute("PRAGMA foreign_keys=ON")
+
+
 # ── 迁移注册表（版本单调递增，禁止重排/删除已发布版本） ──
 
 MIGRATIONS: list[tuple[int, str, MigrationFn]] = [
@@ -153,6 +201,7 @@ MIGRATIONS: list[tuple[int, str, MigrationFn]] = [
     (2, "M002_trade_cal", mig_trade_cal),
     (3, "M003_instrument_rules", mig_instrument_rules),
     (4, "M004_paper_tables", mig_paper_tables),
+    (5, "M005_order_cancelled_state", mig_order_cancelled_state),
 ]
 
 

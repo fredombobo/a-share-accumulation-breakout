@@ -1,0 +1,13 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+
+[tool.ruff.lint]
+# 选择性忽略（项目既有代码风格约定）：
+#   DTZ005/DTZ007 — 历史代码 datetime.now() 无显式时区（paper_trading 内已统一 Asia/Shanghai）
+#   S110          — try/except/pass 用于容错降级（如缓存/日历兜底），显式记录风险
+#   RUF046        — int() 包已有 int 的冗余（SQLite 数值列）——保持显式，可读性优先
+#   PLR0124       — x != x 用于 NaN 判断（成本校验）
+ignore = [
+    "DTZ005", "DTZ007", "S110", "RUF046", "PLR0124", "ISC004",
+]

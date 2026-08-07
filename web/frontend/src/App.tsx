@@ -4,6 +4,7 @@ import Topbar from './layout/Topbar'
 import Overview from './pages/Overview'
 import StockDetail from './pages/StockDetail'
 import StrategyLab from './pages/StrategyLab'
+import PaperTrading from './pages/PaperTrading'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
             <Route path="/" element={<Overview />} />
             <Route path="/stock/:tsCode" element={<StockDetail />} />
             <Route path="/lab" element={<StrategyLab />} />
+            <Route path="/paper" element={<PaperTrading />} />
             <Route path="*" element={<Overview />} />
           </Routes>
         </div>

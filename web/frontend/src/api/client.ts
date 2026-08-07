@@ -262,6 +262,39 @@ export const api = {
   labResearchStatus: (probeToken = false, opts?: ReqOpts) =>
     request<LabResearchStatus>(`/lab/research-status?probe_token=${probeToken ? 'true' : 'false'}`, opts),
   labCatalog: (opts?: ReqOpts) => request<LabCatalog>('/lab/catalog', opts),
+
+  // ── 纸面交易 ──
+  paperAccount: (opts?: ReqOpts) => request<PaperAccount>('/paper/account', opts),
+  paperCreateAccount: (initialCashFen: number, opts?: ReqOpts) =>
+    request<PaperAccount>('/paper/account', { ...opts, method: 'POST', body: JSON.stringify({ initial_cash_fen: initialCashFen }) }),
+  paperDashboard: (opts?: ReqOpts) => request<PaperDashboard>('/paper/dashboard', opts),
+  paperPositions: (opts?: ReqOpts) => request<{ positions: PaperPosition[] }>('/paper/positions', opts),
+  paperOrders: (state?: string, opts?: ReqOpts) =>
+    request<{ orders: PaperOrder[] }>(`/paper/orders${state ? `?state=${state}` : ''}`, opts),
+  paperCreateDraft: (body: Record<string, unknown>, opts?: ReqOpts) =>
+    request<PaperOrder>('/paper/orders/drafts', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+  paperConfirmOrder: (orderId: string, opts?: ReqOpts) =>
+    request<PaperOrder>(`/paper/orders/${orderId}/confirm`, { ...opts, method: 'POST' }),
+  paperCancelOrder: (orderId: string, opts?: ReqOpts) =>
+    request<PaperOrder>(`/paper/orders/${orderId}/cancel`, { ...opts, method: 'POST' }),
+  paperFills: (limit = 50, opts?: ReqOpts) => request<{ fills: PaperFill[] }>(`/paper/fills?limit=${limit}`, opts),
+  paperRunCycle: (tradeDate: string, opts?: ReqOpts) =>
+    request<PaperCycleResult>('/paper/cycles/run', { ...opts, method: 'POST', body: JSON.stringify({ trade_date: tradeDate }) }),
+  paperCycleStatus: (tradeDate: string, opts?: ReqOpts) =>
+    request<{ trade_date: string; phase: string | null; blocked_reason?: string }>(`/paper/cycles/${tradeDate}`, opts),
+  paperImportPreview: (path: string, opts?: ReqOpts) =>
+    request<PaperImportPreview>('/paper/import/preview', { ...opts, method: 'POST', body: JSON.stringify({ path }) }),
+  paperImportCommit: (path: string, opts?: ReqOpts) =>
+    request<{ imported: number; skipped_existing: boolean; positions: unknown[] }>('/paper/import/commit', {
+      ...opts,
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  paperReconciliation: (tradeDate?: string, opts?: ReqOpts) =>
+    request<{ items: Record<string, unknown>[] }>(tradeDate ? `/paper/reconciliation?trade_date=${tradeDate}` : '/paper/reconciliation', opts),
+  paperRunReconciliation: (tradeDate: string, opts?: ReqOpts) =>
+    request<{ result: string; diffs: unknown[] }>('/paper/reconciliation/run', { ...opts, method: 'POST', body: JSON.stringify({ trade_date: tradeDate }) }),
+  paperGates: (opts?: ReqOpts) => request<Record<string, unknown>>('/paper/gates/status', opts),
 }
 
 export interface LabOptimizeBody {
@@ -392,4 +425,95 @@ export interface LabCompareResp {
 export interface LabArenaResp {
   rows: Record<string, unknown>[]
   weights: Record<string, number>
+}
+
+// ── 纸面交易（paper trading）──
+
+export interface PaperAccount {
+  account_id: number
+  initial_cash_fen: number
+  status: string
+  config_version: number
+  created_at: string
+  updated_at: string
+  cash_fen: number
+}
+
+export interface PaperPosition {
+  ts_code: string
+  total_qty: number
+  sellable_qty: number
+  avg_cost_micro: number
+}
+
+export interface PaperOrder {
+  order_id: string
+  idempotency_key?: string
+  ts_code: string
+  side: string
+  qty: number
+  state: string
+  reserve_fen: number
+  reject_reason: string | null
+  created_at: string
+}
+
+export interface PaperFill {
+  fill_id: string
+  order_id: string
+  ref_open_price_micro: number
+  fill_price_micro: number
+  qty: number
+  commission_fen: number
+  tax_fen: number
+  fill_model_version: string
+  quote_revision: string
+  filled_at: string
+}
+
+export interface PaperDashboard {
+  account: PaperAccount | null
+  equity: {
+    cash_fen: number
+    market_value_fen: number
+    total_equity_fen: number
+    positions: number
+  } | null
+  paper_notice: string
+}
+
+export interface PaperImportPreview {
+  source_file: string
+  source_hash: string
+  total: number
+  valid_count: number
+  invalid_count: number
+  items: {
+    ts_code: string
+    name: string
+    cost: number | null
+    shares: number | null
+    stop_loss: number | null
+    opened_at: string
+    last_close: number | null
+    last_date: string | null
+    errors: string[]
+    valid: boolean
+  }[]
+  has_invalid: boolean
+}
+
+export interface PaperCycleResult {
+  filled_count: number
+  zero_fill_count: number
+  mark: {
+    cash_fen: number
+    market_value_fen: number
+    total_asset_fen: number
+    unrealized_pnl_fen: number
+    trade_date: string
+    holdings: { ts_code: string; qty: number; close: number; market_value_fen: number }[]
+  }
+  reconciliation: { result: string; diffs: unknown[] }
+  snapshot_ok: boolean
 }
