@@ -924,6 +924,110 @@ def post_portfolio(body: dict):
     )
 
 
+# ── 纸面交易 API（paper_trading 领域模块）──
+
+_DB = _PARENT / "runtime" / "stock_data.db"
+
+
+def _paper_err(e: Exception) -> None:
+    """DomainError → 结构化错误响应 {code, message, details, retryable}（raise）。"""
+    from paper_trading.errors import DomainError
+
+    if isinstance(e, DomainError):
+        raise HTTPException(status_code=409 if not e.retryable else 429, detail=e.to_dict())
+    raise HTTPException(status_code=500, detail=str(e)[:300])
+
+
+@app.get("/api/paper/account")
+def paper_account():
+    """读取纸面账户（无 → 404）。"""
+    from paper_trading.account import get_account
+
+    try:
+        return get_account(_DB)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/account")
+def paper_create_account(body: dict):
+    """创建唯一纸面账户：{initial_cash_fen: int}。已存在 → 409。"""
+    from paper_trading.account import create_account
+
+    try:
+        fen = body.get("initial_cash_fen")
+        return create_account(_DB, int(fen) if fen is not None else 0)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.get("/api/paper/dashboard")
+def paper_dashboard():
+    """账户摘要 + 持仓 + 期初权益 + 风险状态。"""
+    from paper_trading.account import get_account, opening_equity
+    from paper_trading.errors import DomainError, ERR_UNKNOWN_ACCOUNT
+
+    try:
+        acct = get_account(_DB)
+        eq = opening_equity(_DB)
+        return {"account": acct, "equity": eq,
+                "paper_notice": "纸面仿真，不会向券商下单"}
+    except DomainError as e:
+        if e.code == ERR_UNKNOWN_ACCOUNT:
+            return {"account": None, "equity": None,
+                    "paper_notice": "纸面仿真，不会向券商下单"}
+        _paper_err(e)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/import/preview")
+def paper_import_preview(body: dict):
+    """导入前预览：{path: portfolio.json 路径} → 逐条校验 + 行情。"""
+    from paper_trading.account import preview_import
+
+    try:
+        path = body.get("path") or str(_PARENT / "runtime" / "portfolio.json")
+        return preview_import(_DB, path)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/import/commit")
+def paper_import_commit(body: dict):
+    """确认导入：{path, as_of_date?} → 生成 OPENING 批次（幂等）。"""
+    from paper_trading.account import commit_import
+
+    try:
+        path = body.get("path") or str(_PARENT / "runtime" / "portfolio.json")
+        return commit_import(_DB, path, as_of_date=body.get("as_of_date"))
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.get("/api/paper/gates/status")
+def paper_gates_status():
+    """门禁状态：运行时新鲜度 + 领域表就绪。"""
+    from market_regime import data_freshness
+
+    try:
+        fresh = data_freshness(_store.max_trade_date("daily") or "", store=_store)
+    except Exception:  # noqa: BLE001
+        fresh = {"label": "未知", "is_stale": True}
+    try:
+        from paper_trading.migrations import current_schema_version
+
+        sv = current_schema_version(_DB)
+    except Exception:  # noqa: BLE001
+        sv = 0
+    return {
+        "paper_enabled": True,
+        "schema_version": sv,
+        "runtime_freshness": fresh,
+        "real_data_gate": {"status": "not_run", "note": "独立命令运行: python -m paper_trading.real_data_gate"},
+    }
+
+
 @app.get("/api/stock/{ts_code}")
 def stock_detail(ts_code: str):
     """个股详情：K线/信号/资金流/基本面/财报"""
