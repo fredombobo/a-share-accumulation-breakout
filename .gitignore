@@ -35,3 +35,6 @@ web/frontend/tsconfig.tsbuildinfo
 Thumbs.db
 *.swp
 .hermes/
+
+# 构建备份产物不入库
+web/frontend/dist_old*/
