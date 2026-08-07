@@ -39,9 +39,16 @@ class LocalStore:
         self.db_path = Path(db_path or _DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+        # 阶段1：paper_trading 领域迁移（schema_version 幂等；延迟 import 防循环）
+        try:
+            from paper_trading.migrations import run_migrations
+
+            run_migrations(self.db_path)
+        except Exception:  # noqa: BLE001
+            pass
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         # 权衡：FastAPI 多线程下 sqlite3 连接默认 check_same_thread=True，不能跨线程
         # 复用；若做连接复用需加锁，风险高。故保持「每次调用新建连接」，通过
         # contextmanager + finally close 保证显式释放（原来只 commit 依赖 GC）。
@@ -50,6 +57,8 @@ class LocalStore:
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE")  # 先拿写锁，防并发账本写竞争
             yield conn
             conn.commit()
         except Exception:
@@ -222,6 +231,10 @@ class LocalStore:
             return 0
         cols = ["ts_code", "trade_date", "open", "high", "low", "close",
                 "pre_close", "change", "pct_chg", "vol", "amount"]
+        # 阶段1：行情元数据列（有才写入；旧调用不传则保持默认）
+        for c in ("available_at", "ingested_at", "source", "revision", "is_legacy"):
+            if c in df.columns and c not in cols:
+                cols.append(c)
         cols = [c for c in cols if c in df.columns]
         return self._upsert("daily", df[cols])
 
@@ -480,6 +493,21 @@ def sync_from_tushare(
     cal = pro.trade_cal(exchange="", start_date=cal_start, end_date=cal_end, fields="cal_date,is_open")
     open_dates = sorted(cal.loc[cal["is_open"] == 1, "cal_date"].astype(str).tolist())
 
+    # 阶段1：交易日历落库（paper_trading.trade_cal），供对账/可卖日计算
+    try:
+        from paper_trading.db import tx as _pt_tx
+
+        now_iso = now.astimezone().isoformat(timespec="seconds")
+        with _pt_tx(store.db_path, immediate=True) as tconn:
+            for _, rcal in cal.iterrows():
+                tconn.execute(
+                    "INSERT OR REPLACE INTO trade_cal (cal_date, is_open, source, updated_at)"
+                    " VALUES (?,?,?,?)",
+                    (str(rcal["cal_date"]), int(rcal["is_open"]), "tushare", now_iso),
+                )
+    except Exception:  # noqa: BLE001
+        pass  # 日历落库失败不阻断行情同步
+
     # ── stock_basic ──
     if verbose:
         print("[sync] 刷新股票列表…")
@@ -505,6 +533,14 @@ def sync_from_tushare(
             try:
                 dd = pro.daily(trade_date=d)
                 if not dd.empty:
+                    # 阶段1：新同步数据填真实抓取完成时间 + 来源标记（旧数据已由 M001 标 legacy_backfill）
+                    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+                    dd = dd.copy()
+                    dd["ingested_at"] = now_iso
+                    dd["available_at"] = now_iso
+                    dd["source"] = "tushare"
+                    dd["revision"] = 1
+                    dd["is_legacy"] = 0
                     store.upsert_daily(dd)
                     daily_rows += len(dd)
                 db = pro.daily_basic(trade_date=d, fields="ts_code,trade_date,close,pe,pb,ps_ttm,dp,total_mv,circ_mv,turnover_rate,volume_ratio")
