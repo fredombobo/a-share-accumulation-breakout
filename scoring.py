@@ -19,12 +19,9 @@
 """
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 
 from config import (
-    FUND_FLOW_DAYS,
-    FUND_FLOW_MIN_RATIO,
     FUND_SCORE_WEIGHT,
     FUNDAMENTAL_SCORE_WEIGHT,
     MAX_MV_YI,
@@ -181,9 +178,7 @@ def score_fundamentals(row: pd.Series) -> tuple[float, list[str]]:
     if pd.notna(mv) and mv > 0:
         if SCORE_MV_BEST_LOW <= mv <= SCORE_MV_BEST_HIGH:
             s = 25.0
-        elif SCORE_MV_BEST_HIGH < mv <= SCORE_MV_OK_HIGH:
-            s = 18.0
-        elif SCORE_MV_OK_LOW <= mv < SCORE_MV_BEST_LOW:
+        elif SCORE_MV_BEST_HIGH < mv <= SCORE_MV_OK_HIGH or SCORE_MV_OK_LOW <= mv < SCORE_MV_BEST_LOW:
             s = 18.0
         else:
             s = 8.0
@@ -274,7 +269,7 @@ def fundamental_filter_passes(row: pd.Series) -> tuple[bool, list[str]]:
         try:
             import datetime as _dt
             ld = _dt.datetime.strptime(list_date, "%Y%m%d").date()
-            age_days = (_dt.date.today() - ld).days
+            age_days = (_dt.datetime.now(_dt.UTC).date() - ld).days
             if age_days < MIN_LIST_DAYS:
                 fails.append("次新股")
         except ValueError:

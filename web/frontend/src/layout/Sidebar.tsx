@@ -17,15 +17,17 @@ export default function Sidebar() {
     <aside className="sidebar">
       <div className="brand">📊 AB-Screener</div>
       {items.map((it) => (
-        <div
+        <button
+          type="button"
           key={it.path}
           className={`nav-item ${active === it.path ? 'active' : ''}`}
           onClick={() => nav(it.path)}
           title={it.hint}
+          aria-current={active === it.path ? 'page' : undefined}
         >
           {it.label}
           <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>{it.hint}</div>
-        </div>
+        </button>
       ))}
       <div className="spacer" />
       <div className="muted" style={{ fontSize: 11, padding: '0 12px', lineHeight: 1.45 }}>

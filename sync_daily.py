@@ -22,7 +22,7 @@ for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy",
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from data_fetch import run_sync  # noqa: E402
+from data_fetch import run_sync
 
 
 def main() -> int:

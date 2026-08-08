@@ -33,6 +33,18 @@ async function request<T>(path: string, init?: RequestInit & ReqOpts): Promise<T
   }
 }
 
+const newIdempotencyKey = () =>
+  globalThis.crypto?.randomUUID?.() || `paper-${Date.now()}-${Math.random().toString(16).slice(2)}`
+
+function paperWrite<T>(path: string, body: unknown, opts?: ReqOpts): Promise<T> {
+  return request<T>(path, {
+    ...opts,
+    method: 'POST',
+    headers: { 'Idempotency-Key': newIdempotencyKey() },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+}
+
 export interface KlinePoint {
   trade_date: string
   open: number
@@ -266,35 +278,44 @@ export const api = {
   // ── 纸面交易 ──
   paperAccount: (opts?: ReqOpts) => request<PaperAccount>('/paper/account', opts),
   paperCreateAccount: (initialCashFen: number, opts?: ReqOpts) =>
-    request<PaperAccount>('/paper/account', { ...opts, method: 'POST', body: JSON.stringify({ initial_cash_fen: initialCashFen }) }),
+    paperWrite<PaperAccount>('/paper/account', { initial_cash_fen: String(initialCashFen) }, opts),
   paperDashboard: (opts?: ReqOpts) => request<PaperDashboard>('/paper/dashboard', opts),
   paperPositions: (opts?: ReqOpts) => request<{ positions: PaperPosition[] }>('/paper/positions', opts),
   paperOrders: (state?: string, opts?: ReqOpts) =>
     request<{ orders: PaperOrder[] }>(`/paper/orders${state ? `?state=${state}` : ''}`, opts),
   paperCreateDraft: (body: Record<string, unknown>, opts?: ReqOpts) =>
-    request<PaperOrder>('/paper/orders/drafts', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+    paperWrite<PaperOrder>('/paper/orders/drafts', body, opts),
   paperConfirmOrder: (orderId: string, opts?: ReqOpts) =>
-    request<PaperOrder>(`/paper/orders/${orderId}/confirm`, { ...opts, method: 'POST' }),
+    paperWrite<PaperOrder>(`/paper/orders/${orderId}/confirm`, undefined, opts),
   paperCancelOrder: (orderId: string, opts?: ReqOpts) =>
-    request<PaperOrder>(`/paper/orders/${orderId}/cancel`, { ...opts, method: 'POST' }),
+    paperWrite<PaperOrder>(`/paper/orders/${orderId}/cancel`, undefined, opts),
   paperFills: (limit = 50, opts?: ReqOpts) => request<{ fills: PaperFill[] }>(`/paper/fills?limit=${limit}`, opts),
   paperRunCycle: (tradeDate: string, opts?: ReqOpts) =>
-    request<PaperCycleResult>('/paper/cycles/run', { ...opts, method: 'POST', body: JSON.stringify({ trade_date: tradeDate }) }),
+    paperWrite<PaperCycleResult>('/paper/cycles/run', { trade_date: tradeDate }, opts),
   paperCycleStatus: (tradeDate: string, opts?: ReqOpts) =>
     request<{ trade_date: string; phase: string | null; blocked_reason?: string }>(`/paper/cycles/${tradeDate}`, opts),
   paperImportPreview: (path: string, opts?: ReqOpts) =>
-    request<PaperImportPreview>('/paper/import/preview', { ...opts, method: 'POST', body: JSON.stringify({ path }) }),
+    paperWrite<PaperImportPreview>('/paper/import/preview', { path }, opts),
   paperImportCommit: (path: string, opts?: ReqOpts) =>
-    request<{ imported: number; skipped_existing: boolean; positions: unknown[] }>('/paper/import/commit', {
-      ...opts,
-      method: 'POST',
-      body: JSON.stringify({ path }),
-    }),
+    paperWrite<{ imported: number; skipped_existing: boolean; positions: unknown[] }>('/paper/import/commit', { path }, opts),
   paperReconciliation: (tradeDate?: string, opts?: ReqOpts) =>
     request<{ items: Record<string, unknown>[] }>(tradeDate ? `/paper/reconciliation?trade_date=${tradeDate}` : '/paper/reconciliation', opts),
   paperRunReconciliation: (tradeDate: string, opts?: ReqOpts) =>
-    request<{ result: string; diffs: unknown[] }>('/paper/reconciliation/run', { ...opts, method: 'POST', body: JSON.stringify({ trade_date: tradeDate }) }),
+    paperWrite<{ result: string; diffs: unknown[] }>('/paper/reconciliation/run', { trade_date: tradeDate }, opts),
+  paperCorporateActions: (status?: string, opts?: ReqOpts) =>
+    request<{ items: PaperCorporateAction[] }>(`/paper/corporate-actions${status ? `?status=${status}` : ''}`, opts),
+  paperApplyCorporateAction: (actionId: number, opts?: ReqOpts) =>
+    paperWrite<{ action_id: number; status: string }>(`/paper/corporate-actions/${actionId}/apply`, undefined, opts),
   paperGates: (opts?: ReqOpts) => request<Record<string, unknown>>('/paper/gates/status', opts),
+
+  // 最新交易日资金热力图（treemap）
+  moneyHeatmap: (top = 24, opts?: ReqOpts) => request<MoneyHeatmapResp>(`/money-heatmap?top=${top}`, opts),
+}
+
+export interface MoneyHeatmapResp {
+  trade_date: string
+  total_wan: number
+  items: { name: string; value: number; net_wan: number }[]
 }
 
 export interface LabOptimizeBody {
@@ -454,6 +475,10 @@ export interface PaperOrder {
   qty: number
   state: string
   reserve_fen: number
+  reserved_qty?: number
+  signal_trade_date?: string | null
+  confirmed_at?: string | null
+  eligible_trade_date?: string | null
   reject_reason: string | null
   created_at: string
 }
@@ -479,7 +504,38 @@ export interface PaperDashboard {
     total_equity_fen: number
     positions: number
   } | null
+  equity_curve?: {
+    trade_date: string
+    cash_fen: number
+    market_value_fen: number
+    total_asset_fen: number
+    realized_pnl_fen: number | null
+    unrealized_pnl_fen: number | null
+    drawdown_fen: number | null
+  }[]
+  risk?: {
+    gross_exposure_limit_pct: string
+    cash_buffer_pct: string
+    daily_buy_limit_pct: string
+    single_instrument_limit_pct: string
+    reserved_cash_fen: number
+    reserved_sell_qty: number
+  }
+  unresolved_reconciliation_count?: number
   paper_notice: string
+}
+
+export interface PaperCorporateAction {
+  action_id: number
+  ts_code: string
+  ex_date: string
+  kind: string
+  amount_fen: number | null
+  ratio: number | null
+  note: string | null
+  status: string
+  applied_at: string | null
+  adjustment_ref: string | null
 }
 
 export interface PaperImportPreview {

@@ -10,7 +10,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.pop("PYTHONPATH", None)
 
-from bench_volume import (  # noqa: E402
+from bench_volume import (
     DIST,
     PUSH,
     WASH,
@@ -19,7 +19,7 @@ from bench_volume import (  # noqa: E402
     detect_build_seq,
     find_build_seqs,
 )
-from trade_sim import simulate_trade, summarize  # noqa: E402
+from trade_sim import simulate_trade, summarize
 
 
 def mk_df(vols, pcts=None, closes=None, opens=None, highs=None, lows=None):

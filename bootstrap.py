@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -153,10 +152,12 @@ def load_dotenv() -> None:
 def pip_install(py: str) -> None:
     _log("[1/4] 安装 Python 依赖…")
     cmd = [py, "-m", "pip", "install", "-r", str(REQ), "-q"]
-    r = subprocess.run(cmd, cwd=str(ROOT))
+    r = subprocess.run(cmd, cwd=str(ROOT), check=False)
     if r.returncode != 0:
         # 再试一次非 quiet，方便 Agent 排错
-        r2 = subprocess.run([py, "-m", "pip", "install", "-r", str(REQ)], cwd=str(ROOT))
+        r2 = subprocess.run(
+            [py, "-m", "pip", "install", "-r", str(REQ)], cwd=str(ROOT), check=False
+        )
         if r2.returncode != 0:
             raise SystemExit(
                 "依赖安装失败。请确认 Python 3.11+ 且网络可用。\n"
@@ -176,6 +177,7 @@ def sync_market(py: str, days: int | None) -> None:
     r = subprocess.run(
         [py, str(ROOT / "sync_daily.py"), "--days", str(days)],
         cwd=str(ROOT),
+        check=False,
         env=os.environ.copy(),
     )
     if r.returncode != 0:
@@ -189,7 +191,7 @@ def health_ok(timeout: float = 2.0) -> bool:
     import urllib.request
 
     try:
-        with urllib.request.urlopen(HEALTH_URL, timeout=timeout) as r:  # noqa: S310
+        with urllib.request.urlopen(HEALTH_URL, timeout=timeout) as r:
             return r.status == 200
     except (urllib.error.URLError, TimeoutError, OSError):
         return False
@@ -232,7 +234,7 @@ def start_server(py: str, foreground: bool) -> subprocess.Popen | None:
     if foreground:
         # 阻塞在前台，适合 Agent 托管长进程
         os.chdir(ROOT / "web")
-        os.execv(py, [py, str(BACKEND)])  # noqa: S606
+        os.execv(py, [py, str(BACKEND)])
 
     out_log = open(RUNTIME / "bootstrap.out.log", "w", encoding="utf-8")  # noqa: SIM115
     err_log = open(RUNTIME / "bootstrap.err.log", "w", encoding="utf-8")  # noqa: SIM115

@@ -15,16 +15,17 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from research_windows import recommend_research_plan  # noqa: E402
-from strategy_store import seed_params, weekly_arena  # noqa: E402
-from walkforward import wf_recheck  # noqa: E402
+from research_windows import recommend_research_plan
+from strategy_store import seed_params, weekly_arena
+from walkforward import wf_recheck
 
 
 def seed_from_result(strategy: str, max_codes: int = 2000, step: int = 5) -> dict:
     path = os.path.join("runtime", f"is_oos_{strategy}.json")
     if not os.path.exists(path):
         return {"error": f"{path} 不存在，先跑优化"}
-    data = json.load(open(path, encoding="utf-8"))
+    with open(path, encoding="utf-8") as stream:
+        data = json.load(stream)
     is_df = pd.DataFrame(data.get("is_top") or [])
     oos_df = pd.DataFrame(data.get("oos") or [])
     if oos_df.empty:

@@ -229,7 +229,7 @@ def recommend_research_plan(dates: list[str] | None = None) -> ResearchPlan:
 def probe_tushare_token() -> dict[str, Any]:
     """轻量探测 Token 是否可用（不拉全市场）。"""
     try:
-        from tushare_http import pro
+        from tushare_init import pro
 
         df = pro.trade_cal(exchange="SSE", start_date="20260801", end_date="20260806")
         ok = df is not None and len(df) > 0

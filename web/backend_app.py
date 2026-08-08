@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
@@ -33,9 +34,9 @@ for _p in (str(_BASE), str(_PARENT)):
         sys.path.insert(0, _p)
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -49,6 +50,10 @@ from signals import detect_accumulation_breakout
 # 后端构建版本与启动时间：启动器据此检测「源码或前端产物更新」并自动重启
 _BUILD_VERSION = _compute_build_version()
 _STARTED_AT = datetime.now().isoformat(timespec="seconds")
+_LOGGER = logging.getLogger(__name__)
+
+if os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true":
+    raise RuntimeError("LIVE_TRADING_ENABLED 必须保持 false；本项目不包含真实下单能力")
 
 app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
 app.add_middleware(
@@ -57,6 +62,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _paper_enabled() -> bool:
+    return os.environ.get("PAPER_TRADING_ENABLED", "true").lower() == "true"
+
+
+@app.middleware("http")
+async def paper_feature_gate(request: Request, call_next):
+    if (
+        request.url.path.startswith("/api/paper")
+        and request.url.path != "/api/paper/gates/status"
+        and not _paper_enabled()
+    ):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": {"code": "PAPER_TRADING_DISABLED",
+                                 "message": "纸面交易模块已关闭", "details": {},
+                                 "retryable": False}},
+        )
+    return await call_next(request)
 
 
 # ── 模块级单例（schema 初始化只做一次） ──
@@ -907,20 +932,11 @@ def get_portfolio():
 
 @app.post("/api/portfolio")
 def post_portfolio(body: dict):
-    from portfolio import remove_position, upsert_position
-    action = body.get("action", "upsert")
-    code = body.get("ts_code") or body.get("code")
-    if not code:
-        raise HTTPException(400, "ts_code required")
-    if action == "remove":
-        return remove_position(code)
-    return upsert_position(
-        code,
-        name=body.get("name") or "",
-        cost=body.get("cost"),
-        shares=body.get("shares"),
-        stop_loss=body.get("stop_loss"),
-        note=body.get("note") or "",
+    raise HTTPException(
+        status_code=409,
+        detail={"code": "PORTFOLIO_READ_ONLY_MIGRATION",
+                "message": "旧持仓接口已只读，请在纸面交易工作台预览并导入",
+                "details": {}, "retryable": False},
     )
 
 
@@ -935,7 +951,18 @@ def _paper_err(e: Exception) -> None:
 
     if isinstance(e, DomainError):
         raise HTTPException(status_code=409 if not e.retryable else 429, detail=e.to_dict())
-    raise HTTPException(status_code=500, detail=str(e)[:300])
+    from tushare_init import sanitize_error
+    raise HTTPException(status_code=500, detail={
+        "code": "INTERNAL_ERROR", "message": sanitize_error(e)[:300],
+        "details": {}, "retryable": False,
+    })
+
+
+def _paper_write(key: str | None, operation: str, payload: dict, callback):
+    """所有纸面交易 POST 的统一持久化幂等边界。"""
+    from paper_trading.idempotency import execute_idempotent
+
+    return execute_idempotent(_DB, key or "", operation, payload, callback)
 
 
 @app.get("/api/paper/account")
@@ -950,13 +977,19 @@ def paper_account():
 
 
 @app.post("/api/paper/account")
-def paper_create_account(body: dict):
+def paper_create_account(
+    body: dict,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """创建唯一纸面账户：{initial_cash_fen: int}。已存在 → 409。"""
     from paper_trading.account import create_account
 
     try:
         fen = body.get("initial_cash_fen")
-        return create_account(_DB, int(fen) if fen is not None else 0)
+        return _paper_write(
+            idempotency_key, "paper.account.create", body,
+            lambda: create_account(_DB, int(fen) if fen is not None else 0),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -968,10 +1001,43 @@ def paper_dashboard():
     from paper_trading.errors import ERR_UNKNOWN_ACCOUNT, DomainError
 
     try:
+        import sqlite3
+
         acct = get_account(_DB)
         eq = opening_equity(_DB)
-        return {"account": acct, "equity": eq,
-                "paper_notice": "纸面仿真，不会向券商下单"}
+        with sqlite3.connect(str(_DB)) as conn:
+            curve_rows = conn.execute(
+                "SELECT trade_date, cash_fen, market_value_fen, total_asset_fen,"
+                " realized_pnl_fen, unrealized_pnl_fen, drawdown_fen "
+                "FROM pt_daily_snapshot WHERE account_id=1 ORDER BY trade_date DESC LIMIT 250"
+            ).fetchall()
+            unresolved = conn.execute(
+                "SELECT COUNT(*) FROM pt_reconciliation WHERE status IN ('OPEN','ESCALATED') "
+                "AND result!='OK'"
+            ).fetchone()[0]
+            reserves = conn.execute(
+                "SELECT COALESCE(SUM(reserve_fen),0), COALESCE(SUM(reserved_qty),0) "
+                "FROM pt_order WHERE account_id=1 AND state IN ('CONFIRMED','QUEUED')"
+            ).fetchone()
+        curve = [{"trade_date": row[0], "cash_fen": row[1],
+                  "market_value_fen": row[2], "total_asset_fen": row[3],
+                  "realized_pnl_fen": row[4], "unrealized_pnl_fen": row[5],
+                  "drawdown_fen": row[6]} for row in reversed(curve_rows)]
+        return {
+            "account": acct,
+            "equity": eq,
+            "equity_curve": curve,
+            "risk": {
+                "gross_exposure_limit_pct": "80",
+                "cash_buffer_pct": "10",
+                "daily_buy_limit_pct": "20",
+                "single_instrument_limit_pct": "10",
+                "reserved_cash_fen": int(reserves[0]),
+                "reserved_sell_qty": int(reserves[1]),
+            },
+            "unresolved_reconciliation_count": int(unresolved),
+            "paper_notice": "纸面仿真，不会向券商下单",
+        }
     except DomainError as e:
         if e.code == ERR_UNKNOWN_ACCOUNT:
             return {"account": None, "equity": None,
@@ -982,25 +1048,37 @@ def paper_dashboard():
 
 
 @app.post("/api/paper/import/preview")
-def paper_import_preview(body: dict):
+def paper_import_preview(
+    body: dict,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """导入前预览：{path: portfolio.json 路径} → 逐条校验 + 行情。"""
     from paper_trading.account import preview_import
 
     try:
         path = body.get("path") or str(_PARENT / "runtime" / "portfolio.json")
-        return preview_import(_DB, path)
+        return _paper_write(
+            idempotency_key, "paper.import.preview", body,
+            lambda: preview_import(_DB, path),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
 
 @app.post("/api/paper/import/commit")
-def paper_import_commit(body: dict):
+def paper_import_commit(
+    body: dict,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """确认导入：{path, as_of_date?} → 生成 OPENING 批次（幂等）。"""
     from paper_trading.account import commit_import
 
     try:
         path = body.get("path") or str(_PARENT / "runtime" / "portfolio.json")
-        return commit_import(_DB, path, as_of_date=body.get("as_of_date"))
+        return _paper_write(
+            idempotency_key, "paper.import.commit", body,
+            lambda: commit_import(_DB, path, as_of_date=body.get("as_of_date")),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -1021,11 +1099,30 @@ def paper_gates_status():
     except Exception:  # noqa: BLE001
         sv = 0
     return {
-        "paper_enabled": True,
+        "paper_enabled": _paper_enabled(),
         "schema_version": sv,
         "runtime_freshness": fresh,
-        "real_data_gate": {"status": "not_run", "note": "独立命令运行: python -m paper_trading.real_data_gate"},
+        "real_data_gate": _latest_gate_status(),
     }
+
+
+def _latest_gate_status() -> dict:
+    import json
+    import sqlite3
+
+    try:
+        with sqlite3.connect(str(_DB)) as conn:
+            row = conn.execute(
+                "SELECT passed, data_version, issues_json, generated_at, report_sha256 "
+                "FROM pt_gate_report ORDER BY report_id DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return {"status": "NOT_RUN", "note": "尚无真实数据门禁报告"}
+        return {"status": "PASS" if row[0] else "FAIL", "data_version": row[1],
+                "issues": json.loads(row[2]), "generated_at": row[3],
+                "report_sha256": row[4]}
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "ERROR", "note": str(exc)[:160]}
 
 
 @app.get("/api/paper/orders")
@@ -1040,43 +1137,64 @@ def paper_orders(state: str | None = None, ts_code: str | None = None, limit: in
 
 
 @app.post("/api/paper/orders/drafts")
-def paper_create_draft(body: dict):
+def paper_create_draft(
+    body: dict,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """创建草稿：{side:'BUY', ts_code, trade_date, suggested_pos_pct?, qty?} 或 {side:'SELL', ts_code, qty}。"""
     from paper_trading.orders import create_buy_draft, create_sell_draft
 
     try:
         side = (body.get("side") or "BUY").upper()
         if side == "BUY":
-            return create_buy_draft(
-                _DB, ts_code=body["ts_code"], trade_date=body.get("trade_date")
-                or datetime.now().strftime("%Y%m%d"),
-                suggested_pos_pct=body.get("suggested_pos_pct"),
-                input_hash=body.get("input_hash") or "",
-                qty=body.get("qty"),
+            return _paper_write(
+                idempotency_key, "paper.order.draft.buy", body,
+                lambda: create_buy_draft(
+                    _DB, ts_code=body["ts_code"], trade_date=body.get("trade_date")
+                    or datetime.now().strftime("%Y%m%d"),
+                    suggested_pos_pct=body.get("suggested_pos_pct"),
+                    input_hash=body.get("input_hash") or "",
+                    qty=body.get("qty"),
+                ),
             )
-        return create_sell_draft(_DB, ts_code=body["ts_code"], qty=int(body["qty"]))
+        return _paper_write(
+            idempotency_key, "paper.order.draft.sell", body,
+            lambda: create_sell_draft(_DB, ts_code=body["ts_code"], qty=int(body["qty"])),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
 
 @app.post("/api/paper/orders/{order_id}/confirm")
-def paper_confirm_order(order_id: str):
+def paper_confirm_order(
+    order_id: str,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """确认订单：预交易检查 + 预留资产。"""
     from paper_trading.orders import confirm_order
 
     try:
-        return confirm_order(_DB, order_id)
+        return _paper_write(
+            idempotency_key, "paper.order.confirm", {"order_id": order_id},
+            lambda: confirm_order(_DB, order_id),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
 
 @app.post("/api/paper/orders/{order_id}/cancel")
-def paper_cancel_order(order_id: str):
+def paper_cancel_order(
+    order_id: str,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """取消订单：释放预留。"""
     from paper_trading.orders import cancel_order
 
     try:
-        return cancel_order(_DB, order_id)
+        return _paper_write(
+            idempotency_key, "paper.order.cancel", {"order_id": order_id},
+            lambda: cancel_order(_DB, order_id),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -1093,13 +1211,19 @@ def paper_positions():
 
 
 @app.post("/api/paper/cycles/run")
-def paper_run_cycle(body: dict):
+def paper_run_cycle(
+    body: dict,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """手动补跑日结：{trade_date}。幂等（同日期已 DONE 返回原结果）。"""
     from paper_trading.settlement import run_settlement
 
     try:
         trade_date = body.get("trade_date") or datetime.now().strftime("%Y%m%d")
-        return run_settlement(_DB, trade_date)
+        return _paper_write(
+            idempotency_key, "paper.cycle.run", body,
+            lambda: run_settlement(_DB, trade_date),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -1113,27 +1237,50 @@ def paper_cycle_status(trade_date: str):
         conn = sqlite3.connect(str(_DB))
         row = conn.execute(
             "SELECT cycle_id, run_date, phase, retry_count, data_version,"
-            " started_at, finished_at FROM pt_cycle WHERE run_date=?",
+            " blocked_reason, started_at, finished_at FROM pt_cycle WHERE run_date=?",
             (trade_date,),
         ).fetchone()
         conn.close()
         if not row:
             return {"trade_date": trade_date, "phase": None, "blocked_reason": "未运行"}
         return {"trade_date": trade_date, "phase": row[2], "cycle_id": row[0],
-                "retry_count": row[3], "data_version": row[4], "started_at": row[5],
-                "finished_at": row[6]}
+                "retry_count": row[3], "data_version": row[4], "blocked_reason": row[5],
+                "started_at": row[6], "finished_at": row[7]}
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
 
 @app.post("/api/paper/reconciliation/run")
-def paper_run_reconciliation(body: dict):
+def paper_run_reconciliation(
+    body: dict,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     """独立重跑对账。"""
     from paper_trading.settlement import run_reconciliation
 
     try:
         trade_date = body.get("trade_date") or datetime.now().strftime("%Y%m%d")
-        return run_reconciliation(_DB, trade_date)
+        return _paper_write(
+            idempotency_key, "paper.reconciliation.run", body,
+            lambda: run_reconciliation(_DB, trade_date),
+        )
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/corporate-actions/{action_id}/apply")
+def paper_apply_corporate_action(
+    action_id: int,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    from paper_trading.settlement import apply_corporate_action
+
+    try:
+        payload = {"action_id": action_id}
+        return _paper_write(
+            idempotency_key, "paper.corporate_action.apply", payload,
+            lambda: apply_corporate_action(_DB, action_id),
+        )
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -1161,6 +1308,32 @@ def paper_reconciliation(trade_date: str | None = None):
             {"rec_id": r[0], "run_date": r[1], "result": r[2], "diff_json": r[3],
              "severity": r[4], "status": r[5], "checked_at": r[6]}
             for r in rows
+        ]}
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.get("/api/paper/corporate-actions")
+def paper_corporate_actions(status: str | None = None, limit: int = 50):
+    import sqlite3
+
+    try:
+        sql = ("SELECT action_id, ts_code, ex_date, kind, amount_fen, ratio, note, status,"
+               " applied_at, adjustment_ref FROM pt_corporate_action WHERE 1=1")
+        params: list = []
+        if status:
+            sql += " AND status=?"
+            params.append(status.upper())
+        sql += " ORDER BY ex_date DESC, action_id DESC LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        with sqlite3.connect(str(_DB)) as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return {"items": [
+            {"action_id": row[0], "ts_code": row[1], "ex_date": row[2],
+             "kind": row[3], "amount_fen": row[4], "ratio": row[5],
+             "note": row[6], "status": row[7], "applied_at": row[8],
+             "adjustment_ref": row[9]}
+            for row in rows
         ]}
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
@@ -1298,6 +1471,38 @@ def sector_flow(days: int = 10):
         "top_in": top_in,
         "top_out": top_out,
     }
+
+
+@app.get("/api/money-heatmap")
+def money_heatmap(top: int = 24):
+    """最新交易日资金热力图（treemap 数据）。
+
+    按行业聚合最新交易日 net_mf_amount（万元），返回：
+      {trade_date, total_wan, items: [{name, value, net_wan, sector}]}
+    value 用绝对值（treemap 面积），net_wan 保留符号（流入红/流出绿）。
+    """
+    try:
+        dates, pivot = _load_sector_flow(1)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail="资金流数据不可用")
+    if not dates:
+        raise HTTPException(status_code=404, detail="无资金流数据")
+    trade_date = dates[-1]
+    row = pivot.iloc[-1].sort_values(ascending=False)
+    top = row.head(top)
+    items = [
+        {
+            "name": str(k),
+            "value": int(abs(round(float(v), 0))),   # treemap 面积用绝对值
+            "net_wan": int(round(float(v), 0)),      # 保留正负号
+        }
+        for k, v in top.items()
+        if v != 0
+    ]
+    total_wan = int(round(float(row.sum())))
+    return {"trade_date": trade_date, "total_wan": total_wan, "items": items}
 
 
 @app.get("/api/stock/{ts_code}/flow")
@@ -1915,39 +2120,44 @@ def _auto_settle_loop() -> None:
     while True:
         try:
             now = datetime.now(tz)
-            # 交易日且已过 16:15
-            if now.hour > 16 or (now.hour == 16 and now.minute >= 15):
+            latest_local = _store.max_trade_date("daily") or ""
+            today = now.strftime("%Y%m%d")
+            after_close = now.hour > 16 or (now.hour == 16 and now.minute >= 15)
+            # 当天收盘后正常运行；周末/重启时补跑本地最新已完成交易日。
+            if latest_local and (after_close or latest_local < today):
                 from paper_trading.cal import is_open as _cal_is_open
                 from paper_trading.settlement import run_settlement
 
-                today = now.strftime("%Y%m%d")
                 try:
-                    if _cal_is_open(_DB, today):
-                        # 最近已收盘交易日 = 今天的前一交易日（今天 16:15 后撮合的是今早确认的单）
+                    target = latest_local
+                    if _cal_is_open(_DB, target):
                         import sqlite3 as _sq
                         conn = _sq.connect(str(_DB))
                         row = conn.execute(
-                            "SELECT trade_date FROM pt_cycle WHERE phase='DONE'"
-                            " ORDER BY trade_date DESC LIMIT 1"
+                            "SELECT run_date FROM pt_cycle WHERE phase='DONE'"
+                            " ORDER BY run_date DESC LIMIT 1"
                         ).fetchone()
                         conn.close()
                         last_done = row[0] if row else None
-                        target = today
                         if last_done and last_done >= target:
                             pass  # 已日结，跳过
                         else:
                             try:
                                 run_settlement(_DB, target)
-                            except Exception:  # noqa: BLE001
-                                pass  # 数据未就绪则下次轮询重试
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception:  # noqa: BLE001
-            pass
+                            except Exception as exc:  # noqa: BLE001
+                                from tushare_init import sanitize_error
+                                _LOGGER.warning("纸面日结待重试 %s: %s", target,
+                                                sanitize_error(exc)[:240])
+                except Exception as exc:  # noqa: BLE001
+                    from tushare_init import sanitize_error
+                    _LOGGER.error("纸面调度检查失败: %s", sanitize_error(exc)[:240])
+        except Exception as exc:  # noqa: BLE001
+            from tushare_init import sanitize_error
+            _LOGGER.error("纸面调度循环失败: %s", sanitize_error(exc)[:240])
         _t.sleep(60)  # 每分钟轮询
 
 
-if os.environ.get("PAPER_TRADING_ENABLED", "true").lower() != "false":
+if _paper_enabled():
     threading.Thread(target=_auto_settle_loop, daemon=True, name="paper-auto-settle").start()
 
 

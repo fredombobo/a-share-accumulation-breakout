@@ -31,7 +31,6 @@ from config import (
     BOX_MAX_AMP,
     BOX_MAX_DAYS,
     BOX_MAX_MID_DRAWDOWN,
-    BOX_MAX_MID_DRAWDOWN as _STRICT_MID_DD,
     BOX_MIN_DAYS,
     BOX_POS_LOOKBACK,
     BOX_POS_TREND_LOOKBACK,
@@ -183,14 +182,12 @@ def _count_boundary_touches(
     for i in range(len(closes)):
         lo = float(lows[i])
         hi = float(highs[i])
-        if lo <= sup_zone_hi and lo >= support - band * 0.5:
-            if i - last_sup_i >= 2:
-                sup_touches += 1
-                last_sup_i = i
-        if hi >= res_zone_lo and hi <= resistance + band * 0.5:
-            if i - last_res_i >= 2:
-                res_touches += 1
-                last_res_i = i
+        if lo <= sup_zone_hi and lo >= support - band * 0.5 and i - last_sup_i >= 2:
+            sup_touches += 1
+            last_sup_i = i
+        if hi >= res_zone_lo and hi <= resistance + band * 0.5 and i - last_res_i >= 2:
+            res_touches += 1
+            last_res_i = i
 
     # 中部 25%~75% 区间占用
     lo_m = support + 0.25 * height

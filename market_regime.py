@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 # 默认观察指数
@@ -112,7 +111,13 @@ def detect_regime_from_index_df(df: pd.DataFrame, index_code: str = DEFAULT_INDE
     )
 
 
-def ensure_index_daily(store, index_code: str = DEFAULT_INDEX, days: int = 120) -> pd.DataFrame:
+def ensure_index_daily(
+    store,
+    index_code: str = DEFAULT_INDEX,
+    days: int = 120,
+    *,
+    allow_network: bool = True,
+) -> pd.DataFrame:
     """确保指数日线在本地库；缺失则尝试 Tushare 拉取。"""
     from datetime import datetime, timedelta
 
@@ -124,6 +129,8 @@ def ensure_index_daily(store, index_code: str = DEFAULT_INDEX, days: int = 120) 
     need_pull = idx_df is None or idx_df.empty or len(idx_df) < 30
     if not need_pull:
         return idx_df.sort_values("trade_date")
+    if not allow_network:
+        return idx_df if idx_df is not None else pd.DataFrame()
     try:
         # 延迟 import，避免无网络时拖垮
         import sys
@@ -131,7 +138,7 @@ def ensure_index_daily(store, index_code: str = DEFAULT_INDEX, days: int = 120) 
         root = Path(__file__).resolve().parent
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
-        from tushare_http import pro
+        from tushare_init import pro
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
         # 指数日线：index_daily
@@ -145,15 +152,22 @@ def ensure_index_daily(store, index_code: str = DEFAULT_INDEX, days: int = 120) 
             store.upsert_daily(df)
             return df.sort_values("trade_date")
     except Exception as e:  # noqa: BLE001
-        print(f"  [warn] 指数 {index_code} 拉取失败: {str(e)[:80]}")
+        from tushare_init import sanitize_error
+        print(f"  [warn] 指数 {index_code} 拉取失败: {sanitize_error(e)[:160]}")
     return idx_df if idx_df is not None else pd.DataFrame()
 
 
-def detect_regime(store=None, daily: pd.DataFrame | None = None, index_code: str = DEFAULT_INDEX) -> RegimeResult:
+def detect_regime(
+    store=None,
+    daily: pd.DataFrame | None = None,
+    index_code: str = DEFAULT_INDEX,
+    *,
+    allow_network: bool = True,
+) -> RegimeResult:
     """从 LocalStore 或 daily 大表推断环境。优先真实指数。"""
     idx_df = pd.DataFrame()
     if store is not None:
-        idx_df = ensure_index_daily(store, index_code=index_code)
+        idx_df = ensure_index_daily(store, index_code=index_code, allow_network=allow_network)
     if idx_df is not None and not idx_df.empty and len(idx_df) >= 25:
         return detect_regime_from_index_df(idx_df, index_code=index_code)
     if daily is not None and not daily.empty:
@@ -222,7 +236,7 @@ def resolve_trade_dates(
         root = Path(__file__).resolve().parent
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
-        from tushare_http import pro
+        from tushare_init import pro
 
         cal = pro.trade_cal(exchange="", start_date=start, end_date=end, fields="cal_date,is_open")
         if cal is not None and not cal.empty:

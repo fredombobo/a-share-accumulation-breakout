@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp, SetupStatus } from '../api/client'
+import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp, SetupStatus, MoneyHeatmapResp } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from '../components/EChart'
 import SectorFlowPanel from '../components/SectorFlowPanel'
+import MoneyHeatmap from '../components/MoneyHeatmap'
 import {
   loadOverviewCache,
   loadParams,
@@ -33,6 +34,8 @@ export default function Overview() {
   const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [sector, setSector] = useState<SectorFlowResp | null>(null)
   const [sectorDays, setSectorDays] = useState(10)
+  const [heatmap, setHeatmap] = useState<MoneyHeatmapResp | null>(null)
+  const [heatErr, setHeatErr] = useState('')
   const [pool, setPool] = useState<'A' | 'B' | 'ALL'>(prefPool || cached?.pool || 'A')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
@@ -121,6 +124,18 @@ export default function Overview() {
         setSector(null)
       })
   }, [sectorDays])
+
+  // 最新交易日资金热力图（挂载 + 扫描完成后刷新）
+  const loadHeatmap = useCallback(() => {
+    api.moneyHeatmap(24)
+      .then((h) => { setHeatmap(h); setHeatErr('') })
+      .catch((e: unknown) => {
+        if ((e as { name?: string })?.name === 'AbortError') return
+        setHeatErr(String(e))
+      })
+  }, [])
+
+  useEffect(() => { loadHeatmap() }, [loadHeatmap])
 
   useEffect(() => {
     loadOverview({ keepOnFail: true })
@@ -516,6 +531,17 @@ export default function Overview() {
           </div>
         )}
         {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
+      </div>
+
+      {/* 最新交易日资金热力图（treemap，nivo 风格） */}
+      <div className="card" style={{ marginBottom: 16 }}>
+        {heatErr ? (
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>资金热力图不可用：{heatErr}</div>
+        ) : heatmap ? (
+          <MoneyHeatmap data={heatmap} />
+        ) : (
+          <div style={{ fontSize: 12, color: 'var(--muted)' }}>加载资金热力图…</div>
+        )}
       </div>
 
       <div className="card" style={{ marginBottom: 16 }}>

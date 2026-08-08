@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -27,8 +26,8 @@ for _p in (_HERE, _LEGACY_PICKER):
     if _p and _p not in sys.path:
         sys.path.insert(0, _p)
 
-from tushare_http import pro  # noqa: E402
-from local_store import LocalStore, sync_from_tushare  # noqa: E402
+from local_store import LocalStore, sync_from_tushare
+from tushare_init import pro
 
 # 本地历史数据目录（1分钟级 CSV，聚合为日线用）
 LOCAL_HIST_DIR = Path(r"D:\stock\Historic data")
@@ -107,7 +106,8 @@ def get_daily_by_dates(dates: list[str], sleep: float = 0.0) -> pd.DataFrame:
                     frames.append(df)
                     _store.upsert_daily(df)
             except Exception as e:  # noqa: BLE001
-                print(f"  [warn] daily {dt} 拉取失败: {str(e)[:80]}", file=sys.stderr)
+                from tushare_init import sanitize_error
+                print(f"  [warn] daily {dt} 拉取失败: {sanitize_error(e)[:160]}", file=sys.stderr)
             if sleep:
                 time.sleep(sleep)
         if frames:
@@ -144,7 +144,8 @@ def get_daily_basic_by_dates(dates: list[str], sleep: float = 0.0) -> pd.DataFra
                     frames.append(df)
                     _store.upsert_daily_basic(df)
             except Exception as e:  # noqa: BLE001
-                print(f"  [warn] daily_basic {dt} 拉取失败: {str(e)[:80]}", file=sys.stderr)
+                from tushare_init import sanitize_error
+                print(f"  [warn] daily_basic {dt} 拉取失败: {sanitize_error(e)[:160]}", file=sys.stderr)
             if sleep:
                 time.sleep(sleep)
         if frames:
@@ -177,7 +178,8 @@ def get_moneyflow_by_dates(dates: list[str], sleep: float = 0.0) -> pd.DataFrame
                     frames.append(df)
                     _store.upsert_moneyflow(df)
             except Exception as e:  # noqa: BLE001
-                print(f"  [warn] moneyflow {dt} 拉取失败: {str(e)[:80]}", file=sys.stderr)
+                from tushare_init import sanitize_error
+                print(f"  [warn] moneyflow {dt} 拉取失败: {sanitize_error(e)[:160]}", file=sys.stderr)
             if sleep:
                 time.sleep(sleep)
         if frames:

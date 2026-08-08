@@ -1,12 +1,17 @@
 ﻿"""Phase4 + residual acceptance tests"""
 from __future__ import annotations
-import os, sys
+
+import os
+import sys
+
 os.environ.pop("PYTHONPATH", None)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd
-from market_regime import detect_regime_from_index_df, data_freshness
-from pool_select import fund_flow_quality_ok, breakout_freshness_bonus, split_pools
+
+from market_regime import data_freshness, detect_regime_from_index_df
+from pool_select import breakout_freshness_bonus, fund_flow_quality_ok
 from prefilter_fast import volume_breakout_candidates
+
 
 def test_regime_defense_strict():
     dates = pd.bdate_range("2026-01-01", periods=40)
@@ -36,11 +41,12 @@ def test_freshness_trading_days():
     # 仅含真实开市日：7/31 五、8/3 一
     td2 = ["20260728", "20260729", "20260730", "20260731", "20260803"]
     from datetime import datetime
+    from zoneinfo import ZoneInfo
     fr = data_freshness(
         "20260731",
         today="20260803",
         trade_dates=td2,
-        now=datetime(2026, 8, 3, 10, 0, 0),  # 周一上午，期望数据仍为上一交易日 7/31
+        now=datetime(2026, 8, 3, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     assert fr["unit"] == "trading", fr
     assert fr["stale_days"] == 0, fr  # 排除周末后不应显示滞后 3 天

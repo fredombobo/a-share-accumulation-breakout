@@ -12,7 +12,7 @@ PAPER_TABLE_NAMES: frozenset[str] = frozenset({
     "pt_account", "pt_signal_snapshot", "pt_order", "pt_fill", "pt_cash_flow",
     "pt_position_lot", "pt_daily_snapshot", "pt_cycle", "pt_reconciliation",
     "pt_corporate_action", "pt_audit_event", "pt_gate_report",
-    "trade_cal", "instrument_rules",
+    "pt_api_idempotency", "trade_cal", "instrument_rules",
 })
 
 # DDL 语句列表：逐条 execute（不能用 executescript，它会隐式 COMMIT 破坏迁移事务原子性）
@@ -41,7 +41,12 @@ _stmt("""CREATE TABLE IF NOT EXISTS pt_signal_snapshot (
   suggested_pos_pct REAL CHECK (suggested_pos_pct IS NULL OR (suggested_pos_pct BETWEEN 0 AND 100)),
   strategy_version TEXT,
   input_hash TEXT NOT NULL,
+  effective_at TEXT,
   available_at TEXT NOT NULL,
+  ingested_at TEXT,
+  source TEXT NOT NULL DEFAULT 'scan_result',
+  revision INTEGER NOT NULL DEFAULT 1,
+  tradeable INTEGER NOT NULL DEFAULT 1 CHECK (tradeable IN (0,1)),
   PRIMARY KEY (trade_date, ts_code, pool)
 );""")
 _stmt("CREATE INDEX IF NOT EXISTS idx_pt_sig_date ON pt_signal_snapshot(trade_date);")
@@ -57,6 +62,10 @@ _stmt("""CREATE TABLE IF NOT EXISTS pt_order (
   state TEXT NOT NULL CHECK (state IN ('DRAFT','CONFIRMED','QUEUED','FILLED',
         'PARTIALLY_FILLED_EXPIRED','EXPIRED','REJECTED','CANCELLED')),
   reserve_fen INTEGER NOT NULL DEFAULT 0 CHECK (reserve_fen >= 0),
+  reserved_qty INTEGER NOT NULL DEFAULT 0 CHECK (reserved_qty >= 0),
+  signal_trade_date TEXT,
+  confirmed_at TEXT,
+  eligible_trade_date TEXT,
   reject_reason TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -95,7 +104,7 @@ _stmt("""CREATE TABLE IF NOT EXISTS pt_position_lot (
   account_id INTEGER NOT NULL REFERENCES pt_account(account_id),
   ts_code TEXT NOT NULL,
   buy_fill_id TEXT NOT NULL REFERENCES pt_fill(fill_id),
-  remaining_qty INTEGER NOT NULL CHECK (remaining_qty > 0),
+  remaining_qty INTEGER NOT NULL CHECK (remaining_qty >= 0),
   cost_price_micro INTEGER NOT NULL CHECK (cost_price_micro > 0),
   sellable_date TEXT NOT NULL,
   created_at TEXT NOT NULL
@@ -122,6 +131,7 @@ _stmt("""CREATE TABLE IF NOT EXISTS pt_cycle (
         'RECONCILE','DONE')),
   retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
   data_version TEXT,
+  blocked_reason TEXT,
   started_at TEXT NOT NULL,
   finished_at TEXT
 );""")
@@ -146,6 +156,9 @@ _stmt("""CREATE TABLE IF NOT EXISTS pt_corporate_action (
   amount_fen INTEGER,
   ratio REAL,
   note TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','APPLIED')),
+  applied_at TEXT,
+  adjustment_ref TEXT,
   UNIQUE (ts_code, ex_date, kind)
 );""")
 _stmt("CREATE INDEX IF NOT EXISTS idx_pt_ca_code ON pt_corporate_action(ts_code, ex_date);")
@@ -168,7 +181,22 @@ _stmt("""CREATE TABLE IF NOT EXISTS pt_gate_report (
   passed INTEGER NOT NULL CHECK (passed IN (0,1)),
   data_version TEXT NOT NULL,
   issues_json TEXT NOT NULL DEFAULT '[]',
+  report_json TEXT,
+  code_version TEXT,
+  config_hash TEXT,
+  report_sha256 TEXT,
   generated_at TEXT NOT NULL
+);""")
+
+_stmt("""CREATE TABLE IF NOT EXISTS pt_api_idempotency (
+  idempotency_key TEXT PRIMARY KEY,
+  operation TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('PROCESSING','COMPLETED')),
+  status_code INTEGER,
+  response_json TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT
 );""")
 
 _stmt("""CREATE TABLE IF NOT EXISTS trade_cal (

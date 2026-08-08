@@ -8,9 +8,9 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
-from paper_trading.migrations import run_migrations  # noqa: E402
+from paper_trading.migrations import run_migrations
 
 _ACCOUNT_ROW = (
     1,          # account_id

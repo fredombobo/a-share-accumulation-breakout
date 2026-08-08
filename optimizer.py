@@ -15,15 +15,14 @@ import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, wait
-from typing import Any
 
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from config import BT_MIN_TRADES, GRID_BENCH  # noqa: E402
-from trade_sim import simulate_trade, summarize  # noqa: E402
+from config import BT_MIN_TRADES, GRID_BENCH
+from trade_sim import simulate_trade, summarize
 
 _MIN_CODES_FOR_POOL = 100
 
@@ -81,7 +80,7 @@ def _detect_signals_for_code(
             if not sig.get("is_breakout"):
                 continue
             bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
-            recent = set(str(x) for x in cal[max(0, day_i - 5): day_i + 1])
+            recent = {str(x) for x in cal[max(0, day_i - 5): day_i + 1]}
             if not bd or bd not in recent or bd not in dts_set:
                 continue
             entry_i = dts.index(bd) + 1

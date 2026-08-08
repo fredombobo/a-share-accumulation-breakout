@@ -10,18 +10,15 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
 
-from paper_trading.account import commit_import, create_account  # noqa: E402
-from paper_trading.engine import execute_fills, expire_daily_orders  # noqa: E402
-from paper_trading.orders import (  # noqa: E402
+from paper_trading.account import commit_import, create_account
+from paper_trading.engine import execute_fills, expire_daily_orders
+from paper_trading.orders import (
     confirm_order,
     create_buy_draft,
     create_sell_draft,
     get_order,
-    sellable_qty,
 )
-from paper_trading.migrations import run_migrations  # noqa: E402
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -45,7 +42,7 @@ def _setup() -> str:
             # 000002: 8/6 一字涨停（open=high=low=close=11.0, 前收10.0）
             ("000002.SZ", "20260805", 10.0, 10.2, 9.8, 10.0, 100000.0, 1000000.0),
             ("000002.SZ", "20260806", 11.0, 11.0, 11.0, 11.0, 50000.0, 550000.0),
-            ("000002.SZ", "20260807", 11.0, 11.3, 10.9, 11.2, 80000.0, 880000.0),
+            ("000002.SZ", "20260807", 11.0, 11.0, 11.0, 11.0, 80000.0, 880000.0),
             # 000003: 8/7 停牌（无 8/7 数据）
             ("000003.SZ", "20260805", 5.0, 5.1, 4.9, 5.0, 100000.0, 500000.0),
             ("000003.SZ", "20260806", 5.0, 5.2, 4.9, 5.1, 90000.0, 455000.0),
@@ -124,12 +121,8 @@ def test_limit_one_word_buy_zero_fill():
     """一字涨停买单 → 零成交。"""
     db = _setup()
     oid = _buy_and_confirm(db, "000002.SZ", 100)
-    r = execute_fills(db, "20260807")  # 8/7 不是一字（8/6 才是）
-    # 8/6 是一字：再撮合 8/6（订单确认于 8/6 后）
-    oid2 = _buy_and_confirm(db, "000002.SZ", 100)
-    # 但 000002 已有活动买单？—— oid 在 8/7 撮合后 FILLED，oid2 是新的
-    r2 = execute_fills(db, "20260806", limit_codes=["000002.SZ"])
-    z = [z for z in r2["zero_fill"] if z["ts_code"] == "000002.SZ"]
+    r = execute_fills(db, "20260807")
+    z = [item for item in r["zero_fill"] if item["order_id"] == oid]
     assert z and z[0]["reason"] == "LIMIT_ONE_WORD_BUY"
     print("[PASS] 一字涨停买单零成交")
 
@@ -149,7 +142,7 @@ def test_stock_suspended_zero_fill():
 def test_low_liquidity_zero_fill():
     """成交量 5% < 一手 → 零成交（流动性不足）。"""
     db = _setup()
-    oid = _buy_and_confirm(db, "000004.SZ", 100)
+    _buy_and_confirm(db, "000004.SZ", 100)
     r = execute_fills(db, "20260807")
     z = [z for z in r["zero_fill"] if z["ts_code"] == "000004.SZ"]
     assert z and z[0]["reason"] == "INSUFFICIENT_LIQUIDITY"
@@ -163,7 +156,7 @@ def test_sell_fifo_and_realized_pnl():
     order = create_sell_draft(db, ts_code="000001.SZ", qty=100, today="20260806")
     confirm_order(db, order["order_id"], today="20260806")
     r = execute_fills(db, "20260807")
-    f = [x for x in r["filled"] if x["order_id"] == order["order_id"]][0]
+    f = next(x for x in r["filled"] if x["order_id"] == order["order_id"])
     assert f["qty"] == 100
     assert get_order(db, order["order_id"])["state"] == "FILLED"
     # 批次剩余 100
@@ -179,6 +172,25 @@ def test_sell_fifo_and_realized_pnl():
     # 现金：初始5000万分 + 卖出(100×10.2×100分 - 费用)
     assert cash > 50_000_000
     print(f"[PASS] FIFO 核销 remaining={remaining} cash={cash}")
+
+
+def test_full_sell_closes_position_lot_at_zero():
+    """整批卖出后批次保留审计记录，剩余数量精确归零。"""
+    db = _setup()
+    order = create_sell_draft(db, ts_code="000001.SZ", qty=200, today="20260806")
+    confirm_order(db, order["order_id"], today="20260806")
+
+    result = execute_fills(db, "20260807")
+
+    fill = next(item for item in result["filled"] if item["order_id"] == order["order_id"])
+    assert fill["qty"] == 200
+    conn = sqlite3.connect(db)
+    remaining = conn.execute(
+        "SELECT remaining_qty FROM pt_position_lot WHERE ts_code='000001.SZ'"
+    ).fetchone()[0]
+    conn.close()
+    assert remaining == 0
+    assert get_order(db, order["order_id"])["state"] == "FILLED"
 
 
 def test_double_run_no_duplicate_fills():
@@ -202,7 +214,7 @@ def test_fill_cash_reconciles_exact():
     db = _setup()
     oid = _buy_and_confirm(db, "000001.SZ", 100)
     r = execute_fills(db, "20260807")
-    f = [x for x in r["filled"] if x["order_id"] == oid][0]
+    f = next(x for x in r["filled"] if x["order_id"] == oid)
     # 复算：买入扣款 = 成交额(px×qty×100) + 佣金 + 税(0) + 其他
     notional = f["price_micro"] / 1_000_000 * f["qty"] * 100
     commission = max(500, int(round(notional * 5 / 10_000)))

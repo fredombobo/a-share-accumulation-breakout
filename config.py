@@ -9,7 +9,7 @@
   5. 综合打分 → A池 Top15（strict）+ B池观察
 
 数据通道（主路径）：
-  - 日线 / 基本面 / 资金流 / 列表：Tushare 直连（tushare_http + TUSHARE_TOKEN）
+  - 日线 / 基本面 / 资金流 / 列表：Tushare 直连（tushare_init + TUSHARE_TOKEN）
   - 本地落库：runtime/stock_data.db（SQLite WAL）
   - 历史扩容目标：HISTORY_SYNC_DAYS ≈ 730（完整 IS/OOS）
   - 备用 URL 常量：腾讯 K 线 / 新浪资金流（见下方 TENCNET_* / SINA_*）

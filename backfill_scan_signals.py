@@ -36,7 +36,7 @@ def main() -> int:
         print("scan_result 全部已含信号字段，无需回填")
         return 0
 
-    print(f"回填 {len(rows)} 行（跨 {len(set(r[0] for r in rows))} 个交易日）…")
+    print(f"回填 {len(rows)} 行（跨 {len({r[0] for r in rows})} 个交易日）…")
     codes = sorted({r[1] for r in rows})
     daily = store.load_daily(ts_codes=codes)
     grp = daily.groupby("ts_code", sort=False)

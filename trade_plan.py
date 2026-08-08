@@ -38,10 +38,8 @@ def build_trade_card(
     # 目标：+12% 或 1.5R
     target1 = None
     target2 = None
-    r_mult = None
     if px and stop and stop < px:
         risk = px - stop
-        r_mult = risk
         target1 = px + risk * 1.5
         target2 = px + risk * 2.5
         # 同时设百分比上限
@@ -84,7 +82,6 @@ def build_trade_card(
 
 def attach_trade_cards(df, regime: str = "neutral", sig_by_code: dict | None = None):
     """为结果 DataFrame 增加交易字段列。"""
-    import pandas as pd
 
     if df is None or getattr(df, "empty", True):
         return df

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from pathlib import Path
 
 # 根路径从脚本自身位置推导，项目迁移后仍可用

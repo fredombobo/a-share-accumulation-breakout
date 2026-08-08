@@ -7,14 +7,15 @@ import sys
 os.environ.pop("PYTHONPATH", None)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import tempfile
+from pathlib import Path
+
 import pandas as pd
 
 from market_regime import data_freshness, detect_regime_from_index_df
-from pool_select import split_pools, breakout_freshness_bonus, apply_soft_theme_bonus
+from pool_select import breakout_freshness_bonus, split_pools
+from portfolio import check_stops, load_portfolio, remove_position, upsert_position
 from trade_plan import build_trade_card
-from portfolio import upsert_position, check_stops, load_portfolio, remove_position, PORTFOLIO_PATH
-from pathlib import Path
-import tempfile
 
 
 def test_split_pools_keeps_theme_fill_out_of_a():

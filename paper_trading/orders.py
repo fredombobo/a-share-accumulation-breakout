@@ -16,12 +16,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .cal import is_open
+from .cal import is_open, next_open
 from .db import tx
 from .errors import (
     ERR_INSUFFICIENT_CASH,
@@ -36,7 +36,7 @@ from .rules import get_rule
 _TZ = ZoneInfo("Asia/Shanghai")
 
 ORDER_STATES = ("DRAFT", "CONFIRMED", "QUEUED", "FILLED",
-                "PARTIALLY_FILLED_EXPIRED", "EXPIRED", "REJECTED")
+                "PARTIALLY_FILLED_EXPIRED", "EXPIRED", "REJECTED", "CANCELLED")
 # 允许从 DRAFT/CONFIRMED/QUEUED 取消
 _CANCELABLE = {"DRAFT", "CONFIRMED", "QUEUED"}
 # 活动订单（占用预留）
@@ -49,6 +49,27 @@ def _now() -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+def _strict_next_open(db_path: Path, d: str) -> str:
+    current = datetime.strptime(d, "%Y%m%d").date() + timedelta(days=1)
+    return next_open(db_path, current.strftime("%Y%m%d"))
+
+
+def _confirmation_time(today: str) -> str:
+    """测试注入日期时使用收盘后时点；生产环境使用真实含时区时间。"""
+    real_today = datetime.now(_TZ).strftime("%Y%m%d")
+    if today == real_today:
+        return _now()
+    return f"{today[:4]}-{today[4:6]}-{today[6:8]}T15:31:00+08:00"
+
+
+def _normalize_time(value: str) -> datetime:
+    normalized = value.strip().replace(" ", "T", 1)
+    parsed = datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_TZ)
+    return parsed
 
 
 def _get_account_cash(db_path: Path) -> int:
@@ -78,7 +99,8 @@ def _tradeable_signal(db_path: Path, ts_code: str, trade_date: str) -> dict[str,
         row = conn.execute(
             "SELECT trade_date, ts_code, pool, total_score, suggested_pos_pct,"
             " input_hash, available_at FROM pt_signal_snapshot"
-            " WHERE trade_date=? AND ts_code=? AND pool='A'", (trade_date, ts_code)
+            " WHERE trade_date=? AND ts_code=? AND pool='A' AND tradeable=1",
+            (trade_date, ts_code),
         ).fetchone()
     if not row:
         return None
@@ -123,7 +145,7 @@ def create_buy_draft(
     from market_regime import detect_regime
     try:
         from local_store import LocalStore
-        reg = detect_regime(store=LocalStore(db_path=db_path))
+        reg = detect_regime(store=LocalStore(db_path=db_path), allow_network=False)
         if not reg.allow_new_entries:
             raise DomainError("MARKET_DEFENSE", "防守环境禁止开新仓",
                               details={"regime": reg.regime})
@@ -174,9 +196,11 @@ def create_buy_draft(
     with tx(db_path, immediate=True) as conn:
         conn.execute(
             "INSERT INTO pt_order (order_id, idempotency_key, account_id, source,"
-            " ts_code, side, qty, state, reserve_fen, created_at, updated_at)"
-            " VALUES (?,?,1,'SIGNAL',?,'BUY',?,'DRAFT',0,?,?)",
-            (order_id, f"draft-{uuid.uuid4().hex[:12]}", ts_code, qty, now, now),
+            " ts_code, side, qty, state, reserve_fen, reserved_qty, signal_trade_date,"
+            " created_at, updated_at)"
+            " VALUES (?,?,1,'SIGNAL',?,'BUY',?,'DRAFT',0,0,?,?,?)",
+            (order_id, f"draft-{uuid.uuid4().hex[:12]}", ts_code, qty,
+             trade_date, now, now),
         )
         conn.execute(
             "INSERT INTO pt_audit_event (actor, action, entity_type, entity_id,"
@@ -218,8 +242,8 @@ def create_sell_draft(
     with tx(db_path, immediate=True) as conn:
         conn.execute(
             "INSERT INTO pt_order (order_id, idempotency_key, account_id, source,"
-            " ts_code, side, qty, state, reserve_fen, created_at, updated_at)"
-            " VALUES (?,?,1,'POSITION',?,'SELL',?,'DRAFT',0,?,?)",
+            " ts_code, side, qty, state, reserve_fen, reserved_qty, created_at, updated_at)"
+            " VALUES (?,?,1,'POSITION',?,'SELL',?,'DRAFT',0,0,?,?)",
             (order_id, f"draft-{uuid.uuid4().hex[:12]}", ts_code, qty, now, now),
         )
     return get_order(db_path, order_id)
@@ -271,7 +295,7 @@ def confirm_order(
     regime = "neutral"
     try:
         from local_store import LocalStore
-        reg = detect_regime(store=LocalStore(db_path=db_path))
+        reg = detect_regime(store=LocalStore(db_path=db_path), allow_network=False)
         regime = reg.regime
         if side == "BUY" and not reg.allow_new_entries:
             _reject(order_id, "MARKET_DEFENSE", f"防守环境禁止开仓（{regime}）", db_path)
@@ -290,6 +314,8 @@ def confirm_order(
         raise DomainError("NO_QUOTE", f"{ts_code} 无行情")
     q_date, price, _vol = quote
     today = today or datetime.now(_TZ).strftime("%Y%m%d")
+    confirmed_at = _confirmation_time(today)
+    eligible_trade_date = _strict_next_open(db_path, today)
     stale = False
     try:
         # 行情必须不早于「最近已收盘交易日」（今天尚未收盘，取今天的前一交易日）
@@ -303,6 +329,24 @@ def confirm_order(
                           details={"latest_quote": q_date, "today": today})
     checks.append({"name": "行情时点", "pass": True, "as_of": q_date})
 
+    if side == "BUY":
+        sig = _tradeable_signal(db_path, ts_code, str(order.get("signal_trade_date") or today))
+        if sig is None:
+            _reject(order_id, "SIGNAL_NOT_TRADEABLE", "A 池信号不存在", db_path)
+            raise DomainError("SIGNAL_NOT_TRADEABLE", "A 池信号不存在")
+        if str(sig["trade_date"]) != today:
+            _reject(order_id, "SIGNAL_EXPIRED", "信号仅在交易日当日可确认", db_path)
+            raise DomainError("SIGNAL_EXPIRED", "信号已过期",
+                              details={"signal_trade_date": sig["trade_date"], "today": today})
+        try:
+            if _normalize_time(str(sig["available_at"])) > _normalize_time(confirmed_at):
+                _reject(order_id, "SIGNAL_NOT_AVAILABLE", "信号在确认时点尚不可用", db_path)
+                raise DomainError("SIGNAL_NOT_AVAILABLE", "信号在确认时点尚不可用")
+        except ValueError as exc:
+            _reject(order_id, "INVALID_SIGNAL_TIME", "信号时点格式无效", db_path)
+            raise DomainError("INVALID_SIGNAL_TIME", "信号时点格式无效") from exc
+        checks.append({"name": "信号时点", "pass": True, "available_at": sig["available_at"]})
+
     # 3) 交易规则
     rule = get_rule(db_path, ts_code)
     checks.append({"name": "交易规则", "pass": True, "inst_type": rule.inst_type})
@@ -312,38 +356,139 @@ def confirm_order(
     if side == "BUY":
         # 按可能成交上限预留：qty × 价格 × (1+滑点+佣金+税费)
         est_price = price * (1 + rule.slippage_bps / 10_000.0)
-        fee_rate = (rule.commission_bps + rule.sell_tax_bps + rule.other_fee_bps) / 10_000.0
+        fee_rate = (rule.commission_bps + rule.other_fee_bps) / 10_000.0
         est_cost = est_price * qty * 100.0  # 分
         reserve_fen = int(est_cost * (1 + fee_rate)) + rule.min_commission_fen
-        cash = _get_account_cash(db_path)
-        if reserve_fen > cash:
-            _reject(order_id, ERR_INSUFFICIENT_CASH,
-                    f"现金不足：需约 {reserve_fen} 分，可用 {cash} 分", db_path)
-            raise DomainError(ERR_INSUFFICIENT_CASH, "现金不足",
-                              details={"reserve_fen": reserve_fen, "cash_fen": cash})
-        checks.append({"name": "现金充足", "pass": True, "reserve_fen": reserve_fen})
     else:
-        sellable = sellable_qty(db_path, ts_code, today=today)
-        if qty > sellable:
-            _reject(order_id, ERR_INSUFFICIENT_SELLABLE,
-                    f"可卖份额不足：{qty} > {sellable}", db_path)
-            raise DomainError(ERR_INSUFFICIENT_SELLABLE, "可卖份额不足",
-                              details={"requested": qty, "sellable": sellable})
-        checks.append({"name": "可卖份额", "pass": True, "sellable": sellable})
+        reserve_fen = 0
 
     # 5) 预留 + 状态流转（BEGIN IMMEDIATE 内）
     now = _now()
+    pending_error: DomainError | None = None
+    reserved_qty = qty if side == "SELL" else 0
     with tx(db_path, immediate=True) as conn:
-        conn.execute(
-            "UPDATE pt_order SET state='CONFIRMED', reserve_fen=?, updated_at=?"
-            " WHERE order_id=?", (reserve_fen, now, order_id),
-        )
-        conn.execute(
-            "INSERT INTO pt_audit_event (actor, action, entity_type, entity_id,"
-            " before_json, after_json, occurred_at)"
-            " VALUES ('system','ORDER_CONFIRM','order',?,NULL,?,?)",
-            (order_id, f'{{"reserve_fen":{reserve_fen},"checks":{len(checks)}}}', now),
-        )
+        current = conn.execute(
+            "SELECT state FROM pt_order WHERE order_id=?", (order_id,)
+        ).fetchone()
+        if not current or current[0] != "DRAFT":
+            pending_error = DomainError(ERR_INVALID_STATE, "订单状态已变化，请刷新后重试")
+        elif side == "BUY":
+            cash_row = conn.execute(
+                "SELECT balance_fen FROM pt_cash_flow WHERE account_id=1 "
+                "ORDER BY flow_id DESC LIMIT 1"
+            ).fetchone()
+            cash = int(cash_row[0]) if cash_row else 0
+            other_reserved = int(conn.execute(
+                "SELECT COALESCE(SUM(reserve_fen),0) FROM pt_order "
+                "WHERE account_id=1 AND state IN ('CONFIRMED','QUEUED') AND order_id<>?",
+                (order_id,),
+            ).fetchone()[0])
+            available_cash = cash - other_reserved
+            duplicate = conn.execute(
+                "SELECT order_id FROM pt_order WHERE account_id=1 AND ts_code=? "
+                "AND side='BUY' AND state IN ('CONFIRMED','QUEUED') AND order_id<>? LIMIT 1",
+                (ts_code, order_id),
+            ).fetchone()
+            market_value = int(round(float(conn.execute(
+                "SELECT COALESCE(SUM(l.remaining_qty * COALESCE(("
+                "SELECT d.close FROM daily d WHERE d.ts_code=l.ts_code "
+                "ORDER BY d.trade_date DESC LIMIT 1),0) * 100),0) "
+                "FROM pt_position_lot l WHERE l.account_id=1 AND l.remaining_qty>0"
+            ).fetchone()[0] or 0)))
+            equity = cash + market_value
+            order_notional = int(round(est_price * qty * 100.0))
+            daily_buy_notional = int(round(float(conn.execute(
+                "SELECT COALESCE(SUM(o.qty * COALESCE((SELECT d.close FROM daily d "
+                "WHERE d.ts_code=o.ts_code ORDER BY d.trade_date DESC LIMIT 1),0) * 100),0) "
+                "FROM pt_order o "
+                "WHERE account_id=1 AND side='BUY' AND state IN ('CONFIRMED','QUEUED') "
+                "AND eligible_trade_date=? AND order_id<>?",
+                (eligible_trade_date, order_id),
+            ).fetchone()[0] or 0)))
+            if duplicate:
+                pending_error = DomainError(
+                    "DUPLICATE_ACTIVE_ORDER", f"{ts_code} 已有活动买单",
+                    details={"active_order_id": duplicate[0]},
+                )
+            elif reserve_fen > available_cash:
+                pending_error = DomainError(
+                    ERR_INSUFFICIENT_CASH, "现金不足",
+                    details={"reserve_fen": reserve_fen, "cash_fen": cash,
+                             "available_cash_fen": available_cash},
+                )
+            elif market_value + order_notional > int(equity * 0.80):
+                pending_error = DomainError(
+                    "GROSS_EXPOSURE_LIMIT_EXCEEDED", "确认后总持仓将超过账户权益的 80%",
+                    details={"equity_fen": equity, "market_value_fen": market_value,
+                             "order_notional_fen": order_notional, "limit_pct": "80"},
+                )
+            elif available_cash - reserve_fen < int(equity * 0.10):
+                pending_error = DomainError(
+                    "CASH_BUFFER_LIMIT_EXCEEDED", "确认后现金将低于账户权益的 10%",
+                    details={"equity_fen": equity,
+                             "remaining_cash_fen": available_cash - reserve_fen,
+                             "limit_pct": "10"},
+                )
+            elif daily_buy_notional + order_notional > int(equity * 0.20):
+                pending_error = DomainError(
+                    "DAILY_BUY_LIMIT_EXCEEDED", "单日新增买入预留将超过账户权益的 20%",
+                    details={"equity_fen": equity,
+                             "already_buy_notional_fen": daily_buy_notional,
+                             "new_buy_notional_fen": order_notional, "limit_pct": "20"},
+                )
+            else:
+                checks.extend([
+                    {"name": "现金充足", "pass": True, "reserve_fen": reserve_fen},
+                    {"name": "总仓位上限", "pass": True, "limit_pct": "80"},
+                    {"name": "现金缓冲", "pass": True, "limit_pct": "10"},
+                    {"name": "单日买入上限", "pass": True, "limit_pct": "20"},
+                ])
+        else:
+            sellable = int(conn.execute(
+                "SELECT COALESCE(SUM(remaining_qty),0) FROM pt_position_lot "
+                "WHERE ts_code=? AND account_id=1 AND sellable_date<=?",
+                (ts_code, today),
+            ).fetchone()[0])
+            already_reserved = int(conn.execute(
+                "SELECT COALESCE(SUM(reserved_qty),0) FROM pt_order "
+                "WHERE account_id=1 AND ts_code=? AND side='SELL' "
+                "AND state IN ('CONFIRMED','QUEUED') AND order_id<>?",
+                (ts_code, order_id),
+            ).fetchone()[0])
+            available_sellable = sellable - already_reserved
+            if qty > available_sellable:
+                pending_error = DomainError(
+                    ERR_INSUFFICIENT_SELLABLE, "可卖份额不足",
+                    details={"requested": qty, "sellable": sellable,
+                             "reserved": already_reserved,
+                             "available_sellable": available_sellable},
+                )
+            else:
+                checks.append({"name": "可卖份额", "pass": True,
+                               "sellable": available_sellable})
+
+        if pending_error is not None:
+            conn.execute(
+                "UPDATE pt_order SET state='REJECTED', reject_reason=?, updated_at=? "
+                "WHERE order_id=?",
+                (f"{pending_error.code}: {pending_error.message}", now, order_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE pt_order SET state='CONFIRMED', reserve_fen=?, reserved_qty=?,"
+                " confirmed_at=?, eligible_trade_date=?, updated_at=? WHERE order_id=?",
+                (reserve_fen, reserved_qty, confirmed_at, eligible_trade_date, now, order_id),
+            )
+            conn.execute(
+                "INSERT INTO pt_audit_event (actor, action, entity_type, entity_id,"
+                " before_json, after_json, occurred_at)"
+                " VALUES ('system','ORDER_CONFIRM','order',?,NULL,?,?)",
+                (order_id,
+                 f'{{"reserve_fen":{reserve_fen},"reserved_qty":{reserved_qty},'
+                 f'"eligible_trade_date":"{eligible_trade_date}","checks":{len(checks)}}}', now),
+            )
+    if pending_error is not None:
+        raise pending_error
     return get_order(db_path, order_id)
 
 
@@ -389,7 +534,8 @@ def cancel_order(db_path: str | Path, order_id: str) -> dict[str, Any]:
     now = _now()
     with tx(db_path, immediate=True) as conn:
         conn.execute(
-            "UPDATE pt_order SET state='CANCELLED', reserve_fen=0, updated_at=? WHERE order_id=?",
+            "UPDATE pt_order SET state='CANCELLED', reserve_fen=0, reserved_qty=0,"
+            " updated_at=? WHERE order_id=?",
             (now, order_id),
         )
         conn.execute(
@@ -408,7 +554,8 @@ def get_order(db_path: str | Path, order_id: str) -> dict[str, Any]:
     with tx(db_path, immediate=False) as conn:
         row = conn.execute(
             "SELECT order_id, idempotency_key, account_id, source, ts_code, side,"
-            " qty, state, reserve_fen, reject_reason, created_at, updated_at"
+            " qty, state, reserve_fen, reserved_qty, signal_trade_date, confirmed_at,"
+            " eligible_trade_date, reject_reason, created_at, updated_at"
             " FROM pt_order WHERE order_id=?", (order_id,)
         ).fetchone()
     if not row:
@@ -417,8 +564,10 @@ def get_order(db_path: str | Path, order_id: str) -> dict[str, Any]:
     return {
         "order_id": row[0], "idempotency_key": row[1], "account_id": row[2],
         "source": row[3], "ts_code": row[4], "side": row[5], "qty": row[6],
-        "state": row[7], "reserve_fen": row[8], "reject_reason": row[9],
-        "created_at": row[10], "updated_at": row[11],
+        "state": row[7], "reserve_fen": row[8], "reserved_qty": row[9],
+        "signal_trade_date": row[10], "confirmed_at": row[11],
+        "eligible_trade_date": row[12], "reject_reason": row[13],
+        "created_at": row[14], "updated_at": row[15],
     }
 
 

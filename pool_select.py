@@ -12,7 +12,6 @@ import pandas as pd
 
 from sector_themes import _dedup_themes_map
 
-
 PREFERRED_THEMES = ("AI应用", "半导体", "光模块", "机器人", "电力", "芯片")
 THEME_SOFT_BONUS = 2.0  # 主题软加分压低，避免盖过「长横盘+明确信号」
 

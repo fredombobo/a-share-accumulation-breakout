@@ -14,17 +14,16 @@ import os
 import sys
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from config import OUT_DIR  # noqa: E402
-from local_store import LocalStore  # noqa: E402
-from signals import detect_accumulation_breakout  # noqa: E402
-from bench_volume import find_build_seqs  # noqa: E402
-from trade_sim import simulate_trade, summarize  # noqa: E402
+from bench_volume import find_build_seqs
+from config import OUT_DIR
+from local_store import LocalStore
+from signals import detect_accumulation_breakout
+from trade_sim import simulate_trade, summarize
 
 
 def _simulate_trade(bars: pd.DataFrame, entry_i: int, stop_pct: float = 0.07, target_pct: float = 0.12, max_hold: int = 15) -> dict:
@@ -105,7 +104,7 @@ def run_backtest(
                 continue
             # 突破日必须落在采样日附近 5 个交易日内
             bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
-            recent = set(str(x) for x in cal[max(0, day_i - 5): day_i + 1])
+            recent = {str(x) for x in cal[max(0, day_i - 5): day_i + 1]}
             if not bd or bd not in recent or bd not in dts_set:
                 continue
             # 正确性：锚定突破日后一交易日入场（原实现误用「采样日+1」，突破早于采样日时收益口径偏）

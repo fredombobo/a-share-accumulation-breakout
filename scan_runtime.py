@@ -9,9 +9,9 @@ from __future__ import annotations
 import os
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Callable
-
+from typing import Any
 
 TERMINAL = frozenset({"done", "error", "cancelled"})
 ACTIVE = frozenset({"pending", "running", "cancelling"})
@@ -33,9 +33,7 @@ def cancel_flag_check(task: dict | None, event: threading.Event | None) -> bool:
                 return True
         except Exception:  # noqa: BLE001
             pass
-    if task is not None and task.get("cancel_requested"):
-        return True
-    return False
+    return bool(task is not None and task.get("cancel_requested"))
 
 
 def request_cancel(task: dict, event: threading.Event | None) -> None:

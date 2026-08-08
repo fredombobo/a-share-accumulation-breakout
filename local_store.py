@@ -18,12 +18,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+
+_SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 _DB_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "runtime"
 _DB_PATH = _DB_DIR / "stock_data.db"
@@ -229,10 +232,32 @@ class LocalStore:
     def upsert_daily(self, df: pd.DataFrame) -> int:
         if df is None or df.empty:
             return 0
+        df = df.copy()
+        now_iso = datetime.now(_SHANGHAI_TZ).isoformat(timespec="seconds")
+
+        def effective_at(value: object) -> str:
+            compact = str(value).strip().replace("-", "")[:8]
+            trade_day = datetime.strptime(compact, "%Y%m%d")
+            return trade_day.strftime("%Y-%m-%dT15:00:00+08:00")
+
+        defaults: dict[str, object] = {
+            "effective_at": df["trade_date"].map(effective_at),
+            "available_at": now_iso,
+            "ingested_at": now_iso,
+            "source": "tushare",
+            "revision": 1,
+            "is_legacy": 0,
+        }
+        for column, default in defaults.items():
+            if column not in df.columns:
+                df[column] = default
+            else:
+                df[column] = df[column].fillna(default)
+        df.loc[df["source"].astype(str).str.strip() == "", "source"] = "tushare"
         cols = ["ts_code", "trade_date", "open", "high", "low", "close",
                 "pre_close", "change", "pct_chg", "vol", "amount"]
-        # 阶段1：行情元数据列（有才写入；旧调用不传则保持默认）
-        for c in ("available_at", "ingested_at", "source", "revision", "is_legacy"):
+        # 存储边界统一补齐 PIT 元数据，调用方不能漏写。
+        for c in ("effective_at", "available_at", "ingested_at", "source", "revision", "is_legacy"):
             if c in df.columns and c not in cols:
                 cols.append(c)
         cols = [c for c in cols if c in df.columns]
@@ -417,7 +442,7 @@ def sync_fina_for_codes(
     # tushare_http.py 与本文件同目录，去掉硬编码绝对路径 E:\openclaw\stock_picker_cn
     if _here not in sys.path:
         sys.path.insert(0, _here)
-    from tushare_http import pro
+    from tushare_init import pro
 
     store = LocalStore()
     if periods is None:
@@ -481,8 +506,9 @@ def sync_from_tushare(
     _here = os.path.dirname(os.path.abspath(__file__))
     if _here not in sys.path:
         sys.path.insert(0, _here)
-    from tushare_http import pro
     import time
+
+    from tushare_init import pro
 
     store = LocalStore()
     now = datetime.now()

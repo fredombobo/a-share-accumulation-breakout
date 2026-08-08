@@ -10,9 +10,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
-from paper_trading.account import (  # noqa: E402
+from paper_trading.account import (
     commit_import,
     create_account,
     get_account,
@@ -21,8 +21,7 @@ from paper_trading.account import (  # noqa: E402
     preview_import,
     validate_import_item,
 )
-from paper_trading.errors import DomainError  # noqa: E402
-from paper_trading.migrations import run_migrations  # noqa: E402
+from paper_trading.errors import DomainError
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -200,7 +199,7 @@ def test_opening_equity_cash_plus_market_value():
 
 def test_parse_portfolio_missing_file():
     """文件不存在 → 领域错误。"""
-    db, pf = _setup()
+    _db, pf = _setup()
     with pytest.raises(DomainError) as ei:
         parse_portfolio_json(os.path.join(os.path.dirname(pf), "nope.json"))
     assert ei.value.code == "PORTFOLIO_FILE_NOT_FOUND"

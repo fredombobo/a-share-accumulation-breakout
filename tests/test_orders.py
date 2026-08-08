@@ -10,20 +10,18 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
-from paper_trading.account import commit_import, create_account  # noqa: E402
-from paper_trading.errors import DomainError  # noqa: E402
-from paper_trading.orders import (  # noqa: E402
+from paper_trading.account import commit_import, create_account
+from paper_trading.errors import DomainError
+from paper_trading.orders import (
     cancel_order,
     confirm_order,
     create_buy_draft,
     create_sell_draft,
     get_order,
-    list_orders,
     sellable_qty,
 )
-from paper_trading.migrations import run_migrations  # noqa: E402
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 

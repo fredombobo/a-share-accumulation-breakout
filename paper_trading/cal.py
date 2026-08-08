@@ -66,7 +66,7 @@ def refresh_trade_cal(
 ) -> dict:
     """刷新交易日历落库。Tushare 优先，异常/空 → 本地推断。
 
-    store: 可传 LocalStore（用其在线 pro）；None 时直接 import tushare_http.pro。
+    store: 可传 LocalStore（用其在线 pro）；None 时直接 import tushare_init.pro。
     返回 {"source": 'tushare'|'local_infer', "rows": int, "start":..., "end":...}
     """
     from datetime import datetime as _dt
@@ -80,9 +80,9 @@ def refresh_trade_cal(
     source = "local_infer"
     try:
         if store is not None:
-            pro_client = store._pro  # type: ignore[attr-defined]
+            pro_client = store._pro
         else:
-            from tushare_http import pro as _pro
+            from tushare_init import pro as _pro
             pro_client = _pro
         cal = pro_client.trade_cal(
             exchange="", start_date=start_d.strftime("%Y%m%d"),

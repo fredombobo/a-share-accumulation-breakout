@@ -8,7 +8,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from paper_trading.migrations import run_migrations  # noqa: E402
+from paper_trading.migrations import run_migrations
 
 
 def _build_legacy_db(db: str, n_days: int = 5, n_codes: int = 3) -> None:

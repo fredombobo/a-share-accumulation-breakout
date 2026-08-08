@@ -46,7 +46,10 @@ def test_write_env(monkeypatch_dir: Path | None = None):
 
 def test_cli_help():
     import subprocess
-    r = subprocess.run([sys.executable, "bootstrap.py", "--help"], cwd=os.path.dirname(__file__), capture_output=True, text=True)
+    r = subprocess.run(
+        [sys.executable, "bootstrap.py", "--help"], cwd=os.path.dirname(__file__),
+        capture_output=True, text=True, check=False,
+    )
     assert r.returncode == 0
     assert "--token" in r.stdout
     print("[PASS] cli --help")

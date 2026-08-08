@@ -15,8 +15,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from research_windows import recommend_research_plan  # noqa: E402
-from walkforward import run_is_oos  # noqa: E402
+from research_windows import recommend_research_plan
+from walkforward import run_is_oos
 
 
 def main() -> int:

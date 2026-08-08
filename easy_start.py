@@ -141,7 +141,7 @@ def _ensure_env(interactive: bool) -> bool:
 def _pip_install(py: str) -> None:
     print("[依赖] 检查 Python 包…")
     cmd = [py, "-m", "pip", "install", "-r", str(REQ), "-q"]
-    r = subprocess.run(cmd, cwd=str(ROOT))
+    r = subprocess.run(cmd, cwd=str(ROOT), check=False)
     if r.returncode != 0:
         print("[依赖] pip 安装失败，请检查网络后重试")
         sys.exit(1)
@@ -176,7 +176,7 @@ def _sync_if_needed(py: str, force_sync: bool) -> None:
         # 有库也默认同步，保证新鲜
         pass
     cmd = [py, str(ROOT / "sync_daily.py"), "--days", str(days)]
-    r = subprocess.run(cmd, cwd=str(ROOT))
+    r = subprocess.run(cmd, cwd=str(ROOT), check=False)
     if r.returncode != 0:
         print("[数据] 同步失败。可先打开界面查看旧数据，或检查 Token/网络后重试。")
     else:
@@ -193,7 +193,7 @@ def _start_server(py: str) -> subprocess.Popen:
     if os.environ.get("EASY_START_FOREGROUND") == "1":
         # 直接 exec 风格
         os.chdir(ROOT / "web")
-        os.execv(py, [py, str(backend)])  # noqa: S606
+        os.execv(py, [py, str(backend)])
     fout = open(out_log, "w", encoding="utf-8")  # noqa: SIM115
     ferr = open(err_log, "w", encoding="utf-8")  # noqa: SIM115
     p = subprocess.Popen(
@@ -225,7 +225,7 @@ def _wait_health(timeout: float = 40.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
-            with urllib.request.urlopen(url, timeout=2) as r:  # noqa: S310
+            with urllib.request.urlopen(url, timeout=2) as r:
                 if r.status == 200:
                     return True
         except Exception:  # noqa: BLE001
@@ -239,7 +239,7 @@ def _health_build_version() -> str:
     import urllib.request
 
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=3) as r:  # noqa: S310
+        with urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=3) as r:
             return str((json.loads(r.read().decode("utf-8")) or {}).get("build_version") or "")
     except Exception:  # noqa: BLE001
         return ""
@@ -269,7 +269,10 @@ def _restart_backend(py: str, reason: str) -> None:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(0.5)
                 if s.connect_ex(("127.0.0.1", 8000)) == 0:
-                    out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, timeout=10)
+                    out = subprocess.run(
+                        ["netstat", "-ano"], capture_output=True, text=True,
+                        timeout=10, check=False,
+                    )
                     for line in out.stdout.splitlines():
                         if ":8000" in line and "LISTEN" in line:
                             pid = line.split()[-1]

@@ -10,7 +10,7 @@
 - 有序迁移列表 MIGRATIONS + 执行器 `run_migrations()`：空库全跑 / 已有库只跑缺失 / 重复执行 no-op
 - 每个迁移独立 BEGIN IMMEDIATE 事务；迁移函数内 `CREATE TABLE IF NOT EXISTS` + `PRAGMA table_info` 检列，双重幂等
 - 挂接 `LocalStore.__init__` 末尾，backend/sync/测试自动迁移
-- 只新增表/列，绝不 DROP/修改原表结构与数据
+- 迁移仅前向且保留业务数据；schema v7 为允许完整核销归零，在同一事务内重建内部批次表 CHECK 约束
 
 ### 2. 领域表（`paper_trading/schema.py`，14 张表）
 账户 / 信号快照 / 订单 / 成交 / 现金流水 / 持仓批次 / 日结快照 / 交易日循环 / 对账 / 公司行为 / 审计事件 / 门禁报告 + trade_cal + instrument_rules

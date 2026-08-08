@@ -87,8 +87,9 @@ def execute_fills(
 
     # 读取活动订单（CONFIRMED/QUEUED），可选按标的过滤
     sql = ("SELECT order_id, ts_code, side, qty, state, reserve_fen FROM pt_order"
-           " WHERE state IN ('CONFIRMED','QUEUED') AND account_id=1")
-    params: list[Any] = []
+           " WHERE state IN ('CONFIRMED','QUEUED') AND account_id=1"
+           " AND eligible_trade_date IS NOT NULL AND eligible_trade_date<=?")
+    params: list[Any] = [trade_date]
     if limit_codes:
         ph = ",".join("?" * len(limit_codes))
         sql += f" AND ts_code IN ({ph})"
@@ -182,7 +183,8 @@ def execute_fills(
                 # 部分成交：余量当日过期
                 new_state = "PARTIALLY_FILLED_EXPIRED"
             conn.execute(
-                "UPDATE pt_order SET state=?, reserve_fen=0, updated_at=? WHERE order_id=?",
+                "UPDATE pt_order SET state=?, reserve_fen=0, reserved_qty=0,"
+                " updated_at=? WHERE order_id=?",
                 (new_state, now, order_id),
             )
             # 4) 审计
@@ -291,7 +293,11 @@ def expire_daily_orders(db_path: str | Path, trade_date: str) -> int:
     now = _now()
     with tx(db_path, immediate=True) as conn:
         cur = conn.execute(
-            "UPDATE pt_order SET state='EXPIRED', reserve_fen=0, updated_at=?"
-            " WHERE state IN ('CONFIRMED','QUEUED') AND account_id=1", (now,)
+            "UPDATE pt_order SET state='EXPIRED', reserve_fen=0, reserved_qty=0, updated_at=?"
+            " WHERE state IN ('CONFIRMED','QUEUED') AND account_id=1"
+            " AND eligible_trade_date IS NOT NULL AND eligible_trade_date<=?"
+            " AND EXISTS (SELECT 1 FROM daily d WHERE d.ts_code=pt_order.ts_code"
+            " AND d.trade_date=? AND d.vol>0)",
+            (now, trade_date, trade_date),
         )
         return cur.rowcount

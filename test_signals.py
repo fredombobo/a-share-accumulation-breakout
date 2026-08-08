@@ -136,6 +136,7 @@ def test_negative_trending():
 def test_real_kline():
     """用真实K线（腾讯接口）跑一次，验证数据兼容性"""
     import requests as rq
+
     from config import TENCNET_KLINE_URL, UA
     r = rq.get(TENCNET_KLINE_URL,
                params={"param": "sz000001,day,,,120,qfq"},

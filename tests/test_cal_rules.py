@@ -7,19 +7,18 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import pytest  # noqa: E402
+import pytest
 
-from paper_trading.cal import (  # noqa: E402
+from paper_trading.cal import (
     _infer_open,
     infer_cal,
     is_open,
     next_open,
     prev_open,
-    refresh_trade_cal,
 )
-from paper_trading.errors import DomainError  # noqa: E402
-from paper_trading.migrations import run_migrations  # noqa: E402
-from paper_trading.rules import default_rule, get_rule  # noqa: E402
+from paper_trading.errors import DomainError
+from paper_trading.migrations import run_migrations
+from paper_trading.rules import default_rule, get_rule
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -51,14 +50,12 @@ def test_refresh_falls_back_to_local_infer(monkeypatch):
         raise RuntimeError("token expired")
 
     import paper_trading.cal as cal_mod
-    monkeypatch.setattr(cal_mod, "_TZ", cal_mod._TZ)  # noqa: no-op
+    monkeypatch.setattr(cal_mod, "_TZ", cal_mod._TZ)
     # 模拟 pro.trade_cal 抛异常 → 走本地推断
-    monkeypatch.setitem(cal_mod.__dict__, "_load_cal", lambda p: {})  # noqa: no-op
+    monkeypatch.setitem(cal_mod.__dict__, "_load_cal", lambda p: {})
 
     # 直接调 infer 路径：构造 refresh 时 pro 抛错
     import paper_trading.cal as cal2
-    orig = cal2.refresh_trade_cal
-
     def patched(db_path, start=None, end=None, store=None):
         # 强制本地推断：patch tushare 路径抛异常
         try:

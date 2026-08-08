@@ -10,7 +10,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.pop("PYTHONPATH", None)
 
-from entry_plan_b import detect_plan_b  # noqa: E402
+from entry_plan_b import detect_plan_b
 
 
 def mk_bars(closes, vols, pcts):

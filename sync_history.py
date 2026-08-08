@@ -20,8 +20,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from config import HISTORY_SYNC_DAYS  # noqa: E402
-from local_store import LocalStore, sync_from_tushare  # noqa: E402
+from config import HISTORY_SYNC_DAYS
+from local_store import LocalStore, sync_from_tushare
 
 
 def gap_check(min_dates: int = 720) -> dict:

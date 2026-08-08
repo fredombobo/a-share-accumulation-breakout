@@ -1,10 +1,12 @@
+import { lazy, Suspense } from 'react'
 import { Route, Routes } from 'react-router'
 import Sidebar from './layout/Sidebar'
 import Topbar from './layout/Topbar'
-import Overview from './pages/Overview'
-import StockDetail from './pages/StockDetail'
-import StrategyLab from './pages/StrategyLab'
-import PaperTrading from './pages/PaperTrading'
+
+const Overview = lazy(() => import('./pages/Overview'))
+const StockDetail = lazy(() => import('./pages/StockDetail'))
+const StrategyLab = lazy(() => import('./pages/StrategyLab'))
+const PaperTrading = lazy(() => import('./pages/PaperTrading'))
 
 export default function App() {
   return (
@@ -13,13 +15,15 @@ export default function App() {
       <div className="main">
         <Topbar />
         <div className="content">
-          <Routes>
-            <Route path="/" element={<Overview />} />
-            <Route path="/stock/:tsCode" element={<StockDetail />} />
-            <Route path="/lab" element={<StrategyLab />} />
-            <Route path="/paper" element={<PaperTrading />} />
-            <Route path="*" element={<Overview />} />
-          </Routes>
+          <Suspense fallback={<div className="loading">正在加载页面…</div>}>
+            <Routes>
+              <Route path="/" element={<Overview />} />
+              <Route path="/stock/:tsCode" element={<StockDetail />} />
+              <Route path="/lab" element={<StrategyLab />} />
+              <Route path="/paper" element={<PaperTrading />} />
+              <Route path="*" element={<Overview />} />
+            </Routes>
+          </Suspense>
         </div>
       </div>
     </div>

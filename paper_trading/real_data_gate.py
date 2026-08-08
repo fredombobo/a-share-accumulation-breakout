@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -70,56 +69,124 @@ def _db_fingerprint(db_path: Path) -> str:
 
 
 def _code_version() -> str:
-    """代码版本：git HEAD 短哈希。"""
+    """代码版本：包含未提交源码/前端产物变化的构建指纹。"""
     try:
-        import subprocess
-        r = subprocess.run(
-            ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, timeout=5, check=False,
-        )
-        return r.stdout.strip()[:12] if r.returncode == 0 else "unknown"
+        from build_version import build_version
+        return build_version()
     except Exception:  # noqa: BLE001
         return "unknown"
+
+
+def _is_valid_bar(
+    open_price: float,
+    high: float,
+    low: float,
+    close: float,
+    vol: float,
+    amount: float,
+) -> bool:
+    """接受正常 OHLC，也接受明确的停牌占位行（零价/零量但保留前收）。"""
+    values = [open_price, high, low, close, vol, amount]
+    try:
+        o, h, lo, c, v, a = (float(x) for x in values)
+    except (TypeError, ValueError):
+        return False
+    if v < 0 or a < 0 or c <= 0:
+        return False
+    if o == h == lo == 0 and v == 0 and a == 0:
+        return True
+    return o > 0 and h >= max(o, c) and lo <= min(o, c) and h >= lo
+
+
+def _finalize_report(
+    report: dict,
+    db_path: Path,
+    report_dir: str | Path | None,
+) -> dict:
+    """计算签名、写不可变文件并把同一报告登记到交易域。"""
+    unsigned = json.dumps(report, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    report["report_sha256"] = _sha256_text(unsigned)
+    if report_dir:
+        rd = Path(report_dir)
+        rd.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(_TZ).strftime("%Y%m%d_%H%M%S")
+        out = rd / f"real_data_gate_{stamp}.json"
+        out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report["report_path"] = str(out)
+    try:
+        from paper_trading.migrations import run_migrations
+        run_migrations(db_path)
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "INSERT INTO pt_gate_report "
+                "(run_date, passed, data_version, issues_json, report_json, code_version,"
+                " config_hash, report_sha256, generated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                (datetime.now(_TZ).strftime("%Y%m%d"), 1 if report.get("passed") else 0,
+                 str(report.get("local_latest_trade_date") or "n/a"),
+                 json.dumps(report.get("issues") or [], ensure_ascii=False),
+                 json.dumps(report, ensure_ascii=False), report.get("code_version"),
+                 report.get("config_hash"), report["report_sha256"],
+                 report.get("generated_at") or _now()),
+            )
+    except Exception as exc:  # noqa: BLE001
+        from tushare_init import sanitize_error
+        report.setdefault("persistence_warnings", []).append(sanitize_error(exc)[:200])
+    return report
 
 
 def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None = None) -> dict:
     """执行门禁。返回 {passed, issues[], report 字段...}。"""
     db_path = Path(db_path)
     issues: list[str] = []
-    token = (os.environ.get("TUSHARE_TOKEN") or "").strip()
+    from tushare_init import resolve_token, sanitize_error
+
+    token = resolve_token()
     if not token:
-        return {
+        return _finalize_report({
             "status": "NOT_RUN", "passed": False, "issues": ["无 TUSHARE_TOKEN"],
             "generated_at": _now(), "code_version": _code_version(),
             "config_hash": _config_hash(), "db_fingerprint": _db_fingerprint(db_path),
-        }
+        }, db_path, report_dir)
 
     # 1) Tushare 接口可访问性 + 日历覆盖
     try:
-        from tushare_http import pro
+        from tushare_init import get_pro
+        pro = get_pro()
     except Exception as e:  # noqa: BLE001
-        return {"status": "ERROR", "passed": False,
-                "issues": [f"无法加载 tushare_http: {e}"], "generated_at": _now()}
+        return _finalize_report({"status": "ERROR", "passed": False,
+                "issues": [f"无法初始化数据适配器: {sanitize_error(e)}"],
+                "generated_at": _now(), "code_version": _code_version(),
+                "config_hash": _config_hash(), "db_fingerprint": _db_fingerprint(db_path)},
+                db_path, report_dir)
 
     today = datetime.now(_TZ).date()
     start = today - timedelta(days=days * 2)
+    print("[gate] 1/7 检查交易日历", file=sys.stderr)
     try:
         cal = pro.trade_cal(exchange="", start_date=start.strftime("%Y%m%d"),
                             end_date=today.strftime("%Y%m%d"), fields="cal_date,is_open")
-        open_dates = sorted(cal.loc[cal["is_open"] == 1, "cal_date"].astype(str).tolist())
+        if cal is None or cal.empty or not {"cal_date", "is_open"}.issubset(cal.columns):
+            raise RuntimeError("trade_cal 返回空或字段不完整")
+        open_mask = cal["is_open"].astype(str).isin(("1", "1.0", "True", "true"))
+        open_dates = sorted(cal.loc[open_mask, "cal_date"].astype(str).str[:8].tolist())
     except Exception as e:  # noqa: BLE001
-        return {"status": "ERROR", "passed": False, "issues": [f"trade_cal 不可访问: {e}"],
+        return _finalize_report({"status": "ERROR", "passed": False,
+                "issues": [f"trade_cal 不可访问: {sanitize_error(e)}"],
                 "generated_at": _now(), "code_version": _code_version(),
-                "config_hash": _config_hash(), "db_fingerprint": _db_fingerprint(db_path)}
+                "config_hash": _config_hash(), "db_fingerprint": _db_fingerprint(db_path)},
+                db_path, report_dir)
     if len(open_dates) < days:
         issues.append(f"交易日历覆盖不足: {len(open_dates)} < {days}")
 
     # 2) 本地 daily 与数据源对齐（最新已完成交易日）
+    print("[gate] 2/7 检查本地新鲜度和覆盖率", file=sys.stderr)
     conn = sqlite3.connect(str(db_path))
     local_max = conn.execute("SELECT MAX(trade_date) FROM daily").fetchone()[0]
-    local_dates = {r[0] for r in conn.execute("SELECT DISTINCT trade_date FROM daily")}
-    conn.close()
-    # 最新开市日（今天若未收盘取前一日）
+    local_dates = {str(r[0]) for r in conn.execute("SELECT DISTINCT trade_date FROM daily")}
+    # 最新已完成开市日（交易日 16:15 前不能视为已完成）。
+    now = datetime.now(_TZ)
+    if open_dates and open_dates[-1] == now.strftime("%Y%m%d") and (now.hour, now.minute) < (16, 15):
+        open_dates = open_dates[:-1]
     last_open = open_dates[-1] if open_dates else ""
     if local_max != last_open:
         issues.append(f"本地 daily 最新 {local_max} ≠ 数据源 {last_open}")
@@ -127,31 +194,33 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
     # 3) 活跃标的覆盖率
     try:
         basic = pro.stock_basic(exchange="", list_status="L", fields="ts_code")
+        if basic is None or basic.empty or "ts_code" not in basic.columns:
+            raise RuntimeError("stock_basic 返回空或字段不完整")
         active_codes = set(basic["ts_code"].astype(str).tolist())
-        conn = sqlite3.connect(str(db_path))
         local_latest_codes = {r[0] for r in conn.execute(
             "SELECT DISTINCT ts_code FROM daily WHERE trade_date=?", (local_max,)
         )}
-        conn.close()
         if active_codes:
             cov = len(local_latest_codes & active_codes) / len(active_codes)
             if cov < 0.98:
                 issues.append(f"最新交易日活跃标的覆盖率 {cov:.1%} < 98%")
     except Exception as e:  # noqa: BLE001
-        issues.append(f"活跃标的覆盖检查失败: {e}")
+        active_codes = set()
+        local_latest_codes = set()
+        issues.append(f"活跃标的覆盖检查失败: {sanitize_error(e)}")
 
     # 4) 数据质量：主键无重复 / OHLC 有效 / 量额非负
-    conn = sqlite3.connect(str(db_path))
+    print("[gate] 3/7 检查主键、OHLC 和时点元数据", file=sys.stderr)
     dup = conn.execute(
         "SELECT COUNT(*) FROM (SELECT ts_code, trade_date, COUNT(*) c FROM daily"
         " GROUP BY ts_code, trade_date HAVING c>1)"
     ).fetchone()[0]
     if dup:
         issues.append(f"daily 主键重复 {dup} 组")
-    bad_ohlc = conn.execute(
-        "SELECT COUNT(*) FROM daily WHERE high < low OR high < open OR"
-        " low > close OR vol < 0 OR amount < 0 OR open <= 0 OR close <= 0"
-    ).fetchone()[0]
+    bad_ohlc = 0
+    for bar in conn.execute("SELECT open, high, low, close, vol, amount FROM daily"):
+        if not _is_valid_bar(*bar):
+            bad_ohlc += 1
     if bad_ohlc:
         issues.append(f"OHLC/量额非法 {bad_ohlc} 行")
 
@@ -178,37 +247,86 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
 
     # 6) 元数据完整性
     no_meta = conn.execute(
-        "SELECT COUNT(*) FROM daily WHERE available_at IS NULL OR source IS NULL"
+        "SELECT COUNT(*) FROM daily WHERE effective_at IS NULL OR available_at IS NULL "
+        "OR ingested_at IS NULL OR source IS NULL OR revision IS NULL"
     ).fetchone()[0]
     if no_meta:
         issues.append(f"{no_meta} 行缺元数据（available_at/source）")
-    conn.close()
-
-    # 7) 固定种子抽样比对（≥20 标的 × ≥5 日期）
+    # 7) 固定种子抽样比对（按日期批量拉取，避免 100 次串行 API）。
+    print("[gate] 4/7 执行固定种子行情比对", file=sys.stderr)
+    seed_codes: list[str] = []
+    seed_dates: list[str] = []
+    sample_pairs = 0
+    mismatches: list[str] = []
     try:
-        seed_codes = sorted(local_latest_codes)[:20]
+        positive_latest = {r[0] for r in conn.execute(
+            "SELECT ts_code FROM daily WHERE trade_date=? AND open>0 AND vol>=0",
+            (local_max,),
+        )}
+        candidates = positive_latest & active_codes if active_codes else positive_latest
+        seed_codes = sorted(candidates,
+                            key=lambda code: hashlib.sha256(code.encode()).hexdigest())[:20]
         seed_dates = sorted(local_dates)[-5:]
-        mismatches = 0
-        for code in seed_codes:
-            for d in seed_dates:
-                src = pro.daily(ts_code=code, start_date=d, end_date=d)
-                if src is None or src.empty:
-                    continue
-                row = src.iloc[0]
-                conn = sqlite3.connect(str(db_path))
+        if len(seed_codes) < 20 or len(seed_dates) < 5:
+            issues.append(f"抽样规模不足: {len(seed_codes)} 标的 × {len(seed_dates)} 日期")
+        fields = ("open", "high", "low", "close", "vol", "amount")
+        for index, d in enumerate(seed_dates, start=1):
+            print(f"[gate]   样本日期 {index}/{len(seed_dates)}: {d}", file=sys.stderr)
+            src = pro.daily(trade_date=d,
+                            fields="ts_code,trade_date,open,high,low,close,vol,amount")
+            if src is None or src.empty or not {"ts_code", *fields}.issubset(src.columns):
+                mismatches.append(f"{d}: 数据源返回空或字段不完整")
+                continue
+            source_rows = {str(row["ts_code"]): row for _, row in src.iterrows()
+                           if str(row["ts_code"]) in seed_codes}
+            for code in seed_codes:
                 loc = conn.execute(
-                    "SELECT open, high, low, close, vol, amount FROM daily"
-                    " WHERE ts_code=? AND trade_date=?", (code, d)
+                    "SELECT open, high, low, close, vol, amount FROM daily "
+                    "WHERE ts_code=? AND trade_date=?", (code, d)
                 ).fetchone()
-                conn.close()
-                if loc:
-                    for i, col in enumerate(["open", "high", "low", "close"]):
-                        if abs(float(loc[i]) - float(row[col])) > 0.001:
-                            mismatches += 1
+                source_row = source_rows.get(code)
+                if loc is None:
+                    mismatches.append(f"{code}@{d}: 本地缺失")
+                    continue
+                if source_row is None:
+                    if _is_valid_bar(*loc) and float(loc[0]) == 0:
+                        continue
+                    mismatches.append(f"{code}@{d}: 数据源缺失")
+                    continue
+                sample_pairs += 1
+                for field_index, field in enumerate(fields):
+                    local_value = float(loc[field_index])
+                    source_value = float(source_row[field])
+                    tolerance = 0.001 if field in ("vol", "amount") else 0.0001
+                    if abs(local_value - source_value) > tolerance:
+                        mismatches.append(
+                            f"{code}@{d} {field}: local={local_value}, source={source_value}"
+                        )
         if mismatches:
-            issues.append(f"种子抽样 {mismatches} 处价格不一致")
+            issues.append(f"种子抽样 {len(mismatches)} 处不一致: {mismatches[:8]}")
     except Exception as e:  # noqa: BLE001
-        issues.append(f"种子抽样失败: {e}")
+        issues.append(f"种子抽样失败: {sanitize_error(e)}")
+
+    # 8) 公司行为接口必须对持仓标的可用；无持仓时至少验证一次接口权限。
+    print("[gate] 5/7 检查公司行为数据权限", file=sys.stderr)
+    corporate_action_codes = sorted({r[0] for r in conn.execute(
+        "SELECT DISTINCT ts_code FROM pt_position_lot WHERE account_id=1 AND remaining_qty>0"
+    )})
+    if not corporate_action_codes and seed_codes:
+        corporate_action_codes = [seed_codes[0]]
+    corporate_action_checked = 0
+    try:
+        for code in corporate_action_codes:
+            result = pro.dividend(
+                ts_code=code,
+                fields="ts_code,ann_date,div_proc,stk_div,cash_div_tax,record_date,ex_date",
+            )
+            if result is None:
+                raise RuntimeError(f"{code} dividend 返回 None")
+            corporate_action_checked += 1
+    except Exception as e:  # noqa: BLE001
+        issues.append(f"公司行为接口不可用: {sanitize_error(e)}")
+    conn.close()
 
     passed = not issues
     report = {
@@ -219,20 +337,20 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
         "trade_days_covered": len(open_dates),
         "sample_codes": len(seed_codes) if "seed_codes" in dir() else 0,
         "sample_dates": len(seed_dates) if "seed_dates" in dir() else 0,
+        "sample_pairs_compared": sample_pairs,
+        "sample_mismatches": len(mismatches),
+        "corporate_action_codes_checked": corporate_action_checked,
+        "local_latest_trade_date": local_max,
+        "source_latest_completed_trade_date": last_open,
         "generated_at": _now(),
         "code_version": _code_version(),
         "config_hash": _config_hash(),
         "db_fingerprint": _db_fingerprint(db_path),
     }
-    report["report_sha256"] = _sha256_text(json.dumps(report, ensure_ascii=False, sort_keys=True))
-
-    if report_dir:
-        rd = Path(report_dir)
-        rd.mkdir(parents=True, exist_ok=True)
-        out = rd / f"real_data_gate_{today.strftime('%Y%m%d_%H%M%S')}.json"
-        out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        report["report_path"] = str(out)
-    return report
+    print("[gate] 6/7 固化报告签名", file=sys.stderr)
+    finalized = _finalize_report(report, db_path, report_dir)
+    print("[gate] 7/7 门禁完成", file=sys.stderr)
+    return finalized
 
 
 def main(argv: list[str] | None = None) -> int:

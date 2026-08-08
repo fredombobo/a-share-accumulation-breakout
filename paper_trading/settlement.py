@@ -28,8 +28,9 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .cal import is_open
 from .db import tx
-from .engine import execute_fills
+from .engine import execute_fills, expire_daily_orders
 from .errors import DomainError
 
 _TZ = ZoneInfo("Asia/Shanghai")
@@ -113,7 +114,12 @@ def mark_to_market(db_path: str | Path, trade_date: str) -> dict[str, Any]:
 
 # ── 对账 ──
 
-def run_reconciliation(db_path: str | Path, trade_date: str) -> dict[str, Any]:
+def run_reconciliation(
+    db_path: str | Path,
+    trade_date: str,
+    *,
+    expected_mark: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """内部对账（阻断级）。返回 {result, diffs[]}。"""
     db_path = Path(db_path)
     diffs: list[dict[str, Any]] = []
@@ -172,6 +178,25 @@ def run_reconciliation(db_path: str | Path, trade_date: str) -> dict[str, Any]:
         if snap and int(snap[0]) + int(snap[1]) != int(snap[2]):
             add("CRITICAL", "ASSET_MISMATCH",
                 f"快照总资产 {snap[2]} ≠ 现金{snap[0]}+市值{snap[1]}")
+        if expected_mark and (
+            int(expected_mark["cash_fen"]) + int(expected_mark["market_value_fen"])
+            != int(expected_mark["total_asset_fen"])
+        ):
+            add("CRITICAL", "ASSET_MISMATCH", "本次估值总资产不等于现金加市值")
+
+        # R6b 活动卖单预留不得超过该标的可卖批次。
+        reserved = conn.execute(
+            "SELECT o.ts_code, SUM(o.reserved_qty), "
+            "COALESCE((SELECT SUM(l.remaining_qty) FROM pt_position_lot l "
+            "WHERE l.account_id=1 AND l.ts_code=o.ts_code AND l.sellable_date<=?),0) "
+            "FROM pt_order o WHERE o.account_id=1 AND o.side='SELL' "
+            "AND o.state IN ('CONFIRMED','QUEUED') GROUP BY o.ts_code",
+            (trade_date,),
+        ).fetchall()
+        for code, reserved_qty, sellable in reserved:
+            if int(reserved_qty or 0) > int(sellable or 0):
+                add("CRITICAL", "SELL_RESERVATION_EXCEEDS_POSITION",
+                    f"{code} 预留 {reserved_qty} > 可卖 {sellable}", str(code))
 
         # R7 成交行情版本存在（fill.quote_revision 格式 ts_code:trade_date → daily 有该行）
         bad_quote = conn.execute(
@@ -187,6 +212,17 @@ def run_reconciliation(db_path: str | Path, trade_date: str) -> dict[str, Any]:
                 if not exists:
                     add("CRITICAL", "FILL_QUOTE_MISSING",
                         f"成交 {fill_id} 行情版本 {rev} 不存在", fill_id)
+
+        pending_actions = conn.execute(
+            "SELECT ca.action_id, ca.ts_code, ca.ex_date FROM pt_corporate_action ca "
+            "WHERE ca.status='PENDING' AND ca.ex_date<=? AND EXISTS ("
+            "SELECT 1 FROM pt_position_lot l WHERE l.account_id=1 "
+            "AND l.ts_code=ca.ts_code AND l.remaining_qty>0)",
+            (trade_date,),
+        ).fetchall()
+        for action_id, code, ex_date in pending_actions:
+            add("CRITICAL", "PENDING_CORPORATE_ACTION",
+                f"{code} 在 {ex_date} 有未处理公司行为", str(action_id))
 
     result = "OK" if not any(d["severity"] == "CRITICAL" for d in diffs) else "DIFF"
     rec = {
@@ -219,16 +255,94 @@ def run_settlement(
     db_path = Path(db_path)
     today = today or datetime.now(_TZ).strftime("%Y%m%d")
 
+    if not is_open(db_path, trade_date):
+        raise DomainError("NOT_TRADING_DAY", f"{trade_date} 不是交易日")
+
+    now = _now()
+    with tx(db_path, immediate=True) as conn:
+        account = conn.execute(
+            "SELECT status FROM pt_account WHERE account_id=1"
+        ).fetchone()
+        if not account:
+            raise DomainError("ACCOUNT_NOT_FOUND", "纸面账户不存在")
+        completed = conn.execute(
+            "SELECT phase FROM pt_cycle WHERE run_date=?", (trade_date,)
+        ).fetchone()
+        if completed and completed[0] == "DONE":
+            snap = conn.execute(
+                "SELECT cash_fen, market_value_fen, total_asset_fen, unrealized_pnl_fen,"
+                " positions_json FROM pt_daily_snapshot WHERE account_id=1 AND trade_date=?",
+                (trade_date,),
+            ).fetchone()
+            return {
+                "filled_count": 0,
+                "zero_fill_count": 0,
+                "expired_count": 0,
+                "mark": {
+                    "cash_fen": int(snap[0]), "market_value_fen": int(snap[1]),
+                    "total_asset_fen": int(snap[2]), "unrealized_pnl_fen": int(snap[3] or 0),
+                    "holdings": json.loads(snap[4]), "trade_date": trade_date,
+                } if snap else None,
+                "reconciliation": {"result": "OK", "diffs": []},
+                "snapshot_ok": True,
+                "idempotent": True,
+            }
+        pending = conn.execute(
+            "SELECT ca.action_id, ca.ts_code, ca.ex_date FROM pt_corporate_action ca "
+            "WHERE ca.status='PENDING' AND ca.ex_date<=? AND EXISTS ("
+            "SELECT 1 FROM pt_position_lot l WHERE l.account_id=1 "
+            "AND l.ts_code=ca.ts_code AND l.remaining_qty>0) LIMIT 1",
+            (trade_date,),
+        ).fetchone()
+        if pending:
+            raise DomainError(
+                "PENDING_CORPORATE_ACTION", "存在未处理公司行为，日结已阻断",
+                details={"action_id": pending[0], "ts_code": pending[1],
+                         "ex_date": pending[2]},
+            )
+        conn.execute(
+            "INSERT INTO pt_cycle (cycle_id, run_date, phase, retry_count, data_version,"
+            " blocked_reason, started_at, finished_at) VALUES (?,?,'PRE_OPEN',0,?,NULL,?,NULL) "
+            "ON CONFLICT(cycle_id) DO UPDATE SET phase='PRE_OPEN',"
+            " retry_count=pt_cycle.retry_count+1, blocked_reason=NULL, finished_at=NULL",
+            (f"CY-{trade_date}", trade_date, f"daily:{trade_date}", now),
+        )
+
     # 1) 撮合此前确认订单
     fills = execute_fills(db_path, trade_date, today=today)
+
+    # DAY 单发生过实际撮合条件（有报价、有量）后，未成交余量日终过期。
+    expired_count = expire_daily_orders(db_path, trade_date)
 
     # 2) 估值
     mark = mark_to_market(db_path, trade_date)
 
     # 3) 对账（阻断级）
-    rec = run_reconciliation(db_path, trade_date)
+    rec = run_reconciliation(db_path, trade_date, expected_mark=mark)
 
-    # 4) 固化快照（对账通过才写）
+    # 4) 阻断差异不得发布快照或完成日结。
+    if rec["result"] != "OK":
+        with tx(db_path, immediate=True) as conn:
+            conn.execute(
+                "UPDATE pt_cycle SET phase='RECONCILE', blocked_reason=?, finished_at=NULL "
+                "WHERE cycle_id=?",
+                (json.dumps(rec["diffs"], ensure_ascii=False), f"CY-{trade_date}"),
+            )
+        return {
+            "filled_count": len(fills["filled"]),
+            "zero_fill_count": len(fills["zero_fill"]),
+            "expired_count": expired_count,
+            "mark": mark,
+            "reconciliation": {"result": rec["result"], "diffs": rec["diffs"]},
+            "snapshot_ok": False,
+        }
+
+    # 5) 固化信号快照并为可交易 A 池生成下一交易日买入草稿。
+    from .signals import generate_signal_drafts, sync_signal_snapshots
+    signal_sync = sync_signal_snapshots(db_path, trade_date)
+    draft_result = generate_signal_drafts(db_path, trade_date, today=trade_date)
+
+    # 6) 固化快照与完成状态。
     now = _now()
     with tx(db_path, immediate=True) as conn:
         conn.execute(
@@ -240,14 +354,84 @@ def run_settlement(
         )
         # 日结循环状态
         conn.execute(
-            "INSERT OR REPLACE INTO pt_cycle (cycle_id, run_date, phase, retry_count,"
-            " data_version, started_at, finished_at) VALUES (?,?,'DONE',0,?,?,?)",
-            (f"CY-{trade_date}", trade_date, f"daily:{trade_date}", now, now),
+            "UPDATE pt_cycle SET phase='DONE', data_version=?, blocked_reason=NULL,"
+            " finished_at=? WHERE cycle_id=?",
+            (f"daily:{trade_date}", now, f"CY-{trade_date}"),
         )
     return {
         "filled_count": len(fills["filled"]),
         "zero_fill_count": len(fills["zero_fill"]),
+        "expired_count": expired_count,
         "mark": mark,
         "reconciliation": {"result": rec["result"], "diffs": rec["diffs"]},
-        "snapshot_ok": rec["result"] == "OK",
+        "snapshot_ok": True,
+        "signal_sync": signal_sync,
+        "drafts": draft_result,
     }
+
+
+def apply_corporate_action(db_path: str | Path, action_id: int) -> dict[str, Any]:
+    """应用公司行为调整并保留完整审计；已应用请求幂等返回。"""
+    db_path = Path(db_path)
+    now = _now()
+    with tx(db_path, immediate=True) as conn:
+        row = conn.execute(
+            "SELECT ts_code, ex_date, kind, amount_fen, ratio, status "
+            "FROM pt_corporate_action WHERE action_id=?",
+            (action_id,),
+        ).fetchone()
+        if not row:
+            raise DomainError("CORPORATE_ACTION_NOT_FOUND", "公司行为不存在")
+        ts_code, ex_date, kind, amount_fen, ratio, status = row
+        if status == "APPLIED":
+            return {"action_id": action_id, "status": "APPLIED", "idempotent": True}
+        adjustment_ref = f"CA-{action_id}"
+        if kind == "DIVIDEND":
+            amount = int(amount_fen or 0)
+            if amount == 0:
+                raise DomainError("INVALID_CORPORATE_ACTION", "现金分红调整金额不能为零")
+            cash_row = conn.execute(
+                "SELECT balance_fen FROM pt_cash_flow WHERE account_id=1 "
+                "ORDER BY flow_id DESC LIMIT 1"
+            ).fetchone()
+            balance = int(cash_row[0]) + amount
+            if balance < 0:
+                raise DomainError("NEGATIVE_CASH_FORBIDDEN", "公司行为调整后现金将为负")
+            conn.execute(
+                "INSERT INTO pt_cash_flow (account_id, kind, amount_fen, balance_fen,"
+                " ref_id, occurred_at) VALUES (1,'CORPORATE_ACTION',?,?,?,?)",
+                (amount, balance, adjustment_ref, now),
+            )
+        else:
+            multiplier = float(ratio or 0)
+            if multiplier <= 0:
+                raise DomainError("INVALID_CORPORATE_ACTION", "份额调整比例必须为正")
+            lots = conn.execute(
+                "SELECT lot_id, remaining_qty, cost_price_micro FROM pt_position_lot "
+                "WHERE account_id=1 AND ts_code=? AND remaining_qty>0",
+                (ts_code,),
+            ).fetchall()
+            for lot_id, qty, cost_micro in lots:
+                new_qty_float = int(qty) * multiplier
+                if not new_qty_float.is_integer():
+                    raise DomainError("FRACTIONAL_SHARE_ADJUSTMENT", "调整产生非整数股份")
+                new_qty = int(new_qty_float)
+                new_cost = max(1, int(round(int(cost_micro) / multiplier)))
+                conn.execute(
+                    "UPDATE pt_position_lot SET remaining_qty=?, cost_price_micro=? "
+                    "WHERE lot_id=?",
+                    (new_qty, new_cost, lot_id),
+                )
+        conn.execute(
+            "UPDATE pt_corporate_action SET status='APPLIED', applied_at=?, adjustment_ref=? "
+            "WHERE action_id=?",
+            (now, adjustment_ref, action_id),
+        )
+        conn.execute(
+            "INSERT INTO pt_audit_event (actor, action, entity_type, entity_id,"
+            " before_json, after_json, occurred_at) "
+            "VALUES ('user','CORPORATE_ACTION_APPLY','corporate_action',?,NULL,?,?)",
+            (str(action_id), json.dumps({"status": "APPLIED", "ts_code": ts_code,
+                                         "ex_date": ex_date}, ensure_ascii=False), now),
+        )
+    return {"action_id": action_id, "status": "APPLIED", "adjustment_ref": adjustment_ref}

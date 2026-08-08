@@ -14,7 +14,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from config import OUT_DIR  # noqa: E402
+from config import OUT_DIR
 
 
 def _md_escape(v) -> str:

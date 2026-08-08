@@ -29,18 +29,16 @@ os.environ.pop("PYTHONPATH", None)
 for k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
     os.environ.pop(k, None)
 
-import data_fetch  # noqa: E402
-from charting import plot_top_kline_batch  # noqa: E402
-import config as _cfg  # noqa: E402
-from config import (  # noqa: E402
+import config as _cfg
+import data_fetch
+from charting import plot_top_kline_batch
+from config import (
     BUILD_WATCH_POOL,
-    CACHE_DIR as CACHE_DIR_STR,
     FUND_FLOW_DAYS,
     FUND_FLOW_MIN_RATIO,
     FUND_POSITIVE_DAYS_MIN,
     HORIZON_DAYS,
     INCLUDE_RELAXED_IN_A,
-    OUT_DIR as OUT_DIR_STR,
     RELAXED_BOX_MAX_AMP,
     RELAXED_BOX_MAX_MID_DRAWDOWN,
     RELAXED_BREAKOUT_CHG_MAX,
@@ -54,30 +52,35 @@ from config import (  # noqa: E402
     TOP_N_TRADE,
     TOP_N_WATCH,
 )
+from config import (
+    CACHE_DIR as CACHE_DIR_STR,
+)
+from config import (
+    OUT_DIR as OUT_DIR_STR,
+)
 
 # 兼容旧进程缓存的 config（热更新前无此字段）
 SCAN_WORKERS = int(getattr(_cfg, "SCAN_WORKERS", 0) or 0)
 BOX_LADDER_DAYS = tuple(getattr(_cfg, "BOX_LADDER_DAYS", (125, 105, 84, 63, 42, 20)))
 TARGET_SELECT_COUNT = int(getattr(_cfg, "TARGET_SELECT_COUNT", 20) or 20)
-from market_regime import data_freshness, detect_regime  # noqa: E402
-from pool_select import (  # noqa: E402
+from market_regime import data_freshness, detect_regime
+from parallel_scan import detect_many, prefilter_volume_parallel, resolve_workers
+from pool_select import (
     breakout_freshness_bonus,
     fund_flow_quality_ok,
     split_pools,
 )
-from scoring import (  # noqa: E402
+from scoring import (
     calc_fund_flow_strength,
     fund_positive_days,
     fundamental_filter_passes,
     is_delisted_name,
     is_st_name,
 )
-from parallel_scan import detect_many, prefilter_volume_parallel, resolve_workers  # noqa: E402
-from sector_themes import match_themes, theme_universe_mask  # noqa: E402
-from signals import detect_accumulation_breakout  # noqa: E402
-from trade_plan import attach_trade_cards  # noqa: E402
+from sector_themes import match_themes, theme_universe_mask
+from signals import detect_accumulation_breakout
+from trade_plan import attach_trade_cards
 
-from pathlib import Path
 CACHE_DIR = Path(CACHE_DIR_STR)
 OUT_DIR = Path(OUT_DIR_STR)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -102,14 +105,14 @@ def load_market_data(days: int, force: bool = False) -> tuple[pd.DataFrame, list
     cal = data_fetch.get_trade_cal(start, end)
     trade_dates = cal[-days:]
 
-    print(f"[1/4] 拉取股票列表…")
+    print("[1/4] 拉取股票列表…")
     basic = data_fetch.get_stock_basic()
 
     print(f"[2/4] 拉取 {len(trade_dates)} 个交易日全市场日线（{trade_dates[0]} ~ {trade_dates[-1]}）…")
     daily = data_fetch.get_daily_by_dates(trade_dates, sleep=0.2)
     print(f"      日线行数: {len(daily)}")
 
-    print(f"[3/4] 拉取全市场基本面指标…")
+    print("[3/4] 拉取全市场基本面指标…")
     dbbasic = data_fetch.get_daily_basic_by_dates(trade_dates[-1:], sleep=0.2)
     print(f"      基本面行数: {len(dbbasic)}")
 
@@ -324,7 +327,7 @@ def _soft_setup_row(
     theme: str,
 ) -> dict | None:
     """主题强制补齐：不要求完整突破，按箱体质量+贴近上沿+资金流打软分。"""
-    from scoring import build_master_score, score_fundamentals
+    from scoring import score_fundamentals
 
     sig = detect_accumulation_breakout(
         g2,
@@ -658,7 +661,7 @@ def run_scan(
     _prog("数据准备", 6, "加载本地行情…")
     try:
         basic, trade_dates, daily, dbbasic, _ = load_market_data(days, force)
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         _prog("数据准备", 6, f"加载失败: {str(e)[:80]}")
         raise
     if _stop_if_cancelled("数据准备"):
@@ -679,7 +682,7 @@ def run_scan(
             trade_dates = [d for d in trade_dates if str(d) <= max_d] or trade_dates
     latest_date = trade_dates[-1] if trade_dates else ""
     if daily is not None and not daily.empty:
-        latest_date = str(sorted(daily["trade_date"].astype(str).unique())[-1])
+        latest_date = str(max(daily["trade_date"].astype(str).unique()))
     if dbbasic is None or getattr(dbbasic, "empty", True) or "ts_code" not in getattr(dbbasic, "columns", []):
         try:
             dbbasic = data_fetch.get_daily_basic_by_dates([latest_date], sleep=0.2)

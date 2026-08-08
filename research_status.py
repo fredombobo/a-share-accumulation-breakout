@@ -17,7 +17,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from research_windows import research_status_dict  # noqa: E402
+from research_windows import research_status_dict
 
 
 def main() -> int:

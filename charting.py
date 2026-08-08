@@ -16,11 +16,12 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import mplfinance as mpf  # noqa: E402
-import pandas as pd  # noqa: E402
+import matplotlib.pyplot as plt
+import mplfinance as mpf
+import pandas as pd
 
 from config import CHART_DIR, HORIZON_DAYS
+
 FONT_FAMILY = "Microsoft YaHei"
 try:
     plt.rcParams["font.sans-serif"] = [FONT_FAMILY, "SimHei", "SimSun"]
@@ -140,7 +141,7 @@ def plot_kline(
     ax = axes[0]
     # 箱体阴影（axvspan 用日期位置）
     if box_patch:
-        start_pos, end_pos, lo, hi = box_patch
+        start_pos, end_pos, _lo, _hi = box_patch
         ax.axvspan(ohlcv.index[start_pos], ohlcv.index[min(end_pos, n-1)], alpha=0.10, color="gray")
     # 突破竖线
     if breakout_line is not None:
@@ -186,6 +187,7 @@ if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import requests
+
     from config import TENCNET_KLINE_URL, UA
     r = requests.get(TENCNET_KLINE_URL,
                      params={"param": "sz000001,day,,,120,qfq"},

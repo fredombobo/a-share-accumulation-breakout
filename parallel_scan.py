@@ -9,8 +9,9 @@ Windows 兼容：spawn；worker 为模块顶层函数，可 pickle。
 from __future__ import annotations
 
 import os
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, as_completed, wait
-from typing import Any, Callable, Iterable
+from collections.abc import Callable, Iterable
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -33,7 +34,7 @@ def _parent_alive(ppid: int) -> bool:
     if ppid <= 0:
         return False
     try:
-        import psutil  # noqa: PLC0415
+        import psutil
 
         try:
             p = psutil.Process(ppid)
@@ -71,7 +72,7 @@ def _parent_alive(ppid: int) -> bool:
         return True
     except ProcessLookupError:
         return False
-    except OSError:  # noqa: BLE001  # 保守存活，避免误杀 worker
+    except OSError:  # 保守存活，避免误杀 worker
         return True
 
 

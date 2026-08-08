@@ -20,16 +20,14 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from config import (  # noqa: E402
+from config import (
     ARENA_DEGRADE_WEEKS,
     ARENA_EVAL_WEEKS,
     ARENA_PROMOTE_MARGIN,
-    BT_OOS_END,
-    BT_OOS_START,
 )
-from local_store import LocalStore  # noqa: E402
-from optimizer import param_id  # noqa: E402
-from walkforward import eval_combo  # noqa: E402
+from local_store import LocalStore
+from optimizer import param_id
+from walkforward import eval_combo
 
 
 def seed_params(is_df: pd.DataFrame, oos_df: pd.DataFrame, wf_df: pd.DataFrame | None = None) -> dict:

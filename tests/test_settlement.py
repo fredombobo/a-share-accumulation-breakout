@@ -10,21 +10,16 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from paper_trading.account import commit_import, create_account  # noqa: E402
-from paper_trading.engine import execute_fills  # noqa: E402
-from paper_trading.orders import (  # noqa: E402
+from paper_trading.account import commit_import, create_account
+from paper_trading.orders import (
     confirm_order,
     create_buy_draft,
-    create_sell_draft,
-    get_order,
 )
-from paper_trading.settlement import (  # noqa: E402
-    get_positions,
+from paper_trading.settlement import (
     mark_to_market,
     run_reconciliation,
     run_settlement,
 )
-from paper_trading.migrations import run_migrations  # noqa: E402
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 

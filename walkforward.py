@@ -14,14 +14,14 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
-from config import (  # noqa: E402
+from config import (
     BT_IS_END,
     BT_IS_START,
     BT_OOS_END,
     BT_OOS_START,
     WF_MIN_OOS_PF_RATIO,
 )
-from optimizer import param_id, run_grid  # noqa: E402
+from optimizer import run_grid
 
 WF_WINDOWS = [
     # (train_start, train_end, test_start, test_end)

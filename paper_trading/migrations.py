@@ -5,7 +5,7 @@
   - 已有库（含 938MB 现网库）：只执行缺失版本
   - 重复执行：版本全在 → no-op（幂等）
   - 每个迁移独立 BEGIN IMMEDIATE 事务；迁移函数内部再叠 PRAGMA 检列，双重幂等
-  - 只新增表/列，绝不 DROP / 修改原表结构与数据
+  - 迁移仅前向、保留业务数据；SQLite CHECK 变更允许在同一事务内重建内部领域表
 """
 from __future__ import annotations
 
@@ -194,6 +194,143 @@ def mig_order_cancelled_state(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys=ON")
 
 
+# ── M006：验收纠错所需的时点、预留、阻断与幂等字段 ──
+
+def mig_acceptance_controls(conn: sqlite3.Connection) -> None:
+    """M006：只新增字段/表，补齐交易时点、资产预留和审计门禁。"""
+    if _table_exists(conn, "daily"):
+        _ensure_columns(conn, "daily", {"effective_at": "TEXT"})
+        conn.execute(
+            "UPDATE daily SET effective_at=substr(trade_date,1,4)||'-'||"
+            "substr(trade_date,5,2)||'-'||substr(trade_date,7,2)||'T15:00:00+08:00' "
+            "WHERE effective_at IS NULL"
+        )
+    if _table_exists(conn, "pt_signal_snapshot"):
+        _ensure_columns(conn, "pt_signal_snapshot", {
+            "effective_at": "TEXT",
+            "ingested_at": "TEXT",
+            "source": "TEXT NOT NULL DEFAULT 'scan_result'",
+            "revision": "INTEGER NOT NULL DEFAULT 1",
+            "tradeable": "INTEGER NOT NULL DEFAULT 1",
+        })
+        conn.execute(
+            "UPDATE pt_signal_snapshot SET effective_at=COALESCE(effective_at, available_at),"
+            " ingested_at=COALESCE(ingested_at, available_at)"
+        )
+    if _table_exists(conn, "pt_order"):
+        _ensure_columns(conn, "pt_order", {
+            "reserved_qty": "INTEGER NOT NULL DEFAULT 0",
+            "signal_trade_date": "TEXT",
+            "confirmed_at": "TEXT",
+            "eligible_trade_date": "TEXT",
+        })
+    if _table_exists(conn, "pt_cycle"):
+        _ensure_columns(conn, "pt_cycle", {"blocked_reason": "TEXT"})
+    if _table_exists(conn, "pt_corporate_action"):
+        _ensure_columns(conn, "pt_corporate_action", {
+            "status": "TEXT NOT NULL DEFAULT 'PENDING'",
+            "applied_at": "TEXT",
+            "adjustment_ref": "TEXT",
+        })
+    if _table_exists(conn, "pt_gate_report"):
+        _ensure_columns(conn, "pt_gate_report", {
+            "report_json": "TEXT",
+            "code_version": "TEXT",
+            "config_hash": "TEXT",
+            "report_sha256": "TEXT",
+        })
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS pt_api_idempotency ("
+        " idempotency_key TEXT PRIMARY KEY,"
+        " operation TEXT NOT NULL,"
+        " request_hash TEXT NOT NULL,"
+        " state TEXT NOT NULL CHECK (state IN ('PROCESSING','COMPLETED')),"
+        " status_code INTEGER,"
+        " response_json TEXT,"
+        " created_at TEXT NOT NULL,"
+        " completed_at TEXT)"
+    )
+
+
+# ── M007：允许持仓批次在完整核销后归零 ──
+
+_PT_POSITION_LOT_V7_DDL = (
+    "CREATE TABLE pt_position_lot_v7 ("
+    " lot_id INTEGER PRIMARY KEY AUTOINCREMENT,"
+    " account_id INTEGER NOT NULL REFERENCES pt_account(account_id),"
+    " ts_code TEXT NOT NULL,"
+    " buy_fill_id TEXT NOT NULL REFERENCES pt_fill(fill_id),"
+    " remaining_qty INTEGER NOT NULL CHECK (remaining_qty >= 0),"
+    " cost_price_micro INTEGER NOT NULL CHECK (cost_price_micro > 0),"
+    " sellable_date TEXT NOT NULL,"
+    " created_at TEXT NOT NULL)"
+)
+
+
+def mig_position_lot_zero_balance(conn: sqlite3.Connection) -> None:
+    """M007：保留完整批次审计记录，并允许全部卖出后的余额为零。"""
+    if not _table_exists(conn, "pt_position_lot"):
+        return
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='pt_position_lot'"
+    ).fetchone()
+    table_sql = (row[0] or "") if row else ""
+    normalized_sql = "".join(table_sql.split()).lower()
+    if "check(remaining_qty>=0)" in normalized_sql:
+        return
+
+    # SQLite 不支持直接修改 CHECK；采用同事务内的数据保留重建。
+    conn.execute(_PT_POSITION_LOT_V7_DDL)
+    conn.execute(
+        "INSERT INTO pt_position_lot_v7 (lot_id, account_id, ts_code, buy_fill_id,"
+        " remaining_qty, cost_price_micro, sellable_date, created_at)"
+        " SELECT lot_id, account_id, ts_code, buy_fill_id, remaining_qty,"
+        " cost_price_micro, sellable_date, created_at FROM pt_position_lot"
+    )
+    conn.execute("DROP TABLE pt_position_lot")
+    conn.execute("ALTER TABLE pt_position_lot_v7 RENAME TO pt_position_lot")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pt_lot_code ON pt_position_lot(ts_code, sellable_date)"
+    )
+
+
+# ── M008：修复 v6 以后新增日线的 PIT 元数据 ──
+
+def mig_daily_point_in_time_metadata(conn: sqlite3.Connection) -> None:
+    """M008：幂等补齐日线时点字段，不改变行情数值。"""
+    if not _table_exists(conn, "daily"):
+        return
+    _ensure_columns(conn, "daily", {
+        "effective_at": "TEXT",
+        "available_at": "TEXT",
+        "ingested_at": "TEXT",
+        "source": "TEXT NOT NULL DEFAULT 'tushare'",
+        "revision": "INTEGER NOT NULL DEFAULT 1",
+        "is_legacy": "INTEGER NOT NULL DEFAULT 0",
+    })
+    now = _now_iso()
+    conn.execute(
+        "UPDATE daily SET effective_at=substr(trade_date,1,4)||'-'||"
+        "substr(trade_date,5,2)||'-'||substr(trade_date,7,2)||'T15:00:00+08:00' "
+        "WHERE effective_at IS NULL OR trim(effective_at)=''"
+    )
+    conn.execute(
+        "UPDATE daily SET ingested_at=? WHERE ingested_at IS NULL OR trim(ingested_at)=''",
+        (now,),
+    )
+    conn.execute(
+        "UPDATE daily SET available_at=ingested_at "
+        "WHERE available_at IS NULL OR trim(available_at)=''"
+    )
+    conn.execute(
+        "UPDATE daily SET source=CASE WHEN COALESCE(is_legacy,0)=1 "
+        "THEN 'legacy_backfill' ELSE 'tushare' END "
+        "WHERE source IS NULL OR trim(source)=''"
+    )
+    conn.execute("UPDATE daily SET revision=0 WHERE revision IS NULL")
+    conn.execute("UPDATE daily SET is_legacy=0 WHERE is_legacy IS NULL")
+
+
 # ── 迁移注册表（版本单调递增，禁止重排/删除已发布版本） ──
 
 MIGRATIONS: list[tuple[int, str, MigrationFn]] = [
@@ -202,6 +339,9 @@ MIGRATIONS: list[tuple[int, str, MigrationFn]] = [
     (3, "M003_instrument_rules", mig_instrument_rules),
     (4, "M004_paper_tables", mig_paper_tables),
     (5, "M005_order_cancelled_state", mig_order_cancelled_state),
+    (6, "M006_acceptance_controls", mig_acceptance_controls),
+    (7, "M007_position_lot_zero_balance", mig_position_lot_zero_balance),
+    (8, "M008_daily_point_in_time_metadata", mig_daily_point_in_time_metadata),
 ]
 
 
