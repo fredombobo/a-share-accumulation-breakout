@@ -1,21 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useLocation } from 'react-router'
 import type { EChartsOption } from 'echarts'
 import {
   api,
+  ApiError,
   LabArenaResp,
   LabBoardResp,
   LabCatalog,
+  LabMetricRow,
   LabOptimizeBody,
+  LabReportHistoryItem,
   LabResearchStatus,
   LabStatusResp,
+  LabTrustedReport,
 } from '../api/client'
 import EChart from '../components/EChart'
+import LabTrustedReportView from '../components/LabTrustedReport'
+import LabGuided from '../components/lab/LabGuided'
+import { useViewMode, ViewModeToggle } from '../components/guidance/BeginnerUi'
 import { useChartColors } from '../theme/ThemeContext'
 
 type TabId = 'playbook' | 'console' | 'results'
 type RunMode = 'grid' | 'single'
 type StratId = 'A' | 'B'
+const TERMINAL_TASK_STATES = ['done', 'error', 'cancelled', 'interrupted']
 
 const fmt = (v: unknown, digits = 2) => {
   if (v === null || v === undefined || v === '') return '—'
@@ -56,10 +64,10 @@ function BoardTable({
   onSelect,
   oosMode,
 }: {
-  rows: Record<string, unknown>[]
+  rows: LabMetricRow[]
   emptyHint: string
   selectedIdx: number | null
-  onSelect: (i: number, row: Record<string, unknown>) => void
+  onSelect: (i: number, row: LabMetricRow) => void
   oosMode?: boolean
 }) {
   if (!rows.length) {
@@ -81,18 +89,18 @@ function BoardTable({
             <th className="num">清零</th>
             <th className="num">窗口</th>
             <th className="num">止损</th>
-            <th className="num">交易</th>
-            <th className="num">胜率</th>
-            <th className="num">PF</th>
-            <th className="num">回撤</th>
+            <th className="num">净交易</th>
+            <th className="num">净胜率</th>
+            <th className="num">净PF</th>
+            <th className="num">净回撤</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => {
-            const wr = oosMode ? (r.oos_win_rate ?? r.win_rate) : r.win_rate
-            const pf = oosMode ? (r.oos_profit_factor ?? r.profit_factor) : r.profit_factor
-            const dd = oosMode ? (r.oos_max_drawdown ?? r.max_drawdown) : r.max_drawdown
-            const n = oosMode ? (r.oos_n_trades ?? r.n_trades) : r.n_trades
+            const wr = oosMode ? r.oos_net_win_rate : r.net_win_rate
+            const pf = oosMode ? r.oos_net_profit_factor : r.net_profit_factor
+            const dd = oosMode ? r.oos_net_max_drawdown : r.net_max_drawdown
+            const n = oosMode ? r.oos_net_n_trades : r.net_n_trades
             return (
               <tr
                 key={i}
@@ -121,6 +129,8 @@ function BoardTable({
 
 export default function StrategyLab() {
   const c = useChartColors()
+  const location = useLocation()
+  const { mode: viewMode, setMode: setViewMode } = useViewMode('lab')
   const [tab, setTab] = useState<TabId>('playbook')
   const [catalog, setCatalog] = useState<LabCatalog | null>(null)
   const [research, setResearch] = useState<LabResearchStatus | null>(null)
@@ -130,7 +140,10 @@ export default function StrategyLab() {
   const [task, setTask] = useState<LabStatusResp | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [guidedError, setGuidedError] = useState<unknown>(null)
   const [lastResult, setLastResult] = useState<LabStatusResp['result'] | null>(null)
+  const [latestReport, setLatestReport] = useState<LabTrustedReport | null>(null)
+  const [reportHistory, setReportHistory] = useState<LabReportHistoryItem[]>([])
 
   // controls
   const [strategy, setStrategy] = useState<StratId>('A')
@@ -153,7 +166,7 @@ export default function StrategyLab() {
     stop_pct: 0.07,
   })
 
-  const [selected, setSelected] = useState<Record<string, unknown> | null>(null)
+  const [selected, setSelected] = useState<LabMetricRow | null>(null)
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
   const [selectedKind, setSelectedKind] = useState<'IS' | 'OOS'>('IS')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -172,9 +185,71 @@ export default function StrategyLab() {
         setOosEnd((prev) => prev || r.plan.oos_end)
       }
     }).catch(() => undefined)
+    api.labReports(20).then((r) => {
+      setReportHistory(r.items)
+      if (r.items[0]?.research_run_id) {
+        api.labReport(r.items[0].research_run_id)
+          .then((envelope) => setLatestReport(envelope.report))
+          .catch(() => undefined)
+      }
+    }).catch(() => undefined)
   }, [])
 
+  const stopPoll = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }, [])
+
+  const acceptTask = useCallback((t: LabStatusResp) => {
+    setTask(t)
+    const terminal = TERMINAL_TASK_STATES.includes(t.status)
+    setBusy(!terminal && t.status !== 'idle')
+    if (!terminal) {
+      setTab('console')
+      return
+    }
+    stopPoll()
+    if (t.status === 'done' && t.result) {
+      setLastResult(t.result)
+      if (t.result.is_top?.length) {
+        setSelected(t.result.is_top[0])
+        setSelectedIdx(0)
+        setSelectedKind('IS')
+      }
+      setTab('results')
+    } else if (t.status === 'interrupted') {
+      setTab('console')
+    }
+    loadBoards()
+  }, [loadBoards, stopPoll])
+
+  const pollTask = useCallback(async (tid?: string) => {
+    const t = await api.labStatus(tid)
+    acceptTask(t)
+    return t
+  }, [acceptTask])
+
+  const startPoll = useCallback((tid: string) => {
+    stopPoll()
+    void pollTask(tid).catch(() => undefined)
+    pollRef.current = setInterval(() => {
+      void pollTask(tid).catch(() => undefined)
+    }, 2500)
+  }, [pollTask, stopPoll])
+
+  const restoreTask = useCallback(async () => {
+    const restored = await pollTask()
+    if (restored.task_id && ['pending', 'running', 'cancelling'].includes(restored.status)) {
+      startPoll(restored.task_id)
+    }
+  }, [pollTask, startPoll])
+
   useEffect(() => {
+    api.health().then((health) => {
+      if (health.guided_ui_enabled === false) setViewMode('advanced')
+    }).catch(() => undefined)
     api.labCatalog()
       .then((cat) => {
         setCatalog(cat)
@@ -193,42 +268,20 @@ export default function StrategyLab() {
       })
       .catch((e) => setErr(String(e)))
     loadBoards()
+    void restoreTask().catch((e) => setErr(String(e)))
+
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') void restoreTask().catch(() => undefined)
+    }
+    const refreshOnFocus = () => { void restoreTask().catch(() => undefined) }
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    window.addEventListener('focus', refreshOnFocus)
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
+      stopPoll()
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+      window.removeEventListener('focus', refreshOnFocus)
     }
-  }, [loadBoards])
-
-  const stopPoll = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }
-
-  const startPoll = (tid: string) => {
-    stopPoll()
-    pollRef.current = setInterval(() => {
-      api.labStatus(tid)
-        .then((t) => {
-          setTask(t)
-          if (['done', 'error', 'cancelled'].includes(t.status)) {
-            stopPoll()
-            setBusy(false)
-            if (t.status === 'done' && t.result) {
-              setLastResult(t.result)
-              if (t.result.is_top?.length) {
-                setSelected(t.result.is_top[0])
-                setSelectedIdx(0)
-                setSelectedKind('IS')
-              }
-              setTab('results')
-            }
-            loadBoards()
-          }
-        })
-        .catch(() => undefined)
-    }, 2500)
-  }
+  }, [loadBoards, restoreTask, setViewMode, stopPoll])
 
   const nCombos = useMemo(() => comboCount(gridSel), [gridSel])
   const estMin = useMemo(() => {
@@ -282,25 +335,50 @@ export default function StrategyLab() {
     return body
   }
 
-  const run = async () => {
+  const launch = async (body: LabOptimizeBody) => {
     setErr('')
+    setGuidedError(null)
     setBusy(true)
     setTab('console')
     try {
-      const r = await api.labOptimize(buildBody())
+      const r = await api.labOptimize(body)
       setTask({
         task_id: r.task_id,
         status: 'pending',
-        strategy,
+        strategy: String(body.strategy),
         windows: r.windows,
         progress: 0,
         message: '已排队',
       })
       startPoll(r.task_id)
     } catch (e) {
-      setErr(String(e))
-      setBusy(false)
+      setGuidedError(e)
+      const message = String(e)
+      const activeTaskId = e instanceof ApiError && typeof e.details.active_task_id === 'string'
+        ? e.details.active_task_id
+        : message.match(/"active_task_id":"([^"]+)"/)?.[1]
+      if (activeTaskId) {
+        setErr('检测到已有实验任务，已恢复其进度。')
+        setBusy(true)
+        startPoll(activeTaskId)
+      } else {
+        setErr(e instanceof Error ? e.message : message)
+        setBusy(false)
+      }
     }
+  }
+
+  const run = async () => launch(buildBody())
+
+  const runTrusted = async () => {
+    if (!catalog) return
+    await launch({
+      strategy,
+      max_codes: 600,
+      step: 10,
+      mode: 'grid',
+      grid: { ...catalog.grid_default },
+    })
   }
 
   const cancelTask = async () => {
@@ -315,23 +393,37 @@ export default function StrategyLab() {
     }
   }
 
-  const isRunning = busy && !['done', 'error', 'cancelled'].includes(task?.status || '')
+  const isRunning = busy && !TERMINAL_TASK_STATES.includes(task?.status || '')
   const plan = research?.plan
   const stratDoc = catalog?.strategies?.[strategy]
+  const reportForDisplay = (lastResult?.trusted_report || latestReport) ?? null
+
+  useEffect(() => {
+    const state = location.state as { openLabConclusion?: boolean } | null
+    const requested = new URLSearchParams(location.search).get('view') === 'results'
+      || state?.openLabConclusion === true
+    if (!requested) return
+    if (viewMode === 'advanced') setTab('results')
+    if (!reportForDisplay) return
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById('lab-conclusion')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [location.key, location.search, location.state, reportForDisplay, viewMode])
 
   const chartOption: EChartsOption = useMemo(() => {
     const rows = (lastResult?.is_top || isBoard.rows || []).slice(0, 8)
     const labels = rows.map((r, i) => `#${i + 1}`)
-    const pfs = rows.map((r) => Number(r.profit_factor ?? 0))
+    const pfs = rows.map((r) => Number(r.net_profit_factor ?? 0))
     const wrs = rows.map((r) => {
-      const n = Number(r.win_rate ?? 0)
+      const n = Number(r.net_win_rate ?? 0)
       return Math.abs(n) <= 1.5 ? n * 100 : n
     })
     return {
       backgroundColor: 'transparent',
       grid: { left: 40, right: 16, top: 28, bottom: 28 },
       tooltip: { trigger: 'axis' },
-      legend: { data: ['PF', '胜率%'], textStyle: { color: c.subtext, fontSize: 11 }, top: 0 },
+      legend: { data: ['净PF', '净胜率%'], textStyle: { color: c.subtext, fontSize: 11 }, top: 0 },
       xAxis: {
         type: 'category',
         data: labels.length ? labels : ['—'],
@@ -352,14 +444,14 @@ export default function StrategyLab() {
       ],
       series: [
         {
-          name: 'PF',
+          name: '净PF',
           type: 'bar',
           data: pfs.length ? pfs : [0],
           barMaxWidth: 26,
           itemStyle: { color: c.accent, borderRadius: [4, 4, 0, 0] },
         },
         {
-          name: '胜率%',
+          name: '净胜率%',
           type: 'line',
           yAxisIndex: 1,
           data: wrs.length ? wrs : [0],
@@ -372,7 +464,7 @@ export default function StrategyLab() {
     } as EChartsOption
   }, [lastResult, isBoard.rows, c])
 
-  const fillSingleFromRow = (row: Record<string, unknown>) => {
+  const fillSingleFromRow = (row: LabMetricRow) => {
     setSingle({
       vol_ratio_min: Number(row.vol_ratio_min ?? 1.5),
       strong_reset: Number(row.strong_reset ?? 3),
@@ -384,15 +476,34 @@ export default function StrategyLab() {
     setTab('console')
   }
 
+  if (viewMode === 'guided') {
+    return (
+      <LabGuided
+        strategy={strategy}
+        onStrategy={setStrategy}
+        catalog={catalog}
+        research={research}
+        task={task}
+        report={reportForDisplay}
+        error={guidedError}
+        running={isRunning}
+        onRun={() => { void runTrusted() }}
+        onCancel={() => { void cancelTask() }}
+        onAdvanced={() => setViewMode('advanced')}
+      />
+    )
+  }
+
   return (
     <div className="lab-page">
+      <ViewModeToggle mode="advanced" onChange={() => setViewMode('guided')} />
       {/* header */}
       <section className="lab-hero">
         <div className="lab-hero-main">
           <div className="lab-kicker">Research Console</div>
           <h1 className="lab-title">策略实验室</h1>
           <p className="lab-sub">
-            看清方案 A/B 的入场出场规则 → 勾选网格或手调参数 → 跑 IS/OOS → 点行看明细。
+            看清方案 A/B 的入场出场规则 → 冻结净成本 IS 第一名 → 跑 OOS、三窗 WF 与双基线 → 生成可信报告。
             结果<strong>不是</strong>买卖清单；可交易候选在{' '}
             <Link to="/" style={{ color: 'var(--accent)', fontWeight: 600 }}>选股总览 A 池</Link>。
           </p>
@@ -414,10 +525,10 @@ export default function StrategyLab() {
           </div>
         </div>
         <div className="lab-metrics">
-          <div className={`lab-metric ${plan?.can_claim_edge ? 'ok' : 'warn'}`}>
+          <div className={`lab-metric ${plan?.data_ready_for_edge_validation ? 'ok' : 'warn'}`}>
             <div className="lbl">研究模式</div>
             <div className="val" style={{ fontSize: 14 }}>{plan?.label || '…'}</div>
-            <div className="hint">{plan?.can_claim_edge ? '可严肃谈稳定性' : '仅摸底'}</div>
+            <div className="hint">{plan?.data_ready_for_edge_validation ? '可运行可信门禁' : '仅摸底'}</div>
           </div>
           <div className="lab-metric">
             <div className="lbl">日线覆盖</div>
@@ -777,6 +888,7 @@ export default function StrategyLab() {
                   {task.status === 'done' && '完成'}
                   {task.status === 'error' && '失败'}
                   {task.status === 'cancelled' && '已取消'}
+                  {task.status === 'interrupted' && '服务重启中断 · 可按原配置续跑'}
                   {(task.status === 'running' || task.status === 'pending') &&
                     `${task.status === 'pending' ? '排队' : '运行'} ${task.progress ?? 0}%`}
                 </span>
@@ -785,7 +897,7 @@ export default function StrategyLab() {
                 <i style={{ width: `${Math.max(Number(task.progress || 0), task.status === 'pending' ? 4 : 0)}%` }} />
               </div>
               <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)' }}>
-                {task.status === 'error' ? task.error : task.message || '—'}
+                {task.phase ? `[${task.phase}] ` : ''}{task.status === 'error' ? task.error : task.message || '—'}
               </div>
             </div>
           )}
@@ -796,6 +908,27 @@ export default function StrategyLab() {
       {/* ── RESULTS ── */}
       {tab === 'results' && (
         <>
+          {(lastResult?.trusted_report || latestReport) && (
+            <div id="lab-conclusion">
+              <LabTrustedReportView
+                report={(lastResult?.trusted_report || latestReport) as LabTrustedReport}
+                history={reportHistory}
+                onSelectHistory={(runId) => {
+                  api.labReport(runId)
+                    .then((envelope) => setLatestReport(envelope.report))
+                    .catch((e) => setErr(String(e)))
+                }}
+              />
+            </div>
+          )}
+          <section className="card" style={{ marginBottom: 14 }}>
+            <strong>研究回测 · 不会生成订单</strong>
+            <p className="note" style={{ margin: '6px 0 0' }}>
+              本页“净PF / 净胜率 / 净回撤”已计佣金、最低收费、印花税、其他费用与滑点；
+              只有 full 数据窗且净成本 OOS、Walk-forward 和基线门禁全部通过，才可晋级候选档案。
+              A 池与纸面交易仍需独立扫描、行情和人工确认。
+            </p>
+          </section>
           <div className="lab-boards">
             <div className="card">
               <div className="lab-section-head">
@@ -804,7 +937,7 @@ export default function StrategyLab() {
                 <span className="badge badge-mute">{lastResult ? '最近任务' : isBoard.source || '库'}</span>
               </div>
               <BoardTable
-                rows={(lastResult?.is_all || lastResult?.is_top || isBoard.rows || []) as Record<string, unknown>[]}
+                rows={lastResult?.is_all || lastResult?.is_top || isBoard.rows || []}
                 emptyHint="到「参数台」跑网格或单组试跑。"
                 selectedIdx={selectedKind === 'IS' ? selectedIdx : null}
                 onSelect={(i, row) => {
@@ -821,7 +954,7 @@ export default function StrategyLab() {
                 <span className="badge badge-mute">{lastResult ? '最近任务' : oosBoard.source || '库'}</span>
               </div>
               <BoardTable
-                rows={(lastResult?.oos || oosBoard.rows || []) as Record<string, unknown>[]}
+                rows={lastResult?.oos || oosBoard.rows || []}
                 emptyHint="网格会把 IS Top 拿到 OOS 验证；单组会直接出 OOS 一行。"
                 selectedIdx={selectedKind === 'OOS' ? selectedIdx : null}
                 onSelect={(i, row) => {
@@ -868,34 +1001,34 @@ export default function StrategyLab() {
                   <div className="kv">
                     <span className="k">交易数</span>
                     <span className="v">
-                      {fmt(selectedKind === 'OOS' ? (selected.oos_n_trades ?? selected.n_trades) : selected.n_trades, 0)}
+                      {fmt(selectedKind === 'OOS' ? selected.oos_net_n_trades : selected.net_n_trades, 0)}
                     </span>
                   </div>
                   <div className="kv">
-                    <span className="k">胜率</span>
+                    <span className="k">净胜率</span>
                     <span className="v">
-                      {pct(selectedKind === 'OOS' ? (selected.oos_win_rate ?? selected.win_rate) : selected.win_rate)}
+                      {pct(selectedKind === 'OOS' ? selected.oos_net_win_rate : selected.net_win_rate)}
                     </span>
                   </div>
                   <div className="kv">
-                    <span className="k">Profit Factor</span>
-                    <span className={`v ${pfClass(selectedKind === 'OOS' ? (selected.oos_profit_factor ?? selected.profit_factor) : selected.profit_factor)}`}>
-                      {fmt(selectedKind === 'OOS' ? (selected.oos_profit_factor ?? selected.profit_factor) : selected.profit_factor, 3)}
+                    <span className="k">净 Profit Factor</span>
+                    <span className={`v ${pfClass(selectedKind === 'OOS' ? selected.oos_net_profit_factor : selected.net_profit_factor)}`}>
+                      {fmt(selectedKind === 'OOS' ? selected.oos_net_profit_factor : selected.net_profit_factor, 3)}
                     </span>
                   </div>
                   <div className="kv">
-                    <span className="k">最大回撤</span>
+                    <span className="k">净最大回撤</span>
                     <span className="v">
-                      {pct(selectedKind === 'OOS' ? (selected.oos_max_drawdown ?? selected.max_drawdown) : selected.max_drawdown)}
+                      {pct(selectedKind === 'OOS' ? selected.oos_net_max_drawdown : selected.net_max_drawdown)}
                     </span>
                   </div>
-                  {selected.is_profit_factor != null && (
-                    <div className="kv"><span className="k">IS PF（对照）</span><span className="v">{fmt(selected.is_profit_factor, 3)}</span></div>
+                  {selected.is_net_profit_factor != null && (
+                    <div className="kv"><span className="k">IS 净PF（对照）</span><span className="v">{fmt(selected.is_net_profit_factor, 3)}</span></div>
                   )}
                   <p className="note" style={{ marginTop: 12 }}>
                     {catalog?.params?.map((p) => (
                       <span key={p.key}>
-                        <b>{p.name}</b>={String(selected[p.key] ?? '—')}；
+                        <b>{p.name}</b>={String(selected[p.key as keyof LabMetricRow] ?? '—')}；
                       </span>
                     ))}
                     点「载入单组试跑」可改一档再跑。
@@ -924,8 +1057,8 @@ export default function StrategyLab() {
                     <tr>
                       <th>状态</th>
                       <th>方案</th>
-                      <th className="num">IS PF</th>
-                      <th className="num">OOS PF</th>
+                      <th className="num">IS 净PF</th>
+                      <th className="num">OOS 净PF</th>
                       <th>WF</th>
                     </tr>
                   </thead>
@@ -946,8 +1079,8 @@ export default function StrategyLab() {
                           </span>
                         </td>
                         <td>{String(r.strategy ?? '—')}</td>
-                        <td className="num">{fmt(r.is_profit_factor, 3)}</td>
-                        <td className={`num ${pfClass(r.oos_profit_factor)}`}>{fmt(r.oos_profit_factor, 3)}</td>
+                        <td className="num">{fmt(r.is_net_profit_factor, 3)}</td>
+                        <td className={`num ${pfClass(r.oos_net_profit_factor)}`}>{fmt(r.oos_net_profit_factor, 3)}</td>
                         <td>{r.wf_pass === 1 || r.wf_pass === true ? '通过' : r.wf_pass === 0 ? '未过' : '—'}</td>
                       </tr>
                     ))}
@@ -957,7 +1090,7 @@ export default function StrategyLab() {
             ) : (
               <div className="lab-empty">
                 <strong>尚未播种</strong>
-                优化后可用 <code>python pipeline_seed.py A</code> 写入 active
+                只有可信门禁 PASS 才会登记为隔离候选；不会自动写入 active
               </div>
             )}
           </section>

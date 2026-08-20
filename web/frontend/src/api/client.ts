@@ -6,7 +6,29 @@ const DEFAULT_TIMEOUT_MS = 30_000
 /** 可传外部 AbortSignal 与自定义超时。 */
 export type ReqOpts = { signal?: AbortSignal; timeoutMs?: number }
 
-async function request<T>(path: string, init?: RequestInit & ReqOpts): Promise<T> {
+export class ApiError extends Error {
+  code: string
+  details: Record<string, unknown>
+  retryable: boolean
+  status: number
+
+  constructor(args: {
+    code: string
+    message: string
+    details?: Record<string, unknown>
+    retryable?: boolean
+    status: number
+  }) {
+    super(args.message)
+    this.name = 'ApiError'
+    this.code = args.code
+    this.details = args.details || {}
+    this.retryable = Boolean(args.retryable)
+    this.status = args.status
+  }
+}
+
+export async function request<T>(path: string, init?: RequestInit & ReqOpts): Promise<T> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, ...rest } = init || {}
   const controller = new AbortController()
   const external = rest.signal
@@ -24,7 +46,16 @@ async function request<T>(path: string, init?: RequestInit & ReqOpts): Promise<T
     const body = await response.json().catch(() => ({}))
     if (!response.ok) {
       const detail = body?.detail || body?.message || `HTTP ${response.status}`
-      throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
+      if (typeof detail === 'string') {
+        throw new ApiError({ code: 'HTTP_ERROR', message: detail, status: response.status })
+      }
+      throw new ApiError({
+        code: typeof detail?.code === 'string' ? detail.code : 'HTTP_ERROR',
+        message: typeof detail?.message === 'string' ? detail.message : `HTTP ${response.status}`,
+        details: typeof detail?.details === 'object' && detail.details ? detail.details : {},
+        retryable: Boolean(detail?.retryable),
+        status: response.status,
+      })
     }
     return body as T
   } finally {
@@ -33,10 +64,10 @@ async function request<T>(path: string, init?: RequestInit & ReqOpts): Promise<T
   }
 }
 
-const newIdempotencyKey = () =>
+export const newIdempotencyKey = () =>
   globalThis.crypto?.randomUUID?.() || `paper-${Date.now()}-${Math.random().toString(16).slice(2)}`
 
-function paperWrite<T>(path: string, body: unknown, opts?: ReqOpts): Promise<T> {
+export function paperWrite<T>(path: string, body: unknown, opts?: ReqOpts): Promise<T> {
   return request<T>(path, {
     ...opts,
     method: 'POST',
@@ -152,6 +183,34 @@ export interface HealthResp {
   as_of?: string
   freshness?: Freshness
   regime?: Regime
+  guided_ui_enabled?: boolean
+}
+
+export type TodayAction =
+  | 'SYNC_DATA'
+  | 'WAIT_SCAN'
+  | 'RUN_SCAN'
+  | 'CREATE_ACCOUNT'
+  | 'RESOLVE_RECONCILIATION'
+  | 'REVIEW_DRAFT'
+  | 'RUN_SETTLEMENT'
+  | 'DAILY_COMPLETE'
+
+export interface TodayGuide {
+  next_action: TodayAction
+  title: string
+  reason: string
+  primary_label: string
+  href: string | null
+  latest_market_date?: string | null
+  expected_market_date?: string | null
+  trade_date?: string | null
+  task_id?: string | null
+  task_status?: string | null
+  order_id?: string | null
+  cycle_id?: string | null
+  scan_run_id?: string | null
+  blocker_codes?: string[]
 }
 
 export interface SetupStatus {
@@ -243,6 +302,7 @@ export interface ScanStatus {
 }
 
 export const api = {
+  today: (opts?: ReqOpts) => request<TodayGuide>('/today', opts),
   health: (opts?: ReqOpts) => request<HealthResp>('/health', opts),
   setupStatus: (opts?: ReqOpts) => request<SetupStatus>('/setup-status', opts),
   overview: (pool = 'A', opts?: ReqOpts) => request<OverviewResp>(`/overview?pool=${pool}`, opts),
@@ -274,12 +334,23 @@ export const api = {
   labResearchStatus: (probeToken = false, opts?: ReqOpts) =>
     request<LabResearchStatus>(`/lab/research-status?probe_token=${probeToken ? 'true' : 'false'}`, opts),
   labCatalog: (opts?: ReqOpts) => request<LabCatalog>('/lab/catalog', opts),
+  labLatestReport: (opts?: ReqOpts) => request<LabReportEnvelope>('/lab/reports/latest', opts),
+  labReports: (limit = 20, opts?: ReqOpts) =>
+    request<{ items: LabReportHistoryItem[] }>(`/lab/reports?limit=${limit}`, opts),
+  labReport: (runId: string, opts?: ReqOpts) =>
+    request<LabReportEnvelope>(`/lab/reports/${encodeURIComponent(runId)}`, opts),
 
   // ── 纸面交易 ──
   paperAccount: (opts?: ReqOpts) => request<PaperAccount>('/paper/account', opts),
   paperCreateAccount: (initialCashFen: number, opts?: ReqOpts) =>
     paperWrite<PaperAccount>('/paper/account', { initial_cash_fen: String(initialCashFen) }, opts),
   paperDashboard: (opts?: ReqOpts) => request<PaperDashboard>('/paper/dashboard', opts),
+  paperTradingCalendar: (start: string, end: string, opts?: ReqOpts) =>
+    request<PaperTradingCalendar>(`/paper/trading-calendar?start=${start}&end=${end}`, opts),
+  paperReviewOrder: (body: PaperOrderReviewRequest, opts?: ReqOpts) =>
+    request<PaperOrderReview>('/paper/orders/review', {
+      ...opts, method: 'POST', body: JSON.stringify(body),
+    }),
   paperPositions: (opts?: ReqOpts) => request<{ positions: PaperPosition[] }>('/paper/positions', opts),
   paperOrders: (state?: string, opts?: ReqOpts) =>
     request<{ orders: PaperOrder[] }>(`/paper/orders${state ? `?state=${state}` : ''}`, opts),
@@ -307,9 +378,147 @@ export const api = {
   paperApplyCorporateAction: (actionId: number, opts?: ReqOpts) =>
     paperWrite<{ action_id: number; status: string }>(`/paper/corporate-actions/${actionId}/apply`, undefined, opts),
   paperGates: (opts?: ReqOpts) => request<Record<string, unknown>>('/paper/gates/status', opts),
+  releaseReadiness: (opts?: ReqOpts) => request<ReleaseReadiness>('/release/readiness', opts),
 
   // 最新交易日资金热力图（treemap）
-  moneyHeatmap: (top = 24, opts?: ReqOpts) => request<MoneyHeatmapResp>(`/money-heatmap?top=${top}`, opts),
+  moneyHeatmap: (top = 0, opts?: ReqOpts) => request<MoneyHeatmapResp>(`/money-heatmap?top=${top}`, opts),
+
+  // ── 数据同步（手动更新行情）──
+  syncStart: (opts?: ReqOpts) => request<{ status: string; message: string }>('/sync', { ...opts, method: 'POST' }),
+  syncStatus: (opts?: ReqOpts) => request<SyncStatus>('/sync/status', opts),
+
+  // ── 回测工作台 ──
+  backtestRun: (body: BacktestRunBody, opts?: ReqOpts) =>
+    request<{ task_id: string }>('/backtest/run', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+  backtestStatus: (taskId: string, opts?: ReqOpts) => request<BacktestTaskStatus>(`/backtest/status/${taskId}`, opts),
+  backtestCancel: (taskId: string, opts?: ReqOpts) =>
+    request<{ ok: boolean }>(`/backtest/${taskId}/cancel`, { ...opts, method: 'POST' }),
+
+  // ── 通用 K 线（回测工作台交易标注图）──
+  kline: (tsCode: string, start?: string, end?: string, opts?: ReqOpts) => {
+    const qs = new URLSearchParams()
+    if (start) qs.set('start', start)
+    if (end) qs.set('end', end)
+    return request<KlineRangeResp>(`/kline/${encodeURIComponent(tsCode)}${qs.toString() ? `?${qs}` : ''}`, opts)
+  },
+}
+
+export interface KlineRangeResp {
+  ts_code: string
+  kline: KlinePoint[]
+}
+
+export interface SyncStatus {
+  status: 'idle' | 'running' | 'done' | 'error'
+  message: string
+  started_at: string | null
+  finished_at: string | null
+  latest_daily: string | null
+  latest_moneyflow: string | null
+  failed_dates: string[]
+}
+
+export interface BacktestRunBody {
+  strategy: 'A' | 'B'
+  vol_ratio_min?: number
+  stop_pct?: number
+  exit_window?: number
+  strong_reset?: number
+  signal?: Record<string, number | boolean | null>
+  costs?: {
+    commission_rate?: number
+    commission_min?: number
+    stamp_tax_sell?: number
+    other_fee_rate?: number
+    slippage?: number
+  } | null
+  windows?: { mode: 'auto' | 'manual'; is_start?: string; is_end?: string; oos_start?: string; oos_end?: string }
+  max_codes?: number
+  step?: number
+  include_wf?: boolean
+  include_baselines?: boolean
+}
+
+export interface BacktestTrade {
+  ts_code: string
+  signal_date: string
+  entry_date: string
+  exit_date: string
+  box_high: number | null
+  box_low: number | null
+  breakout_date: string
+  entry_price: number | null
+  exit_price: number | null
+  exit: string
+  ret: number
+  net_return: number | null
+  filled: boolean
+  days: number | null
+  max_dd: number | null
+  commission: number | null
+  stamp_tax: number | null
+  other_fee: number | null
+  slippage_cost: number | null
+  reason: string
+}
+
+export interface BacktestMetrics {
+  n_trades?: number
+  win_rate?: number | null
+  avg_ret?: number | null
+  profit_factor?: number | null
+  net_n_trades?: number
+  net_unfilled?: number
+  net_pnl?: number
+  net_avg_return?: number | null
+  net_win_rate?: number | null
+  net_profit_factor?: number | null
+  net_max_drawdown?: number | null
+  commission?: number
+  stamp_tax?: number
+  other_fee?: number
+  slippage_cost?: number
+  exits?: Record<string, number>
+}
+
+export interface BacktestEquityPoint {
+  date: string
+  ts_code: string
+  eq: number
+  drawdown: number
+}
+
+export interface BacktestSingleResult {
+  universe_n: number
+  sample_days: string[]
+  window: [string, string]
+  params: Record<string, unknown>
+  trades: BacktestTrade[]
+  metrics: BacktestMetrics
+  equity: BacktestEquityPoint[]
+  error?: string
+}
+
+export interface BacktestTaskResult {
+  task_id: string
+  params: Record<string, unknown>
+  windows: { mode: string; is: [string, string]; oos: [string, string] }
+  is: BacktestSingleResult
+  oos: BacktestSingleResult
+  hold_ratio: { pf: number | null }
+  wf: Record<string, unknown> | null
+  baselines: Record<string, unknown> | null
+  disclaimer: string
+}
+
+export interface BacktestTaskStatus {
+  status: 'running' | 'done' | 'error' | 'cancelled'
+  stage: string
+  progress: number
+  started_at: string
+  cancel_requested: boolean
+  result: BacktestTaskResult | null
+  error: string | null
 }
 
 export interface MoneyHeatmapResp {
@@ -332,6 +541,7 @@ export interface LabOptimizeBody {
   strong_reset?: number
   exit_window?: number
   stop_pct?: number
+  force?: boolean
 }
 
 export interface LabParamDoc {
@@ -376,6 +586,13 @@ export interface LabWindows {
   can_claim_edge?: boolean
   notes?: string[]
   n_dates?: number
+  automatic_window?: boolean
+  wf_windows?: {
+    train_start: string
+    train_end: string
+    test_start: string
+    test_end: string
+  }[]
 }
 
 export interface LabOptimizeResp {
@@ -400,7 +617,124 @@ export interface LabResearchPlan {
   is_n_dates: number
   oos_n_dates: number
   can_claim_edge: boolean
+  data_ready_for_edge_validation?: boolean
   notes?: string[]
+}
+
+export interface LabMetricRow {
+  param_id?: string
+  strategy?: string
+  vol_ratio_min?: number
+  strong_reset?: number
+  exit_window?: number
+  stop_pct?: number
+  n_trades?: number
+  win_rate?: number | null
+  profit_factor?: number | null
+  max_drawdown?: number | null
+  net_n_trades?: number
+  net_unfilled?: number
+  net_pnl?: number
+  net_avg_return?: number | null
+  net_win_rate?: number | null
+  net_profit_factor?: number | null
+  net_max_drawdown?: number | null
+  commission?: number
+  stamp_tax?: number
+  other_fee?: number
+  slippage_cost?: number
+  oos_n_trades?: number
+  oos_win_rate?: number | null
+  oos_profit_factor?: number | null
+  oos_max_drawdown?: number | null
+  oos_net_n_trades?: number
+  oos_net_pnl?: number
+  oos_net_avg_return?: number | null
+  oos_net_win_rate?: number | null
+  oos_net_profit_factor?: number | null
+  oos_net_max_drawdown?: number | null
+  is_n_trades?: number
+  is_win_rate?: number | null
+  is_profit_factor?: number | null
+  is_max_drawdown?: number | null
+  is_net_n_trades?: number
+  is_net_win_rate?: number | null
+  is_net_profit_factor?: number | null
+  is_net_max_drawdown?: number | null
+  status?: string
+  wf_pass?: boolean | number | null
+}
+
+export interface LabPromotionChecks {
+  promotable?: boolean
+  block_reason?: string
+  research_mode_full?: boolean
+  oos_net_pf_ok?: boolean
+  oos_dd_ok?: boolean
+  oos_wr_ok?: boolean
+  beats_baseline?: boolean
+}
+
+export interface LabGateCheck {
+  id: string
+  label: string
+  passed: boolean
+  actual: unknown
+  threshold: string
+}
+
+export interface LabWfWindow {
+  window: string
+  train_pf?: number | null
+  test_pf?: number | null
+  test_dd?: number | null
+  test_wr?: number | null
+  test_n?: number | null
+}
+
+export interface LabBaselineResult {
+  baseline?: string
+  seed?: number
+  n_trades?: number
+  requested_trades?: number
+  net_avg_return?: number | null
+  net_win_rate?: number | null
+  net_profit_factor?: number | null
+  net_max_drawdown?: number | null
+}
+
+export interface LabTrustedReport {
+  research_run_id: string
+  verdict: 'PASS' | 'FAIL' | 'INSUFFICIENT_EVIDENCE'
+  candidate_eligible: boolean
+  summary: string
+  block_reasons: string[]
+  versions: { dataset?: string; code?: string; cost?: string }
+  sample: { universe_size?: number; step?: number; windows?: LabWindows }
+  cost_assumptions: Record<string, unknown>
+  primary_is?: LabMetricRow | null
+  primary_oos?: LabMetricRow | null
+  wf_windows: LabWfWindow[]
+  baselines: { random?: LabBaselineResult; ma20_60?: LabBaselineResult }
+  checks: LabGateCheck[]
+  sensitivity: LabMetricRow[]
+  markdown?: string
+}
+
+export interface LabReportHistoryItem {
+  research_run_id: string
+  status: string
+  strategy?: string
+  research_mode?: string
+  verdict?: string
+  candidate_eligible?: boolean
+  created_at?: string
+  finished_at?: string
+  report_sha256?: string
+}
+
+export interface LabReportEnvelope extends LabReportHistoryItem {
+  report: LabTrustedReport
 }
 
 export interface LabResearchStatus {
@@ -415,36 +749,45 @@ export interface LabResearchStatus {
 export interface LabStatusResp {
   task_id?: string | null
   status: string
+  research_run_id?: string
+  phase?: string | null
   progress?: number
   message?: string
   error?: string | null
   result?: {
-    is_top: Record<string, unknown>[]
-    is_all?: Record<string, unknown>[]
-    oos: Record<string, unknown>[]
+    is_top: LabMetricRow[]
+    is_all?: LabMetricRow[]
+    oos: LabMetricRow[]
     msg?: string
     run_mode?: string
     research_mode?: string
     can_claim_edge?: boolean
-    params_used?: unknown
+    gross?: { note?: string }
+    net?: LabMetricRow[]
+    promotion_checks?: LabPromotionChecks
+    params_used?: Record<string, number[]> | Record<string, number> | null
     windows?: LabWindows
+    baselines?: { random?: LabBaselineResult; ma20_60?: LabBaselineResult }
+    trusted_report?: LabTrustedReport
   } | null
   strategy?: string
   windows?: LabWindows
+  verdict?: string | null
+  candidate_eligible?: boolean
 }
 
 export interface LabBoardResp {
-  rows: Record<string, unknown>[]
+  rows: LabMetricRow[]
   source: string
 }
 
 export interface LabCompareResp {
-  rows?: Record<string, unknown>[]
-  best_by_strategy?: Record<string, Record<string, unknown> | null>
+  rows?: LabMetricRow[]
+  best_by_strategy?: Record<string, LabMetricRow | null>
 }
 
 export interface LabArenaResp {
-  rows: Record<string, unknown>[]
+  rows: LabMetricRow[]
   weights: Record<string, number>
 }
 
@@ -470,6 +813,7 @@ export interface PaperPosition {
 export interface PaperOrder {
   order_id: string
   idempotency_key?: string
+  source?: string
   ts_code: string
   side: string
   qty: number
@@ -523,6 +867,91 @@ export interface PaperDashboard {
   }
   unresolved_reconciliation_count?: number
   paper_notice: string
+  guide?: PaperGuide
+}
+
+export type PaperNextAction =
+  | 'CREATE_ACCOUNT'
+  | 'REVIEW_DRAFT'
+  | 'RUN_SETTLEMENT'
+  | 'RESOLVE_RECONCILIATION'
+  | 'START_SIMULATION'
+  | 'SYNC_DATA'
+
+export interface PaperGuide {
+  next_action: PaperNextAction
+  blocker_codes: string[]
+  pending_order: Pick<PaperOrder, 'order_id' | 'source' | 'ts_code' | 'side' | 'qty' | 'state' | 'eligible_trade_date'> | null
+  earliest_simulation_date: string | null
+  latest_market_date: string | null
+  unresolved_reconciliation_count: number
+}
+
+export interface ReleaseReadiness {
+  status: 'PASS' | 'FAIL'
+  ready: boolean
+  blockers: { code: string; message: string }[]
+  identity: {
+    git_sha: string
+    worktree_clean: boolean
+    worktree_fingerprint: string
+    code_version: string
+    config_hash: string
+    db_fingerprint: string
+  }
+  gate_report_sha256: string | null
+  gate_generated_at: string | null
+  checked_at: string
+}
+
+export interface PaperTradingCalendar {
+  open_dates: string[]
+  earliest_simulation_date: string | null
+  latest_market_date: string | null
+}
+
+export interface PaperOrderReviewRequest {
+  scope: 'ACCOUNT' | 'TUTORIAL'
+  side: 'BUY' | 'SELL'
+  mode: 'MANUAL_HISTORY'
+  ts_code: string
+  execution_trade_date: string
+  qty: number
+}
+
+export interface PaperOrderReview {
+  scope: 'ACCOUNT' | 'TUTORIAL'
+  persisted: false
+  can_confirm: boolean
+  instrument: { ts_code: string; inst_type: string; lot_size: number }
+  side: 'BUY' | 'SELL'
+  mode: 'MANUAL_HISTORY'
+  decision_date: string
+  execution_trade_date: string
+  quote: {
+    open: string; high: string; low: string; close: string
+    volume: string; revision: string
+  }
+  estimate: {
+    requested_qty: number
+    estimated_fill_qty: number
+    max_fill_qty: number
+    fill_price: string
+    notional_yuan: string
+    commission_yuan: string
+    tax_yuan: string
+    other_fee_yuan: string
+    reserve_yuan: string
+    cash_change_yuan: string
+    remaining_cash_yuan: string
+  }
+  checks: { code: string; label: string; passed: boolean; message: string }[]
+  assumptions: {
+    slippage_bps: number
+    commission_bps: number
+    sell_tax_bps: number
+    participation_limit_pct: string
+  }
 }
 
 export interface PaperCorporateAction {

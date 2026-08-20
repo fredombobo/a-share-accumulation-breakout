@@ -46,6 +46,12 @@ BOX_MAX_MID_DRAWDOWN = 0.12      # strict：箱体中轴相对窗口前段高点
 RELAXED_BOX_MAX_MID_DRAWDOWN = 0.18  # relaxed：放宽到 18%
 BOX_POS_LOOKBACK = 60            # 位置参照：窗口前段多少日的高点
 
+# ── 突破后站稳与长期趋势过滤（v2 防假突破/底部震荡，2026-08-16） ──
+BREAKOUT_MAX_PULLBACKS = 0       # strict：突破日之后收盘跌破箱体上沿的允许次数
+RELAXED_BREAKOUT_MAX_PULLBACKS = 1  # relaxed：允许回踩 1 次
+BREAKOUT_REQUIRE_MA60 = True     # strict：突破后收盘须站上 MA60（过滤长期均线下方的底部震荡假突破）
+BREAKOUT_MA60_PULLBACK_TOL = 0.005  # 「跌破上沿」容差（0.5% 噪声带）
+
 # ── 放量基数修正（防长期缩量稀释分母） ──
 BREAKOUT_VS_RECENT_VOL_RATIO = 1.2   # 突破日量 / 近5日均量 下限（双重放量确认）
 BOX_POS_TREND_LOOKBACK = 60          # 大趋势参照窗口（近60日）
@@ -123,6 +129,14 @@ PLAN_B_CROSS_LOOKBACK = 20     # 金叉回看窗口（交易日）
 PLAN_B_MIN_BUILD_DAYS = 2      # 最少建仓天数
 PLAN_B_REATTACK_RATIO = 1.0    # 破五量能倍数（相对标杆量）
 PLAN_B_CHG_MIN = 0.02          # 破五最小涨幅
+
+# ── 统一交易成本口径（研究 ab_screener.domain.costs 与纸面 paper_trading 共用） ──
+# 历史上有「研究万三 vs 纸面万五」两套口径；2026-08-16 统一为保守万五。
+COMMISSION_RATE = 0.0005       # 双边佣金率（万五）
+COMMISSION_MIN_YUAN = 5.0      # 每边最低佣金（元）
+STAMP_TAX_SELL = 0.001         # 卖出印花税（千一）
+OTHER_FEE_RATE = 0.0001        # 双边其他费（万一）
+SLIPPAGE_RATE = 0.001          # 双边滑点（万十）
 
 # ── 回测/优化窗口 ──
 BT_IS_START = "20230801"       # 样本内（优化）

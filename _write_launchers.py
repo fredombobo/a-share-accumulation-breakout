@@ -3,7 +3,7 @@ from pathlib import Path
 # 根路径从脚本自身位置推导，项目迁移后仍可用
 root = Path(__file__).resolve().parent
 
-start_ui = r"""# AB-Screener one-click start (backend :8000 + frontend :3001)
+start_ui = r"""# AB-Screener one-click start (backend :8001 + 可选 dev 前端 :3001)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (Test-Path 'C:\Python314\python.exe') { $Py = 'C:\Python314\python.exe' } else { $Py = 'python' }
@@ -49,13 +49,14 @@ Write-Host ('Root: ' + $Root)
 Write-Host ('Python: ' + $Py)
 Write-Host ('npm: ' + $NpmCmd)
 
-if (Test-Port 8000) {
-  Write-Host '[backend] already on :8000' -ForegroundColor Yellow
+if (Test-Port 8001) {
+  Write-Host '[backend] already on :8001' -ForegroundColor Yellow
 } else {
-  Write-Host '[backend] starting :8000 ...'
+  Write-Host '[backend] starting :8001 ...'
   $blogOut = Join-Path $LogDir 'backend.out.log'
   $blogErr = Join-Path $LogDir 'backend.err.log'
   $bpid = Join-Path $LogDir 'backend.pid'
+  $env:AB_BACKEND_PORT = '8001'
   $p = Start-Process -FilePath $Py -ArgumentList $Backend -WorkingDirectory (Join-Path $Root 'web') -RedirectStandardOutput $blogOut -RedirectStandardError $blogErr -PassThru -WindowStyle Hidden
   Set-Content -Path $bpid -Value $p.Id -Encoding ascii
   Write-Host ('[backend] pid=' + $p.Id)
@@ -87,7 +88,7 @@ if (Test-Port 3001) {
 $ok = $false
 for ($i = 0; $i -lt 40; $i++) {
   try {
-    $h = Invoke-RestMethod 'http://127.0.0.1:8000/api/health' -TimeoutSec 2
+    $h = Invoke-RestMethod 'http://127.0.0.1:8001/api/health' -TimeoutSec 2
     if ($h.status -eq 'ok') { $ok = $true; break }
   } catch {
     Start-Sleep -Milliseconds 500
@@ -100,8 +101,9 @@ if ($ok) {
 }
 
 Write-Host ''
-Write-Host 'UI:  http://127.0.0.1:3001/' -ForegroundColor Green
-Write-Host 'API: http://127.0.0.1:8000/api/health'
+Write-Host 'UI:  http://127.0.0.1:8001/ (单端口)' -ForegroundColor Green
+Write-Host '      http://127.0.0.1:3001/ (dev 前端，可选)'
+Write-Host 'API: http://127.0.0.1:8001/api/health'
 Write-Host 'Stop: .\stop_ui.ps1'
 """
 
@@ -138,7 +140,7 @@ try {
   $ready = $false
   for ($i = 0; $i -lt 50; $i++) {
     try {
-      $r = Invoke-WebRequest 'http://127.0.0.1:3001/' -UseBasicParsing -TimeoutSec 2
+      $r = Invoke-WebRequest 'http://127.0.0.1:8001/api/health' -UseBasicParsing -TimeoutSec 2
       if ($r.StatusCode -eq 200) { $ready = $true; break }
     } catch { Start-Sleep -Milliseconds 400 }
   }
@@ -146,12 +148,12 @@ try {
   Write-Host ''
   if ($ready) {
     Write-Host '  Ready. Opening browser...' -ForegroundColor Green
-    Log 'frontend ready'
+    Log 'backend ready'
   } else {
-    Write-Host '  Frontend still starting, open browser anyway...' -ForegroundColor Yellow
-    Log 'frontend not ready'
+    Write-Host '  Backend still starting, open browser anyway...' -ForegroundColor Yellow
+    Log 'backend not ready'
   }
-  Start-Process 'http://127.0.0.1:3001/'
+  Start-Process 'http://127.0.0.1:8001/'
 
   Write-Host ''
   Write-Host ('  Log: ' + $LaunchLog) -ForegroundColor DarkGray

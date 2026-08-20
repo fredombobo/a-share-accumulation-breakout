@@ -1,0 +1,100 @@
+{
+  "entry_definition_id": "A_POOL_STRICT_NEXT_OPEN_V1",
+  "generated_at": "2026-08-17T00:00:00+08:00",
+  "snapshot": {
+    "version": "v1",
+    "id": "A_POOL_STRICT_NEXT_OPEN_V1",
+    "signal_engine": "signals.detect_accumulation_breakout",
+    "signal_profile": "strict",
+    "entry_timing": "next_open",
+    "entry_rule": "breakout_date 对应 bar 的下一交易日开盘价；无 open 用 close",
+    "breakout_window_days": 5,
+    "horizon_days": 160,
+    "box": {
+      "min_days": 20,
+      "max_days": 125,
+      "max_amp": 0.26,
+      "trend_slope_limit": 0.0025,
+      "max_mid_drawdown": 0.12,
+      "pos_trend_lookback": 60,
+      "pos_trend_max_drop": -0.15
+    },
+    "breakout": {
+      "vol_ratio": 1.6,
+      "chg_min": 0.02,
+      "chg_max": 0.095,
+      "vs_recent_vol_ratio": 1.2,
+      "require_hold_above_box": true,
+      "require_ma_bull": true,
+      "max_pullbacks_after_breakout": 0,
+      "require_ma60": true
+    },
+    "fund_filter": {
+      "days": 5,
+      "min_ratio": 0.0
+    },
+    "fundamental_filter": {
+      "min_price": 3.0,
+      "pe": [
+        0.0,
+        60.0
+      ],
+      "pb": [
+        0.0,
+        12.0
+      ],
+      "mv_yi": [
+        30.0,
+        3000.0
+      ],
+      "min_list_days": 250
+    },
+    "score_weights": {
+      "signal": 0.55,
+      "fund": 0.25,
+      "fundamental": 0.2
+    },
+    "pool": {
+      "a_tier": "strict_only",
+      "include_relaxed_in_a": false,
+      "top_n_trade": 20,
+      "defense_clears_a": true
+    },
+    "exit_defaults": {
+      "fixed": {
+        "stop_pct": 0.07,
+        "target_pct": 0.12,
+        "max_hold": 15,
+        "priority": "stop_then_target_then_time"
+      },
+      "bench": {
+        "stop_pct": 0.07,
+        "max_hold": 30,
+        "exit_window": 10,
+        "strong_reset": 3,
+        "priority": "stop_then_bench_then_time"
+      }
+    },
+    "non_goals": [
+      "不得用采样日+1替代突破日+1",
+      "Lab 网格不得改变入场 timing",
+      "B 池 relaxed / theme_fill 禁止与 A 混排",
+      "degraded 研究模式禁止声称 edge / 可下单参数"
+    ]
+  },
+  "semantic_hash": "e54faac682cf8483",
+  "sample": {
+    "is_breakout": true,
+    "box_days": 76,
+    "box_amp": 0.05813119807516012,
+    "box_high": 10.298305977936794,
+    "box_low": 9.716736001766273,
+    "breakout_date": "2026-04-29",
+    "breakout_vol_ratio": 2.601340798309962,
+    "breakout_pct_chg": 0.0885461790500166,
+    "hold_pullbacks": 0,
+    "cond_ma60": true,
+    "cond_position": true
+  },
+  "sample_hash": "e23db7ab8d7603ca"
+}

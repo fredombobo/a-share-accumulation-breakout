@@ -3,8 +3,9 @@
 A 股「横盘吸筹平台 + 放量突破」筛选工具（本地运行）。  
 **研究辅助，不是投资建议。**
 
-> ✅ **UI 入口（唯一）**：单端口 UI `http://127.0.0.1:8000/`
+> ✅ **UI 入口（唯一）**：单端口 UI `http://127.0.0.1:8001/`
 > （`bootstrap.py` / `一键启动.bat` 启动，后端已托管前端）。旧版 Streamlit `app.py` 已于 2026-08-03 移除。
+> 端口 8000 固定留给其它应用（AETF Alpha），请勿在本项目使用。
 
 ---
 
@@ -18,7 +19,7 @@ cd a-share-accumulation-breakout
 python bootstrap.py --token "<TUSHARE_TOKEN>" --yes --no-browser
 ```
 
-成功标志：终端出现 `BOOTSTRAP_OK url=http://127.0.0.1:8000/`  
+成功标志：终端出现 `BOOTSTRAP_OK url=http://127.0.0.1:8001/`  
 然后让用户打开该地址，点 **「扫描」**，约 5～15 分钟后看 **A 池**。
 
 - 给 Agent 的完整提示词：[PROMPT_FOR_AGENT.md](./PROMPT_FOR_AGENT.md)  
@@ -64,7 +65,7 @@ python bootstrap.py --yes --no-browser
 | **防守** 且 A 池空 | 市场弱，系统禁止新开仓，**正常** |
 | 数据日期很旧 | 再跑一次一键启动做同步 |
 
-单端口地址：`http://127.0.0.1:8000/`（后端已托管前端，不必再开 npm）
+单端口地址：`http://127.0.0.1:8001/`（后端已托管前端，不必再开 npm）
 
 ---
 
@@ -88,6 +89,10 @@ python run_screener.py --top 15 --days 160 --workers 0
 python test_signals.py
 ```
 
+`sync_daily.py` 会增量补齐个股日线、日指标、资金流和研究/门禁共用的
+`000300.SH` 基准指数；新行情统一写入来源、可用时点和抓取时点。基准接口发生
+瞬时断连时会有限重试，超过次数后仍明确失败，不会把缺失数据当作同步成功。
+
 ### 策略实验室（闭环优化，2026-08-06 新增）
 
 界面「🧪 策略实验室」= **参数研究区**（非下单）。可交易候选仍在总览 **A 池**。  
@@ -96,10 +101,16 @@ python test_signals.py
 ```powershell
 python research_status.py             # 先看：mode=full|degraded|insufficient、Token、下一步
 python sync_history.py                # 历史日线扩容到 ~3 年（需有效 Token，约 2-4 小时，断点续传）
+python run_attribution.py             # 假突破归因 5/10/20 日（ENTRY v1）
+python run_evidence_report.py         # 成本后 IS/OOS 证据包（非买卖建议）
 python run_optimize_plan.py A 600 10  # 方案 A 优化（自动窗；600=样本数,10=采样步长）
+python backtest_custom.py --vol-ratio-min 1.6 --stop-pct 0.07 --exit-window 10 --strong-reset 3 --max-codes 600
+                                        # 自定义参数 → 净成本 IS/OOS 回测（可加形态阈值 --box-max-amp 等，见脚本头）
 python pipeline_seed.py A             # WF 复核 + 参数播种 + 擂台赛干跑
 python strategy_store.py --weights    # 查看 active 参数权重（选股排序回灌）
 ```
+
+入场定义冻结：`docs/ENTRY-DEFINITION-V1.md` · 状态：`docs/STATUS.md`
 
 新模块：`bench_volume.py`（标杆量四象限引擎）、`entry_plan_b.py`（五步抓主升入场）、
 `trade_sim.py`（双模式出场模拟）、`optimizer.py`（网格优化）、`walkforward.py`（IS/OOS+滚动复核）、

@@ -19,6 +19,12 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
+from ab_screener.domain.entry_definition import (
+    ENTRY_DEFINITION_ID,
+    breakout_in_recent_window,
+    resolve_entry_from_signal,
+)
+from ab_screener.domain.entry_registry import report_entry_fingerprint
 from bench_volume import find_build_seqs
 from config import OUT_DIR
 from local_store import LocalStore
@@ -102,15 +108,16 @@ def run_backtest(
             sig = detect_accumulation_breakout(win)
             if not sig.get("is_breakout"):
                 continue
-            # 突破日必须落在采样日附近 5 个交易日内
-            bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
-            recent = {str(x) for x in cal[max(0, day_i - 5): day_i + 1]}
-            if not bd or bd not in recent or bd not in dts_set:
+            # ENTRY-DEFINITION-V1：突破日落近窗 + 信号日索引 → 次日开盘入场
+            if not breakout_in_recent_window(sig.get("breakout_date"), day, cal):
                 continue
-            # 正确性：锚定突破日后一交易日入场（原实现误用「采样日+1」，突破早于采样日时收益口径偏）
-            entry_i = dts.index(bd) + 1
-            if entry_i >= len(df):
+            resolved = resolve_entry_from_signal(df, sig)
+            if not resolved["ok"]:
                 continue
+            bd = resolved["breakout_date"]
+            if bd not in dts_set:
+                continue
+            entry_i = int(resolved["signal_index"])  # trade_sim 语义：信号日
             if mode == "bench":
                 bp = dict(bench_params or {})
                 if "bench_vol" not in bp:
@@ -127,11 +134,13 @@ def run_backtest(
             trades.append({
                 "date": day,
                 "ts_code": code,
+                "breakout_date": bd,
                 "ret": sim["ret"],
                 "days": sim["days"],
                 "exit": sim["exit"],
                 "win": sim["win"],
                 "max_dd": sim.get("max_dd"),
+                "entry_definition_id": ENTRY_DEFINITION_ID,
             })
         if processed % 50 == 0:
             print(f"  … {processed}/{len(dfs_by_code)} 累计交易 {len(trades)}")
@@ -139,10 +148,16 @@ def run_backtest(
     summary = summarize(trades)
     if not trades:
         summary["msg"] = "无交易样本"
-    summary["params"] = ({"mode": "fixed", "stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15, "entry": "next_open"}
-                         if mode == "fixed" else
-                         {"mode": "bench", **(bench_params or {}), "entry": "next_open"})
+    summary["params"] = ({
+        "mode": "fixed", "stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15,
+        "entry": "next_open", "entry_definition_id": ENTRY_DEFINITION_ID,
+    } if mode == "fixed" else {
+        "mode": "bench", **(bench_params or {}),
+        "entry": "next_open", "entry_definition_id": ENTRY_DEFINITION_ID,
+    })
     summary["strategy"] = strategy
+    summary["entry_definition_id"] = ENTRY_DEFINITION_ID
+    summary["entry_semantic_hash"] = report_entry_fingerprint(ENTRY_DEFINITION_ID)["entry_semantic_hash"]
 
     out_dir = os.path.join(OUT_DIR)
     os.makedirs(out_dir, exist_ok=True)

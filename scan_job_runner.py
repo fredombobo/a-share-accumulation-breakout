@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -31,7 +32,17 @@ def _write_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, ensure_ascii=False, default=str), encoding="utf-8")
-    tmp.replace(path)
+    for attempt in range(8):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if os.name != "nt" or winerror not in (5, 32) or attempt == 7:
+                raise
+            # Windows readers do not share DELETE by default. The backend poller
+            # holds the target only briefly, so wait for that handle to close.
+            time.sleep(0.01 * (attempt + 1))
 
 
 def main() -> int:

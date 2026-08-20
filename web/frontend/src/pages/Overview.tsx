@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp, SetupStatus, MoneyHeatmapResp } from '../api/client'
+import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp, SetupStatus, MoneyHeatmapResp, TodayGuide } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from '../components/EChart'
 import SectorFlowPanel from '../components/SectorFlowPanel'
 import MoneyHeatmap from '../components/MoneyHeatmap'
+import { IcoFlame, IcoLayers, IcoScan, IcoShield, IcoStop, IcoTarget, IcoWallet } from '../components/Icons'
 import {
   loadOverviewCache,
   loadParams,
@@ -15,13 +16,13 @@ import {
 import type { EChartsOption } from 'echarts'
 
 function tierBadge(tier?: string, pool?: string, tradeable?: boolean) {
-  if (pool === 'A' && (tradeable || tier === 'strict')) return { text: '可交易', cls: 'badge badge-ok' }
-  if (pool === 'A') return { text: 'A池', cls: 'badge badge-ok' }
+  if (pool === 'A' && (tradeable || tier === 'strict')) return { text: '可交易', cls: 'pill ok' }
+  if (pool === 'A') return { text: 'A 池', cls: 'pill ok' }
   const t = (tier || '').toLowerCase()
-  if (t === 'relaxed') return { text: '放宽观察', cls: 'badge badge-warn' }
-  if (t.includes('theme') || t === 'theme_fill') return { text: '主题观察', cls: 'badge badge-mute' }
-  if (t === 'unknown') return { text: '旧数据', cls: 'badge badge-warn' }
-  return { text: pool === 'B' ? '观察' : (tier || '—'), cls: 'badge' }
+  if (t === 'relaxed') return { text: '放宽观察', cls: 'pill warn' }
+  if (t.includes('theme') || t === 'theme_fill') return { text: '主题观察', cls: 'pill' }
+  if (t === 'unknown') return { text: '旧数据', cls: 'pill warn' }
+  return { text: pool === 'B' ? '观察' : (tier || '—'), cls: 'pill' }
 }
 
 export default function Overview() {
@@ -36,6 +37,7 @@ export default function Overview() {
   const [sectorDays, setSectorDays] = useState(10)
   const [heatmap, setHeatmap] = useState<MoneyHeatmapResp | null>(null)
   const [heatErr, setHeatErr] = useState('')
+  const [todayGuide, setTodayGuide] = useState<TodayGuide | null>(null)
   const [pool, setPool] = useState<'A' | 'B' | 'ALL'>(prefPool || cached?.pool || 'A')
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
@@ -138,6 +140,10 @@ export default function Overview() {
   useEffect(() => { loadHeatmap() }, [loadHeatmap])
 
   useEffect(() => {
+    api.today().then(setTodayGuide).catch(() => setTodayGuide(null))
+  }, [])
+
+  useEffect(() => {
     loadOverview({ keepOnFail: true })
   }, [loadOverview])
 
@@ -172,6 +178,17 @@ export default function Overview() {
   useEffect(() => {
     loadSector()
   }, [loadSector])
+
+  // 顶栏手动更新行情完成后：刷新总览与热力图
+  useEffect(() => {
+    const onSynced = () => {
+      setCacheNote('行情已更新，正在刷新列表…')
+      loadOverview({ keepOnFail: false })
+      loadHeatmap()
+    }
+    window.addEventListener('data-synced', onSynced)
+    return () => window.removeEventListener('data-synced', onSynced)
+  }, [loadOverview, loadHeatmap])
 
   useEffect(() => {
     return () => {
@@ -349,6 +366,23 @@ export default function Overview() {
     }
   }
 
+  const onTodayAction = () => {
+    if (!todayGuide) return
+    if (todayGuide.next_action === 'RUN_SCAN') {
+      void onScan()
+      return
+    }
+    if (todayGuide.next_action === 'WAIT_SCAN') {
+      document.getElementById('scan-controls')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      return
+    }
+    if (todayGuide.href) {
+      nav(todayGuide.href)
+      return
+    }
+    window.alert('请双击项目目录里的“一键启动.bat”。系统会自动同步行情，完成后重新打开本页。')
+  }
+
   const miniOption = (it: OverviewItem): EChartsOption | null => {
     const k = it.kline || []
     if (!k.length) return null
@@ -399,39 +433,35 @@ export default function Overview() {
   const regime = data.regime || health?.regime
   const stale = !!fresh?.is_stale
   const defense = regime?.allow_new_entries === false
+  const tradeableCount = data.items.filter((x) => x.tradeable).length
 
   return (
-    <div>
-      {/* 小白提示条 */}
-      <div className="card section-gap" style={{ marginBottom: 12, borderColor: 'var(--accent)', background: 'var(--surface-2)' }}>
-        <div style={{ fontWeight: 700, marginBottom: 6 }}>新手 3 步</div>
-        <div className="muted" style={{ lineHeight: 1.7 }}>
-          ① 双击 <b>一键启动.bat</b> 同步数据（日常约 2～10 分钟）→
-          ② 点下方 <b>扫描</b>（约 5～15 分钟；横盘优先 6 个月，不够再降到 5/4/… 凑满约 20 只）→
-          ③ 只看 <b>A 池</b>（可交易）；B 池仅观察。
-          <br />
-          进详情再返回：<b>会保留上次扫描结果</b>，直到你再次扫描成功。
-          {cacheNote && (
-            <span style={{ color: 'var(--accent)', marginLeft: 6 }}>（{cacheNote}）</span>
-          )}
-          {defense && (
-            <span style={{ color: 'var(--up)' }}> 当前防守环境，A 池可能为空，属正常风控。</span>
-          )}
-          {setup && !setup.has_market_data && (
-            <span style={{ color: 'var(--up)' }}> 尚未拉到行情，请先跑一键启动同步。</span>
-          )}
-          {setup && !setup.has_token && (
-            <span style={{ color: 'var(--up)' }}> 未检测到 Token，请编辑项目根目录 .env。</span>
-          )}
+    <div className="fade-up">
+      {/* 服务端只给出一个正确的今日动作 */}
+      <div className="today-card">
+        <div className="step-no">1</div>
+        <div style={{ flex: 1, minWidth: 260 }}>
+          <div style={{ color: 'var(--faint)', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 2 }}>
+            今日唯一动作 · Today's Action
+          </div>
+          <div className="t-title">{todayGuide?.title || '正在判断今日状态…'}</div>
+          <div className="t-reason">{todayGuide?.reason || '系统正在核对行情、扫描、订单与对账。'}</div>
+          {cacheNote && <div className="t-note">{cacheNote}</div>}
         </div>
+        {todayGuide && (
+          <button type="button" className="btn btn-primary" style={{ padding: '10px 22px', fontSize: 14 }} onClick={onTodayAction}>
+            {todayGuide.primary_label}
+          </button>
+        )}
       </div>
 
       {/* 状态条：数据新鲜度 + 市场环境 */}
-      <div className={`status-bar ${stale ? 'status-stale' : 'status-ok'}`}>
-        <span>
-          数据 <b>{data.as_of || fresh?.as_of || '—'}</b>
+      <div className={`status-bar section-gap ${stale ? 'status-stale' : 'status-ok'}`} style={{ marginTop: 14 }}>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: 'var(--faint)' }}>数据</span>
+          <b className="num">{data.as_of || fresh?.as_of || '—'}</b>
           {fresh && (
-            <span className={`badge ${stale ? 'badge-danger' : fresh.stale_days > 0 ? 'badge-warn' : 'badge-ok'}`} style={{ marginLeft: 8 }}>
+            <span className={`badge ${stale ? 'badge-danger' : fresh.stale_days > 0 ? 'badge-warn' : 'badge-ok'}`}>
               {fresh.label}
               {fresh.stale_label
                 ? ` · ${fresh.stale_label}`
@@ -439,124 +469,153 @@ export default function Overview() {
             </span>
           )}
         </span>
-        <span>
-          环境{' '}
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: 'var(--faint)' }}>环境</span>
           <b className={regime?.regime === 'defense' ? 'text-danger' : regime?.regime === 'attack' ? 'text-ok' : ''}>
             {regime?.label || '—'}
           </b>
-          {regime?.allow_new_entries === false && (
-            <span className="badge badge-danger" style={{ marginLeft: 8 }}>禁止新开仓</span>
-          )}
+          {regime?.allow_new_entries === false && <span className="badge badge-danger">禁止新开仓</span>}
         </span>
-        <span className="muted">A 池=可交易 strict · B 池=观察（不混排）</span>
+        <span className="muted" style={{ fontSize: 12 }}>A 池 = 可交易 strict · B 池 = 观察（不混排）</span>
       </div>
 
+      {/* KPI 指标带 */}
       <div className="metrics">
-        <div className="metric"><div className="label">当前池</div><div className="value">{pool}<span className="sub"> / {data.count}只</span></div></div>
-        <div className="metric"><div className="label">平均综合分</div><div className="value">{avgScore.toFixed(1)}</div></div>
-        <div className="metric"><div className="label">合计主力净流入</div><div className="value">{(totalFlow / 10000).toFixed(2)}<span className="sub"> 亿</span></div></div>
-        <div className="metric"><div className="label">可交易票</div><div className="value">{data.items.filter((x) => x.tradeable).length}</div></div>
+        <div className="kpi accent-top">
+          <div className="kpi-label">当前池</div>
+          <div className="kpi-value">{pool}<span className="kpi-sub"> / {data.count} 只</span></div>
+          <div className="kpi-ico"><IcoLayers size={16} /></div>
+        </div>
+        <div className="kpi accent-top">
+          <div className="kpi-label">平均综合分</div>
+          <div className="kpi-value">{avgScore.toFixed(1)}</div>
+          <div className="kpi-ico"><IcoTarget size={16} /></div>
+        </div>
+        <div className="kpi accent-top">
+          <div className="kpi-label">合计主力净流入</div>
+          <div className="kpi-value">{(totalFlow / 10000).toFixed(2)}<span className="kpi-sub"> 亿</span></div>
+          <div className="kpi-ico"><IcoWallet size={16} /></div>
+        </div>
+        <div className="kpi accent-top">
+          <div className="kpi-label">可交易票</div>
+          <div className="kpi-value">{tradeableCount}</div>
+          <div className="kpi-ico"><IcoFlame size={16} /></div>
+        </div>
       </div>
 
-      <div className="card section-gap" style={{ marginBottom: 16 }}>
-        <div className="row" style={{ flexWrap: 'wrap', gap: 10 }}>
-          <span><b>池：</b></span>
-          {(['A', 'B', 'ALL'] as const).map((p) => (
-            <button
-              key={p}
-              className="btn"
-              style={{ borderColor: pool === p ? 'var(--accent)' : 'var(--border)', color: pool === p ? 'var(--accent)' : 'var(--text)' }}
-              onClick={() => setPool(p)}
-            >
-              {p === 'A' ? 'A 可交易' : p === 'B' ? 'B 观察' : '全部'}
-            </button>
-          ))}
-          {loading && <span className="muted">⏳ 加载中…</span>}
-          <span><b>A池 Top</b></span>
-          <input type="number" value={topN} min={5} max={30} step={1}
-            onChange={(e) => setTopN(Number(e.target.value))}
-            style={{ width: 64, background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '5px 8px' }} />
-          <span>回看</span>
-          <input type="number" value={days} min={60} max={250} step={10}
-            onChange={(e) => setDays(Number(e.target.value))}
-            style={{ width: 72, background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '5px 8px' }} />
-          <button className="btn primary" onClick={onScan} disabled={scanning}>
+      {/* 扫描控制台 */}
+      <div id="scan-controls" className="card" style={{ marginBottom: 16 }}>
+        <div className="h-sec" style={{ marginBottom: 12 }}>
+          <h2 style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <IcoScan size={16} />扫描控制台
+          </h2>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div className="seg" role="tablist" aria-label="股票池">
+              {(['A', 'B', 'ALL'] as const).map((p) => (
+                <button key={p} className={`seg-item ${pool === p ? 'on' : ''}`} onClick={() => setPool(p)}>
+                  {p === 'A' ? 'A · 可交易' : p === 'B' ? 'B · 观察' : '全部'}
+                </button>
+              ))}
+            </div>
+            {loading && <span className="muted" style={{ fontSize: 12 }}>加载中…</span>}
+          </div>
+        </div>
+        <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <label style={{ whiteSpace: 'nowrap' }}>A 池 Top</label>
+            <input type="number" value={topN} min={5} max={30} step={1}
+              onChange={(e) => setTopN(Number(e.target.value))}
+              style={{ width: 72 }} />
+          </div>
+          <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <label style={{ whiteSpace: 'nowrap' }}>回看天数</label>
+            <input type="number" value={days} min={60} max={250} step={10}
+              onChange={(e) => setDays(Number(e.target.value))}
+              style={{ width: 84 }} />
+          </div>
+          <button className="btn btn-primary" onClick={onScan} disabled={scanning}>
+            <IcoScan size={15} />
             {scanning
               ? (scanStatus?.status === 'cancelling' || scanStatus?.cancel_requested
                 ? '取消中…'
                 : '扫描中…')
-              : '🚀 扫描(A池优先)'}
+              : '开始扫描（A 池优先）'}
           </button>
           {scanning && (
             <button
-              className="btn"
+              className="btn btn-danger"
               onClick={onCancel}
               disabled={scanStatus?.status === 'cancelling' || !!scanStatus?.cancel_requested}
-              style={{ borderColor: 'var(--up)', color: 'var(--up)' }}
               title={scanTask ? `取消任务 ${scanTask}` : '取消当前扫描'}
             >
-              {scanStatus?.status === 'cancelling' || scanStatus?.cancel_requested
-                ? '⏹ 取消中…'
-                : '⏹ 取消'}
+              <IcoStop size={14} />
+              {scanStatus?.status === 'cancelling' || scanStatus?.cancel_requested ? '取消中…' : '取消'}
             </button>
+          )}
+          {defense && (
+            <span className="pill danger" style={{ gap: 6 }}><IcoShield size={13} />防守环境：A 池禁止新开仓</span>
           )}
         </div>
         {scanning && scanStatus && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>
+          <div style={{ marginTop: 14 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 6 }}>
               <span>
                 {scanStatus.stage}
                 {(scanStatus.status === 'cancelling' || scanStatus.cancel_requested) && (
                   <span className="badge badge-warn" style={{ marginLeft: 8 }}>取消请求已发送</span>
                 )}
               </span>
-              <span>{scanStatus.progress}%</span>
+              <span className="num">{scanStatus.progress}%</span>
             </div>
-            <div style={{ height: 8, background: 'var(--surface-2)', borderRadius: 4, overflow: 'hidden' }}>
-              <div style={{
-                height: '100%',
+            <div className="progress">
+              <i style={{
                 width: `${Math.max(scanStatus.progress, scanStatus.status === 'cancelling' ? 8 : 0)}%`,
-                background:
-                  scanStatus.status === 'cancelling' || scanStatus.cancel_requested
-                    ? 'linear-gradient(90deg, var(--warn), var(--up))'
-                    : 'linear-gradient(90deg, var(--accent), var(--accent-2))',
-                borderRadius: 4, transition: 'width 0.4s ease',
+                background: scanStatus.status === 'cancelling' || scanStatus.cancel_requested
+                  ? 'linear-gradient(90deg, var(--warn), var(--up))'
+                  : undefined,
               }} />
             </div>
-            {scanTask && (
-              <div style={{ marginTop: 6, fontSize: 11, color: 'var(--muted)' }} className="mono">
-                task {scanTask}
-              </div>
-            )}
+            {scanTask && <div style={{ marginTop: 6, fontSize: 11, color: 'var(--faint)' }} className="mono">task {scanTask}</div>}
           </div>
         )}
         {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
       </div>
 
-      {/* 最新交易日资金热力图（treemap，nivo 风格） */}
+      {/* 最新交易日资金热力图（treemap） */}
       <div className="card" style={{ marginBottom: 16 }}>
+        <div className="h-sec">
+          <h2 style={{ margin: 0 }}>市场资金热力图</h2>
+          <span className="hint">最新交易日 · 主力净流入分布</span>
+        </div>
         {heatErr ? (
-          <div style={{ fontSize: 12, color: 'var(--muted)' }}>资金热力图不可用：{heatErr}</div>
+          <div className="muted" style={{ fontSize: 12 }}>资金热力图不可用：{heatErr}</div>
         ) : heatmap ? (
           <MoneyHeatmap data={heatmap} />
         ) : (
-          <div style={{ fontSize: 12, color: 'var(--muted)' }}>加载资金热力图…</div>
+          <div className="muted" style={{ fontSize: 12 }}>加载资金热力图…</div>
         )}
       </div>
 
+      {/* 板块资金流 */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <h2 style={{ margin: 0 }}>🏭 板块资金流 <span className="tag">观察建仓/出逃</span></h2>
-          <div className="row">
+        <div className="h-sec">
+          <h2 style={{ margin: 0 }}>板块资金流 <span className="tag">观察建仓 / 出逃</span></h2>
+          <div className="seg">
             {[5, 10, 20].map((n) => (
-              <button key={n} className="btn" style={{ padding: '4px 10px', borderColor: sectorDays === n ? 'var(--accent)' : 'var(--border)', color: sectorDays === n ? 'var(--accent)' : 'var(--text)' }}
-                onClick={() => setSectorDays(n)}>{n}日</button>
+              <button key={n} className={`seg-item ${sectorDays === n ? 'on' : ''}`} onClick={() => setSectorDays(n)}>{n} 日</button>
             ))}
           </div>
         </div>
         {sector && <SectorFlowPanel data={sector} />}
       </div>
 
+      {/* 股票卡片网格 */}
+      <div className="h-sec" style={{ marginTop: 4 }}>
+        <h2 style={{ margin: 0 }}>
+          {pool === 'A' ? 'A 池 · 可交易候选' : pool === 'B' ? 'B 池 · 观察名单' : '全部候选'}
+          <span className="tag">{data.items.length} 只</span>
+        </h2>
+      </div>
       <div className="stock-grid">
         {data.items.map((it) => {
           const b = tierBadge(it.tier, it.pool, it.tradeable)
@@ -566,35 +625,38 @@ export default function Overview() {
                 <div>
                   <span className="name">{it.name}</span>
                   <span className="code">{it.code}</span>
-                  <span className={b.cls} style={{ marginLeft: 6 }}>{b.text}</span>
+                  <span className={b.cls} style={{ marginLeft: 7 }}>{b.text}</span>
                 </div>
-                <span className="score">{it.score.toFixed(1)}</span>
+                <span className="score">{it.score.toFixed(1)}<small>分</small></span>
               </div>
               <div className="meta">
-                <span>价 <b>{it.price?.toFixed(2) ?? 'n/a'}</b></span>
-                <span>行业 <b>{it.industry}</b></span>
-                <span>市值 <b>{it.mv_yi?.toFixed(0) ?? 'n/a'}亿</b></span>
-                <span>量比 <b>{it.vol_ratio?.toFixed(1) ?? 'n/a'}x</b></span>
+                <span>价 <b className="num">{it.price?.toFixed(2) ?? 'n/a'}</b></span>
+                <span>{it.industry}</span>
+                <span>市值 <b className="num">{it.mv_yi?.toFixed(0) ?? 'n/a'}亿</b></span>
+                <span>量比 <b className="num">{it.vol_ratio?.toFixed(1) ?? 'n/a'}×</b></span>
               </div>
               {it.trade && (
-                <div className="meta trade-row">
-                  <span>止损 <b className="text-danger">{it.trade.stop_loss ?? '—'}</b></span>
-                  <span>目标1 <b className="text-ok">{it.trade.target_1 ?? '—'}</b></span>
-                  <span>仓位 <b>{it.trade.position_pct}%</b></span>
-                  <span>持有≤ <b>{it.trade.max_hold_days}日</b></span>
+                <div className="trade-row">
+                  <span>止损<b className="text-danger num">{it.trade.stop_loss ?? '—'}</b></span>
+                  <span>目标1<b className="text-ok num">{it.trade.target_1 ?? '—'}</b></span>
+                  <span>仓位<b className="num">{it.trade.position_pct}%</b></span>
+                  <span>持有≤<b className="num">{it.trade.max_hold_days}日</b></span>
                 </div>
               )}
               {miniOption(it) && <EChart option={miniOption(it)!} height={110} />}
-              <div className="reason">{it.reasons.split('；').filter(Boolean).slice(0, 4).map((r, i) => (
-                <span key={i}>{i === 0 ? <b>✓ </b> : <span>· </span>}{r}{' '}</span>
-              ))}</div>
+              <div className="reason">
+                {it.reasons.split('；').filter(Boolean).slice(0, 4).map((r, i) => (
+                  <span key={i}>{i === 0 ? <b>✓ </b> : <span className="sep">· </span>}{r}</span>
+                ))}
+              </div>
             </div>
           )
         })}
       </div>
       {!data.items.length && (
-        <div className="card muted" style={{ padding: 24, textAlign: 'center' }}>
-          当前池无标的。{regime?.allow_new_entries === false ? '防守环境已禁止新开仓。' : '请运行扫描或切换到 B 观察池。'}
+        <div className="empty">
+          <strong>当前池无标的</strong>
+          {regime?.allow_new_entries === false ? '防守环境已禁止新开仓，属正常状态。' : '请运行扫描或切换到 B 观察池。'}
         </div>
       )}
     </div>

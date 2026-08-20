@@ -1,0 +1,6 @@
+# 形态五：超卖反转（v1）
+strategy_definition_id: oversold_reversal_v1
+version: v1
+params:
+  rsi_period: 14
+  oversold_threshold: 30.0

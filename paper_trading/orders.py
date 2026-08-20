@@ -93,6 +93,77 @@ def _latest_quote(db_path: Path, ts_code: str) -> tuple[str, float, float] | Non
     return (str(row[0]), float(row[1]), float(row[2])) if row else None
 
 
+def normalize_ts_code(ts_code: str) -> str:
+    """Normalize the six-digit code accepted by the personal paper UI."""
+    value = str(ts_code or "").strip().upper()
+    if len(value) == 6 and value.isdigit():
+        if value.startswith(("4", "8")):
+            return f"{value}.BJ"
+        if value.startswith(("5", "6", "9")):
+            return f"{value}.SH"
+        return f"{value}.SZ"
+    if len(value) == 9 and value[:6].isdigit() and value[6:] in {".SH", ".SZ", ".BJ"}:
+        return value
+    raise DomainError(
+        "INVALID_TS_CODE",
+        f"无效证券代码：{ts_code}",
+        details={"expected": "六位代码或 000001.SZ / 688105.SH"},
+    )
+
+
+def _normalize_trade_date(value: str) -> str:
+    normalized = str(value or "").strip().replace("-", "")
+    try:
+        datetime.strptime(normalized, "%Y%m%d")
+    except ValueError as exc:
+        raise DomainError(
+            "INVALID_TRADE_DATE",
+            f"无效交易日期：{value}",
+            details={"expected": "YYYYMMDD 或 YYYY-MM-DD"},
+        ) from exc
+    return normalized
+
+
+def _quote_as_of(
+    db_path: Path, ts_code: str, trade_date: str,
+) -> tuple[str, float, float] | None:
+    """Latest quote visible no later than ``trade_date``."""
+    with tx(db_path, immediate=False) as conn:
+        row = conn.execute(
+            "SELECT trade_date, close, vol FROM daily WHERE ts_code=? AND trade_date<=?"
+            " ORDER BY trade_date DESC LIMIT 1",
+            (ts_code, trade_date),
+        ).fetchone()
+    return (str(row[0]), float(row[1]), float(row[2])) if row else None
+
+
+def _has_execution_bar(db_path: Path, ts_code: str, trade_date: str) -> bool:
+    with tx(db_path, immediate=False) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM daily WHERE ts_code=? AND trade_date=? AND open>0 LIMIT 1",
+            (ts_code, trade_date),
+        ).fetchone()
+    return row is not None
+
+
+def _historical_regime(db_path: Path, decision_date: str):
+    """Evaluate the market regime with index data available by the decision date."""
+    import pandas as pd
+
+    from market_regime import detect_regime_from_index_df
+
+    with tx(db_path, immediate=False) as conn:
+        rows = conn.execute(
+            "SELECT trade_date, close FROM daily WHERE ts_code='000300.SH'"
+            " AND trade_date<=? ORDER BY trade_date",
+            (decision_date,),
+        ).fetchall()
+    return detect_regime_from_index_df(
+        pd.DataFrame(rows, columns=["trade_date", "close"]),
+        index_code="000300.SH",
+    )
+
+
 def _tradeable_signal(db_path: Path, ts_code: str, trade_date: str) -> dict[str, Any] | None:
     """当日 A 池可交易信号（pool='A'）。无 → None。"""
     with tx(db_path, immediate=False) as conn:
@@ -122,6 +193,14 @@ def _calc_qty(equity_fen: int, price: float, pos_pct: float | None, lot_size: in
     return max(0, qty)
 
 
+def estimate_buy_reserve_fen(price: float, qty: int, rule) -> int:
+    """Use the formal confirmation formula to estimate the cash reservation."""
+    est_price = price * (1 + rule.slippage_bps / 10_000.0)
+    fee_rate = (rule.commission_bps + rule.other_fee_bps) / 10_000.0
+    est_cost = est_price * qty * 100.0
+    return int(est_cost * (1 + fee_rate)) + rule.min_commission_fen
+
+
 # ── 草稿生成 ──
 
 def create_buy_draft(
@@ -141,20 +220,10 @@ def create_buy_draft(
     today：测试注入固定交易日（默认真实日期）。
     """
     db_path = Path(db_path)
-    # 市场环境检查（防守不生成新买入草稿）
-    from market_regime import detect_regime
-    try:
-        from local_store import LocalStore
-        reg = detect_regime(store=LocalStore(db_path=db_path), allow_network=False)
-        if not reg.allow_new_entries:
-            raise DomainError("MARKET_DEFENSE", "防守环境禁止开新仓",
-                              details={"regime": reg.regime})
-    except DomainError:
-        raise
-    except Exception:  # noqa: BLE001
-        pass  # 环境检测失败不阻断（保守放行）
-
-    # 信号检查：必须当日 A 池
+    ts_code = normalize_ts_code(ts_code)
+    trade_date = _normalize_trade_date(trade_date)
+    # 信号检查：必须是当日已按 PIT 环境固化为 tradeable 的 A 池快照。
+    # 最新环境在确认和撮合阶段复核，避免用“当前环境”反向改写历史信号。
     sig = _tradeable_signal(db_path, ts_code, trade_date)
     if sig is None:
         raise DomainError("SIGNAL_NOT_TRADEABLE",
@@ -171,7 +240,7 @@ def create_buy_draft(
                           f"{ts_code} 已有活动买单，禁止重复买入")
 
     rule = get_rule(db_path, ts_code)
-    quote = _latest_quote(db_path, ts_code)
+    quote = _quote_as_of(db_path, ts_code, trade_date)
     if quote is None:
         raise DomainError("NO_QUOTE", f"{ts_code} 无行情数据")
     price = quote[1]
@@ -211,6 +280,101 @@ def create_buy_draft(
     return get_order(db_path, order_id)
 
 
+def create_historical_buy_draft(
+    db_path: str | Path,
+    *,
+    ts_code: str,
+    execution_trade_date: str,
+    qty: int,
+) -> dict[str, Any]:
+    """Create an explicit manual paper order for a selected historical open.
+
+    This path is intentionally separate from signal orders: it never claims that
+    the instrument belonged to pool A.  The decision timestamp is frozen after
+    the previous open day's close, and matching is restricted to the selected
+    next exchange trading day.
+    """
+    db_path = Path(db_path)
+    ts_code = normalize_ts_code(ts_code)
+    execution_trade_date = _normalize_trade_date(execution_trade_date)
+    if not is_open(db_path, execution_trade_date):
+        raise DomainError(
+            "NOT_TRADING_DAY",
+            f"{execution_trade_date} 不是交易所开市日",
+            details={"execution_trade_date": execution_trade_date},
+        )
+    if not _has_execution_bar(db_path, ts_code, execution_trade_date):
+        raise DomainError(
+            "NO_QUOTE_FOR_EXECUTION_DATE",
+            f"{ts_code} 在 {execution_trade_date} 没有可用开盘行情",
+            details={"ts_code": ts_code, "execution_trade_date": execution_trade_date},
+        )
+
+    decision_date = prev_trade_date(db_path, execution_trade_date)
+    if _strict_next_open(db_path, decision_date) != execution_trade_date:
+        raise DomainError(
+            "INVALID_HISTORICAL_EXECUTION_DATE",
+            "历史手工订单只能在决策日后的下一开市日开盘撮合",
+            details={"decision_date": decision_date,
+                     "execution_trade_date": execution_trade_date},
+        )
+
+    with tx(db_path, immediate=False) as conn:
+        latest_fill_date = conn.execute(
+            "SELECT MAX(substr(quote_revision,instr(quote_revision,':')+1))"
+            " FROM pt_fill WHERE instr(quote_revision,':')>0",
+        ).fetchone()[0]
+        duplicate = conn.execute(
+            "SELECT order_id FROM pt_order WHERE account_id=1 AND ts_code=? AND side='BUY'"
+            " AND state IN ('CONFIRMED','QUEUED') LIMIT 1",
+            (ts_code,),
+        ).fetchone()
+    if latest_fill_date and execution_trade_date <= str(latest_fill_date):
+        raise DomainError(
+            "SIMULATION_DATE_NOT_AFTER_LAST_FILL",
+            f"模拟日期必须晚于已有成交日期 {latest_fill_date}",
+            details={"latest_fill_trade_date": str(latest_fill_date),
+                     "execution_trade_date": execution_trade_date},
+        )
+    if duplicate:
+        raise DomainError(
+            "DUPLICATE_ACTIVE_ORDER",
+            f"{ts_code} 已有活动买单",
+            details={"active_order_id": duplicate[0]},
+        )
+
+    rule = get_rule(db_path, ts_code)
+    if qty <= 0:
+        raise DomainError("INVALID_QTY", "买入数量必须为正整数")
+    if qty % rule.lot_size != 0:
+        raise DomainError(
+            "QTY_NOT_MULTIPLE_OF_LOT",
+            f"数量必须是整手（{rule.lot_size}）的整数倍",
+            details={"lot_size": rule.lot_size},
+        )
+
+    order_id = _new_id("ORD")
+    now = _now()
+    with tx(db_path, immediate=True) as conn:
+        conn.execute(
+            "INSERT INTO pt_order (order_id, idempotency_key, account_id, source,"
+            " ts_code, side, qty, state, reserve_fen, reserved_qty, signal_trade_date,"
+            " eligible_trade_date, created_at, updated_at)"
+            " VALUES (?,?,1,'MANUAL_HISTORY',?,'BUY',?,'DRAFT',0,0,?,?,?,?)",
+            (order_id, f"draft-{uuid.uuid4().hex[:12]}", ts_code, qty,
+             decision_date, execution_trade_date, now, now),
+        )
+        conn.execute(
+            "INSERT INTO pt_audit_event (actor, action, entity_type, entity_id,"
+            " before_json, after_json, occurred_at)"
+            " VALUES ('user','HISTORICAL_ORDER_DRAFT_CREATE','order',?,NULL,?,?)",
+            (order_id,
+             f'{{"side":"BUY","qty":{qty},"decision_date":"{decision_date}",'
+             f'"execution_trade_date":"{execution_trade_date}"}}', now),
+        )
+    return get_order(db_path, order_id)
+
+
 def create_sell_draft(
     db_path: str | Path,
     *,
@@ -220,6 +384,7 @@ def create_sell_draft(
 ) -> dict[str, Any]:
     """从现有可卖持仓创建卖出草稿（不允许卖空/超卖）。"""
     db_path = Path(db_path)
+    ts_code = normalize_ts_code(ts_code)
     sellable = sellable_qty(db_path, ts_code, today=today)
     if sellable <= 0:
         raise DomainError(ERR_INSUFFICIENT_SELLABLE,
@@ -289,13 +454,27 @@ def confirm_order(
     ts_code = order["ts_code"]
     side = order["side"]
     qty = order["qty"]
+    historical_manual = order.get("source") == "MANUAL_HISTORY"
+    historical_execution_date = str(order.get("eligible_trade_date") or "")
+    if historical_manual:
+        today = str(order.get("signal_trade_date") or "")
+        if not today or not historical_execution_date:
+            raise DomainError(
+                "INVALID_HISTORICAL_ORDER",
+                "历史手工订单缺少决策日或模拟成交日",
+                details={"order_id": order_id},
+            )
 
     # 1) 市场环境（撮合前再次检查）
-    from market_regime import detect_regime
     regime = "neutral"
     try:
-        from local_store import LocalStore
-        reg = detect_regime(store=LocalStore(db_path=db_path), allow_network=False)
+        if historical_manual:
+            reg = _historical_regime(db_path, str(today))
+        else:
+            from local_store import LocalStore
+            from market_regime import detect_regime
+
+            reg = detect_regime(store=LocalStore(db_path=db_path), allow_network=False)
         regime = reg.regime
         if side == "BUY" and not reg.allow_new_entries:
             _reject(order_id, "MARKET_DEFENSE", f"防守环境禁止开仓（{regime}）", db_path)
@@ -308,14 +487,23 @@ def confirm_order(
         pass
 
     # 2) 行情时点（过期行情拒单）
-    quote = _latest_quote(db_path, ts_code)
+    today = today or datetime.now(_TZ).strftime("%Y%m%d")
+    quote = _quote_as_of(db_path, ts_code, today)
     if quote is None:
         _reject(order_id, "NO_QUOTE", "无行情数据", db_path)
         raise DomainError("NO_QUOTE", f"{ts_code} 无行情")
     q_date, price, _vol = quote
-    today = today or datetime.now(_TZ).strftime("%Y%m%d")
     confirmed_at = _confirmation_time(today)
-    eligible_trade_date = _strict_next_open(db_path, today)
+    eligible_trade_date = (
+        historical_execution_date if historical_manual else _strict_next_open(db_path, today)
+    )
+    if historical_manual and _strict_next_open(db_path, today) != eligible_trade_date:
+        _reject(order_id, "INVALID_HISTORICAL_ORDER", "模拟成交日不是决策日后的下一开市日", db_path)
+        raise DomainError(
+            "INVALID_HISTORICAL_ORDER",
+            "模拟成交日不是决策日后的下一开市日",
+            details={"decision_date": today, "execution_trade_date": eligible_trade_date},
+        )
     stale = False
     try:
         # 行情必须不早于「最近已收盘交易日」（今天尚未收盘，取今天的前一交易日）
@@ -329,7 +517,7 @@ def confirm_order(
                           details={"latest_quote": q_date, "today": today})
     checks.append({"name": "行情时点", "pass": True, "as_of": q_date})
 
-    if side == "BUY":
+    if side == "BUY" and not historical_manual:
         sig = _tradeable_signal(db_path, ts_code, str(order.get("signal_trade_date") or today))
         if sig is None:
             _reject(order_id, "SIGNAL_NOT_TRADEABLE", "A 池信号不存在", db_path)
@@ -346,6 +534,14 @@ def confirm_order(
             _reject(order_id, "INVALID_SIGNAL_TIME", "信号时点格式无效", db_path)
             raise DomainError("INVALID_SIGNAL_TIME", "信号时点格式无效") from exc
         checks.append({"name": "信号时点", "pass": True, "available_at": sig["available_at"]})
+    elif side == "BUY":
+        checks.append({
+            "name": "历史手工演练",
+            "pass": True,
+            "decision_date": today,
+            "execution_trade_date": eligible_trade_date,
+            "note": "不声明 A 池资格，仅用于纸面历史演练",
+        })
 
     # 3) 交易规则
     rule = get_rule(db_path, ts_code)
@@ -354,11 +550,7 @@ def confirm_order(
     # 4) 数量检查（BUY：现金足额；SELL：可卖份额）
     reserve_fen = 0
     if side == "BUY":
-        # 按可能成交上限预留：qty × 价格 × (1+滑点+佣金+税费)
-        est_price = price * (1 + rule.slippage_bps / 10_000.0)
-        fee_rate = (rule.commission_bps + rule.other_fee_bps) / 10_000.0
-        est_cost = est_price * qty * 100.0  # 分
-        reserve_fen = int(est_cost * (1 + fee_rate)) + rule.min_commission_fen
+        reserve_fen = estimate_buy_reserve_fen(price, qty, rule)
     else:
         reserve_fen = 0
 
@@ -373,6 +565,7 @@ def confirm_order(
         if not current or current[0] != "DRAFT":
             pending_error = DomainError(ERR_INVALID_STATE, "订单状态已变化，请刷新后重试")
         elif side == "BUY":
+            est_price = price * (1 + rule.slippage_bps / 10_000.0)
             cash_row = conn.execute(
                 "SELECT balance_fen FROM pt_cash_flow WHERE account_id=1 "
                 "ORDER BY flow_id DESC LIMIT 1"
@@ -389,12 +582,22 @@ def confirm_order(
                 "AND side='BUY' AND state IN ('CONFIRMED','QUEUED') AND order_id<>? LIMIT 1",
                 (ts_code, order_id),
             ).fetchone()
-            market_value = int(round(float(conn.execute(
-                "SELECT COALESCE(SUM(l.remaining_qty * COALESCE(("
-                "SELECT d.close FROM daily d WHERE d.ts_code=l.ts_code "
-                "ORDER BY d.trade_date DESC LIMIT 1),0) * 100),0) "
-                "FROM pt_position_lot l WHERE l.account_id=1 AND l.remaining_qty>0"
-            ).fetchone()[0] or 0)))
+            if historical_manual:
+                market_value_row = conn.execute(
+                    "SELECT COALESCE(SUM(l.remaining_qty * COALESCE(("
+                    "SELECT d.close FROM daily d WHERE d.ts_code=l.ts_code "
+                    "AND d.trade_date<=? ORDER BY d.trade_date DESC LIMIT 1),0) * 100),0) "
+                    "FROM pt_position_lot l WHERE l.account_id=1 AND l.remaining_qty>0",
+                    (today,),
+                ).fetchone()
+            else:
+                market_value_row = conn.execute(
+                    "SELECT COALESCE(SUM(l.remaining_qty * COALESCE(("
+                    "SELECT d.close FROM daily d WHERE d.ts_code=l.ts_code "
+                    "ORDER BY d.trade_date DESC LIMIT 1),0) * 100),0) "
+                    "FROM pt_position_lot l WHERE l.account_id=1 AND l.remaining_qty>0"
+                ).fetchone()
+            market_value = int(round(float(market_value_row[0] or 0)))
             equity = cash + market_value
             order_notional = int(round(est_price * qty * 100.0))
             daily_buy_notional = int(round(float(conn.execute(
@@ -474,6 +677,12 @@ def confirm_order(
                 (f"{pending_error.code}: {pending_error.message}", now, order_id),
             )
         else:
+            if historical_manual:
+                conn.execute(
+                    "UPDATE pt_cycle SET phase='PRE_OPEN', finished_at=NULL, blocked_reason=?"
+                    " WHERE run_date>=? AND phase='DONE'",
+                    (f"HISTORICAL_REPLAY:{order_id}", eligible_trade_date),
+                )
             conn.execute(
                 "UPDATE pt_order SET state='CONFIRMED', reserve_fen=?, reserved_qty=?,"
                 " confirmed_at=?, eligible_trade_date=?, updated_at=? WHERE order_id=?",
@@ -579,7 +788,10 @@ def list_orders(
     limit: int = 50,
 ) -> list[dict[str, Any]]:
     db_path = Path(db_path)
-    sql = "SELECT order_id, ts_code, side, qty, state, reserve_fen, reject_reason, created_at FROM pt_order WHERE 1=1"
+    sql = (
+        "SELECT order_id, source, ts_code, side, qty, state, reserve_fen, reject_reason,"
+        " signal_trade_date, eligible_trade_date, created_at FROM pt_order WHERE 1=1"
+    )
     params: list[Any] = []
     if state:
         sql += " AND state=?"
@@ -587,12 +799,13 @@ def list_orders(
     if ts_code:
         sql += " AND ts_code=?"
         params.append(ts_code)
-    sql += " ORDER BY created_at DESC LIMIT ?"
+    sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
     params.append(limit)
     with tx(db_path, immediate=False) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [
-        {"order_id": r[0], "ts_code": r[1], "side": r[2], "qty": r[3], "state": r[4],
-         "reserve_fen": r[5], "reject_reason": r[6], "created_at": r[7]}
+        {"order_id": r[0], "source": r[1], "ts_code": r[2], "side": r[3],
+         "qty": r[4], "state": r[5], "reserve_fen": r[6], "reject_reason": r[7],
+         "signal_trade_date": r[8], "eligible_trade_date": r[9], "created_at": r[10]}
         for r in rows
     ]

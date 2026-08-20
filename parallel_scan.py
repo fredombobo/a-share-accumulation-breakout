@@ -264,15 +264,29 @@ def detect_many(
                 break
             finished, pending = wait(pending, timeout=0.8, return_when=FIRST_COMPLETED)
             for fut in finished:
+                chunk_codes = tasks[futs[fut]][0] if fut in futs else []
                 try:
                     pairs = fut.result(timeout=0.1)
-                except Exception:  # noqa: BLE001  # worker 被终止/异常的分片跳过
+                except Exception as exc:  # noqa: BLE001  # worker 异常 → 分片结果缺失，必须可见
                     pairs = []
+                    _prog(
+                        f"警告：分片异常（{exc.__class__.__name__}），"
+                        f"该分片 {len(chunk_codes)} 只股票未返回结果（静默漏票风险）",
+                        pct=0,
+                    )
                 for c, s in pairs:
                     results[c] = s
                 done += 1
                 pct = 25 + int(70 * done / max(len(tasks), 1))
                 _prog(f"完成分片 {done}/{len(tasks)}（累计 {len(results)} 只）", pct)
+            if not pending and not cancelled:
+                missing = sorted(set(code_list) - set(results))
+                if missing:
+                    _prog(
+                        f"警告：对账发现 {len(missing)}/{len(code_list)} 只股票未出现在扫描结果"
+                        f"（分片失败/无数据）: {missing[:8]}{'…' if len(missing) > 8 else ''}",
+                        pct=96,
+                    )
     finally:
         if cancelled or _cancelled(cancel_check):
             cancelled = True
@@ -409,10 +423,16 @@ def prefilter_volume_parallel(
                 break
             finished, pending = wait(pending, timeout=0.8, return_when=FIRST_COMPLETED)
             for fut in finished:
+                chunk_codes = tasks[futs.index(fut)][0] if fut in futs else []
                 try:
                     keep.update(fut.result(timeout=0.1))
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    _prog(
+                        f"警告：预筛分片异常（{exc.__class__.__name__}），"
+                        f"该分片 {len(chunk_codes)} 只股票未参与预筛（保守起见按保留处理由上层补扫）",
+                        pct=18,
+                    )
+                    keep.update(set(chunk_codes))
                 done += 1
                 _prog(f"预筛分片 {done}/{len(futs)}", 18)
     finally:

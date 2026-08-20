@@ -331,6 +331,25 @@ def mig_daily_point_in_time_metadata(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE daily SET is_legacy=0 WHERE is_legacy IS NULL")
 
 
+def mig_execution_lineage(conn: sqlite3.Connection) -> None:
+    """M009（P2.3）：pt_fill 固化执行血缘列（fee_breakdown/版本/参与率/quote 时点/input hash）。
+
+    历史成交不重写；异常时停止新撮合，以 model version 区分；现金流水不回滚。
+    """
+    if not _table_exists(conn, "pt_fill"):
+        return
+    _ensure_columns(conn, "pt_fill", {
+        "other_fee_fen": "INTEGER NOT NULL DEFAULT 0 CHECK (other_fee_fen >= 0)",
+        "fee_breakdown_json": "TEXT NOT NULL DEFAULT '{}'",
+        "cost_version": "TEXT NOT NULL DEFAULT 'legacy-v1'",
+        "participation_bps": "INTEGER NOT NULL DEFAULT 500",
+        "quote_available_at": "TEXT NOT NULL DEFAULT ''",
+        "input_hash": "TEXT NOT NULL DEFAULT ''",
+        "rule_version": "TEXT NOT NULL DEFAULT 'v1'",
+    })
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pt_fill_input_hash ON pt_fill(input_hash)")
+
+
 # ── 迁移注册表（版本单调递增，禁止重排/删除已发布版本） ──
 
 MIGRATIONS: list[tuple[int, str, MigrationFn]] = [
@@ -342,6 +361,7 @@ MIGRATIONS: list[tuple[int, str, MigrationFn]] = [
     (6, "M006_acceptance_controls", mig_acceptance_controls),
     (7, "M007_position_lot_zero_balance", mig_position_lot_zero_balance),
     (8, "M008_daily_point_in_time_metadata", mig_daily_point_in_time_metadata),
+    (9, "M009_execution_lineage", mig_execution_lineage),
 ]
 
 

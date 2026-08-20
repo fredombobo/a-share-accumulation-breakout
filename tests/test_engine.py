@@ -19,6 +19,7 @@ from paper_trading.orders import (
     create_sell_draft,
     get_order,
 )
+from tests.paper_market_fixture import seed_fresh_neutral_benchmark
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -49,9 +50,16 @@ def _setup() -> str:
             # 000004: 8/7 低成交量（vol=1000，5% = 50 股 < 一手100 → 流动性不足）
             ("000004.SZ", "20260805", 8.0, 8.1, 7.9, 8.0, 100000.0, 800000.0),
             ("000004.SZ", "20260806", 8.0, 8.2, 7.9, 8.1, 50000.0, 405000.0),
-            ("000004.SZ", "20260807", 8.1, 8.3, 8.0, 8.2, 1000.0, 8100.0),
+            # 000004: 8/7 极低成交量（vol=1 手 = 100 股，5% = 5 股 < 一手100 → 流动性不足）
+            ("000004.SZ", "20260807", 8.1, 8.3, 8.0, 8.2, 1.0, 810.0),
+            # 000005: 8/7 中等量（vol=100 手 = 1 万股，5% = 500 股 ≥ 一手 → 可成交；
+            #         旧单位 bug 下 100×5%=5 股 < 一手 → 被误拒）
+            ("000005.SZ", "20260805", 9.0, 9.1, 8.9, 9.0, 100000.0, 900000.0),
+            ("000005.SZ", "20260806", 9.0, 9.2, 8.9, 9.1, 90000.0, 820000.0),
+            ("000005.SZ", "20260807", 9.1, 9.3, 9.0, 9.2, 100.0, 920.0),
         ],
     )
+    seed_fresh_neutral_benchmark(conn)
     conn.executemany(
         "INSERT OR REPLACE INTO trade_cal (cal_date, is_open, source, updated_at)"
         " VALUES (?,?,?,?)",
@@ -140,13 +148,24 @@ def test_stock_suspended_zero_fill():
 
 
 def test_low_liquidity_zero_fill():
-    """成交量 5% < 一手 → 零成交（流动性不足）。"""
+    """成交量 5% 转股后仍 < 一手 → 零成交（流动性不足）。vol=1 手=100 股，5%=5 股。"""
     db = _setup()
     _buy_and_confirm(db, "000004.SZ", 100)
     r = execute_fills(db, "20260807")
     z = [z for z in r["zero_fill"] if z["ts_code"] == "000004.SZ"]
     assert z and z[0]["reason"] == "INSUFFICIENT_LIQUIDITY"
     print("[PASS] 低流动性零成交")
+
+
+def test_hand_to_share_unit_conversion():
+    """参与率单位修复：vol 为「手」，5% 上限须按股计算（×100）。8/7 vol=100 手
+    = 1 万股 → 5% = 500 股，100 股买单应正常成交（旧逻辑 100×5%=5 股会被误拒）。"""
+    db = _setup()
+    _buy_and_confirm(db, "000005.SZ", 100)
+    r = execute_fills(db, "20260807")
+    fills = [f for f in r["filled"] if f["ts_code"] == "000005.SZ"]
+    assert fills, "100 股买单应成交（单位修复后 5% 上限=500 股）"
+    print("[PASS] 手转股参与率单位正确")
 
 
 def test_sell_fifo_and_realized_pnl():

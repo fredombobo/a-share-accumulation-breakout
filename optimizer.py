@@ -15,16 +15,145 @@ import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, wait
+from typing import Any
 
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
+from ab_screener.research.cost_adjustment import cost_adjusted_trade, summarize_costed_trades
 from config import BT_MIN_TRADES, GRID_BENCH
 from trade_sim import simulate_trade, summarize
 
 _MIN_CODES_FOR_POOL = 100
+
+
+class ResearchCancelled(RuntimeError):
+    """Raised when a persisted Lab cancellation stops research work."""
+
+
+def _is_cancelled(cancel_check: Any) -> bool:
+    if cancel_check is None:
+        return False
+    try:
+        return bool(cancel_check())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _collect_pool_results(
+    pool: ProcessPoolExecutor,
+    pending: set,
+    *,
+    chunk_count: int,
+    progress_cb: Any,
+    cancel_check: Any,
+    chunk_codes: dict | None = None,
+) -> tuple[dict[str, list[dict]], list[str]]:
+    """Collect optimizer chunks while allowing an immediate hard cancel.
+
+    Returns (results, lost_codes)；lost_codes 记录因分片异常而完全未覆盖的股票。
+    """
+    results: dict[str, list[dict]] = {}
+    lost_codes: list[str] = []
+    done = 0
+    while pending:
+        if _is_cancelled(cancel_check):
+            from scan_runtime import abandon_pool
+
+            abandon_pool(pool)
+            raise ResearchCancelled("用户取消")
+        finished, pending = wait(pending, timeout=0.5, return_when="FIRST_COMPLETED")
+        for fut in finished:
+            try:
+                for pid, trades in fut.result().items():
+                    results.setdefault(pid, []).extend(trades)
+            except Exception as exc:  # noqa: BLE001
+                codes = (chunk_codes or {}).get(fut, [])
+                lost_codes.extend(codes)
+                print(f"[optimizer][warn] 分片失败: {exc}（该分片 {len(codes)} 只股票结果缺失）")
+            done += 1
+            if progress_cb:
+                progress_cb(f"分片 {done}/{chunk_count}", 5 + int(90 * done / chunk_count))
+    if lost_codes:
+        print(
+            f"[optimizer][warn] 对账：{len(set(lost_codes))} 只股票的参数重放结果缺失"
+            "（分片异常），相关统计将被低估",
+        )
+    return results, list(set(lost_codes))
+
+
+_UNIVERSE_DAILY_CACHE: tuple[list[str], str] | None = None  # (codes, max_trade_date 指纹)
+
+
+def research_universe(
+    max_codes: int | None = None,
+    include_delisted: bool = False,
+    as_of: str | None = None,
+) -> list[str]:
+    """Return the deterministic stock universe shared by candidate and baselines.
+
+    include_delisted=True（回测/研究路径）：宇宙 = 当前上市 ∪ 已退市（在 daily 有行情的），
+    消除幸存者偏差——历史回测必须包含退市股。选股扫描路径保持 False（只选当前可交易标的）。
+    指数代码（如 000300.SH）不在 stock_basic/delisted_basic 中，天然被排除。
+
+    as_of（v2 P1.2 路径）：走 instrument 注册表按时点过滤（[list_date, delist_date)），
+    注册表为空/未迁移 → 抛错（fail-closed，不使用全市场默认兜底）。
+    """
+    if as_of is not None:
+        return _research_universe_asof(max_codes=max_codes, as_of=as_of)
+
+    from local_store import LocalStore
+
+    store = LocalStore()
+    basic = store.load_stock_basic()
+    if basic.empty:
+        return []
+    codes = sorted(set(basic["ts_code"].astype(str).tolist()))
+    codes = [c for c in codes if c.endswith((".SH", ".SZ")) and not c.startswith(("4", "8", "92"))]
+
+    if include_delisted:
+        global _UNIVERSE_DAILY_CACHE
+        max_date = store.max_trade_date("daily") or ""
+        if _UNIVERSE_DAILY_CACHE is None or _UNIVERSE_DAILY_CACHE[1] != max_date:
+            with store._connect() as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT ts_code FROM daily WHERE ts_code LIKE '%.SZ' OR ts_code LIKE '%.SH'"
+                ).fetchall()
+            daily_codes = sorted({str(r[0]) for r in rows})
+            _UNIVERSE_DAILY_CACHE = (daily_codes, max_date)
+        daily_codes = _UNIVERSE_DAILY_CACHE[0]
+        codes = sorted(set(codes) | {c for c in daily_codes
+                                     if c.endswith((".SH", ".SZ")) and not c.startswith(("4", "8", "92"))})
+
+    return codes[:max_codes] if max_codes else codes
+
+
+def _research_universe_asof(max_codes: int | None, as_of: str) -> list[str]:
+    """P1.2 as-of 宇宙：instrument 注册表按时点过滤（fail-closed）。"""
+    from ab_screener.data.instrument_repository import (
+        InstrumentRegistryError,
+        universe_asof,
+    )
+    from local_store import LocalStore
+
+    store = LocalStore()
+    with store._connect() as conn:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='instrument_universe_rules'"
+        ).fetchone()
+        if not has_table:
+            raise InstrumentRegistryError(
+                "instrument_universe_rules 表不存在：先执行 migrate_v2.py --apply（fail-closed）"
+            )
+        codes = universe_asof(conn, as_of, security_types=("stock",))
+    if not codes:
+        raise InstrumentRegistryError(
+            f"as_of={as_of} 的 instrument 宇宙为空（注册表未回填或该时点无有效规则）"
+        )
+    return codes[:max_codes] if max_codes else codes
 
 
 def param_id(strategy: str, params: dict) -> str:
@@ -38,7 +167,7 @@ def grid_combos(strategy: str, grid: dict | None = None) -> list[dict]:
     g = grid or GRID_BENCH
     keys = sorted(g.keys())
     out = []
-    for vals in itertools.product(*(g[k] for k in keys)):
+    for vals in itertools.product(*[g[k] for k in keys]):
         out.append({"strategy": strategy, **dict(zip(keys, vals))})
     return out
 
@@ -51,17 +180,19 @@ def _detect_signals_for_code(
     horizon: int,
     strategy: str,
     vr_levels: list[float],
+    signal_kwargs: dict | None = None,
 ) -> list[dict]:
     """单只股票的信号缓存：逐采样日检测入场，返回信号列表。
 
     每项: {day, entry_i, bench_vols: {vr: bench_vol}}
-    A 方案：detect_accumulation_breakout（与参数无关，detect 一次）
+    A 方案：detect_accumulation_breakout（与参数无关，detect 一次；signal_kwargs 可覆盖形态阈值）
     B 方案：detect_plan_b（vol_ratio_min 影响建仓识别，按 vr_levels 各 detect 一次）
     """
     from bench_volume import find_build_seqs
     from entry_plan_b import detect_plan_b
     from signals import detect_accumulation_breakout
 
+    skwargs = dict(signal_kwargs or {})
     dts = df["trade_date"].astype(str).tolist()
     dts_set = set(dts)
     signals: list[dict] = []
@@ -76,22 +207,28 @@ def _detect_signals_for_code(
             continue
 
         if strategy == "A":
-            sig = detect_accumulation_breakout(win)
+            sig = detect_accumulation_breakout(win, **skwargs)
             if not sig.get("is_breakout"):
                 continue
             bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
             recent = {str(x) for x in cal[max(0, day_i - 5): day_i + 1]}
             if not bd or bd not in recent or bd not in dts_set:
                 continue
-            entry_i = dts.index(bd) + 1
-            if entry_i >= len(df):
+            entry_i = dts.index(bd)
+            if entry_i + 1 >= len(df):
                 continue
             bo_vol = float(df.loc[df["trade_date"] == bd, "vol"].iloc[0])
             bench_vols = {}
             for vr in vr_levels:
                 seqs = find_build_seqs(win, vol_ratio_min=vr)
                 bench_vols[vr] = seqs[-1]["bench_vol"] if seqs else bo_vol
-            signals.append({"day": day, "entry_i": entry_i, "bench_vols": bench_vols})
+            signals.append({
+                "day": day, "entry_i": entry_i, "bench_vols": bench_vols,
+                # 交易标注（回测工作台 K 线展示用）
+                "box_high": sig.get("box_high"),
+                "box_low": sig.get("box_low"),
+                "breakout_date": bd,
+            })
 
         else:  # strategy B
             for vr in vr_levels:
@@ -101,11 +238,16 @@ def _detect_signals_for_code(
                 bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
                 if bd not in dts_set:
                     continue
-                entry_i = dts.index(bd) + 1
-                if entry_i >= len(df):
+                entry_i = dts.index(bd)
+                if entry_i + 1 >= len(df):
                     continue
-                signals.append({"day": day, "entry_i": entry_i,
-                                "bench_vols": {vr: sig["bench_vol"]}, "vr": vr})
+                signals.append({
+                    "day": day, "entry_i": entry_i,
+                    "bench_vols": {vr: sig["bench_vol"]}, "vr": vr,
+                    "box_high": sig.get("box_high"),
+                    "box_low": sig.get("box_low"),
+                    "breakout_date": bd,
+                })
     return signals
 
 
@@ -128,33 +270,68 @@ def _replay_params(df: pd.DataFrame, signals: list[dict], combos: list[dict]) ->
                 "strong_reset": combo["strong_reset"],
             })
             if sim.get("ok"):
+                # 交易标注（回测工作台 K 线展示用）：入场日=信号次日、出场日
+                df_dates = df["date"].astype(str).tolist() if "date" in df.columns else []
+                entry_date = (
+                    df_dates[int(sim["entry_index"])]
+                    if 0 <= int(sim["entry_index"]) < len(df_dates) else None
+                )
+                exit_date = (
+                    df_dates[int(sim["exit_index"])]
+                    if 0 <= int(sim["exit_index"]) < len(df_dates) else None
+                )
                 trades.append({"ret": sim["ret"], "win": sim["win"], "exit": sim["exit"],
                                "days": sim["days"], "max_dd": sim.get("max_dd"),
+                               "entry": sim.get("entry"), "exit_price": sim.get("exit_price"),
                                "ts_code": str(df["ts_code"].iloc[0]) if "ts_code" in df else "",
-                               "date": s["day"]})
+                               "date": s["day"], "cost": cost_adjusted_trade(df, sim),
+                               "entry_date": entry_date, "exit_date": exit_date,
+                               "box_high": s.get("box_high"), "box_low": s.get("box_low"),
+                               "breakout_date": s.get("breakout_date")})
     return out
 
 
 def _worker_chunk(payload: tuple) -> dict[str, list[dict]]:
-    """子进程：对股票分片跑「信号缓存 + 全参数重放」。"""
-    codes, chunk_df, sample_days, cal, horizon, strategy, vr_levels, combos = payload
-    cal_index = {d: i for i, d in enumerate(cal)}
-    merged: dict[str, list[dict]] = {}
-    for code in codes:
-        df = chunk_df[chunk_df["ts_code"] == code].sort_values("trade_date").reset_index(drop=True)
-        if len(df) < 80:
-            continue
-        df = df.copy()
-        df["date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
-        for col in ("open", "high", "low", "close"):
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        df["vol"] = pd.to_numeric(df.get("vol", df.get("volume")), errors="coerce")
-        signals = _detect_signals_for_code(df, sample_days, cal_index, cal, horizon, strategy, vr_levels)
-        if not signals:
-            continue
-        for pid, trades in _replay_params(df, signals, combos).items():
-            merged.setdefault(pid, []).extend(trades)
-    return merged
+    """子进程：对股票分片跑「信号缓存 + 全参数重放」。
+
+    payload 末尾两项：signal_kwargs（形态阈值）、costs（成本覆盖，子进程内临时生效）。
+    """
+    codes, chunk_df, sample_days, cal, horizon, strategy, vr_levels, combos, signal_kwargs, costs = payload
+    if costs:
+        from ab_screener.research.backtest_engine import apply_cost_override
+
+        apply_cost_override(costs)
+    try:
+        cal_index = {d: i for i, d in enumerate(cal)}
+        merged: dict[str, list[dict]] = {}
+        for code in codes:
+            df = chunk_df[chunk_df["ts_code"] == code].sort_values("trade_date").reset_index(drop=True)
+            if len(df) < 80:
+                continue
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+            for col in ("open", "high", "low", "close"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df["vol"] = pd.to_numeric(df.get("vol", df.get("volume")), errors="coerce")
+            signals = _detect_signals_for_code(
+                df, sample_days, cal_index, cal, horizon, strategy, vr_levels,
+                signal_kwargs=signal_kwargs,
+            )
+            if not signals:
+                continue
+            for pid, trades in _replay_params(df, signals, combos).items():
+                merged.setdefault(pid, []).extend(trades)
+        return merged
+    finally:
+        if costs:
+            import ab_screener.domain.costs as C
+            from ab_screener.domain.costs import COST_KEYS_DEFAULT
+
+            C.COMMISSION_RATE = COST_KEYS_DEFAULT["commission_rate"]
+            C.COMMISSION_MIN = COST_KEYS_DEFAULT["commission_min"]
+            C.STAMP_TAX_SELL = COST_KEYS_DEFAULT["stamp_tax_sell"]
+            C.OTHER_FEE_RATE = COST_KEYS_DEFAULT["other_fee_rate"]
+            C.SLIPPAGE = COST_KEYS_DEFAULT["slippage"]
 
 
 def run_grid(
@@ -167,17 +344,23 @@ def run_grid(
     grid: dict | None = None,
     workers: int | None = None,
     progress_cb=None,
+    cancel_check=None,
+    signal_kwargs: dict | None = None,
+    costs: dict | None = None,
 ) -> pd.DataFrame:
-    """网格优化主入口。返回每组参数一行统计的 DataFrame（按 profit_factor 降序）。"""
+    """网格优化主入口。返回每组参数一行统计的 DataFrame（按 profit_factor 降序）。
+
+    signal_kwargs：透传给 detect_accumulation_breakout 的形态阈值覆盖（自定义回测用）。
+    costs：成本覆盖 {commission_rate, commission_min, stamp_tax_sell, other_fee_rate, slippage}，
+           在 worker 进程内临时生效。
+    """
     from local_store import LocalStore
     from parallel_scan import resolve_workers
 
     store = LocalStore()
-    basic = store.load_stock_basic()
-    codes = basic["ts_code"].astype(str).tolist()
-    codes = [c for c in codes if c.endswith((".SH", ".SZ")) and not c.startswith(("4", "8", "92"))]
-    if max_codes:
-        codes = codes[:max_codes]
+    if _is_cancelled(cancel_check):
+        raise ResearchCancelled("用户取消")
+    codes = research_universe(max_codes, include_delisted=True)
 
     # 交易日历用全库（检测窗口需要回测区间之前的日期索引），区间内按 step 采样
     cal = store.distinct_dates("daily")
@@ -198,31 +381,36 @@ def run_grid(
     nw = resolve_workers(workers)
     results: dict[str, list[dict]] = {}
     if len(codes) < _MIN_CODES_FOR_POOL or nw <= 1:
-        r = _worker_chunk((codes, big, sample_days, cal, horizon, strategy, vr_levels, combos))
+        r = _worker_chunk((codes, big, sample_days, cal, horizon, strategy, vr_levels,
+                           combos, signal_kwargs, costs))
         results = r
+        if _is_cancelled(cancel_check):
+            raise ResearchCancelled("用户取消")
     else:
         chunk_size = max(50, (len(codes) + nw - 1) // nw)
         chunks = [codes[i: i + chunk_size] for i in range(0, len(codes), chunk_size)]
         pool = ProcessPoolExecutor(max_workers=nw)
+        abandoned = False
         try:
             futs = [pool.submit(_worker_chunk, (ch, big[big["ts_code"].isin(ch)].copy(),
-                                              sample_days, cal, horizon, strategy, vr_levels, combos))
+                                              sample_days, cal, horizon, strategy, vr_levels,
+                                              combos, signal_kwargs, costs))
                     for ch in chunks]
-            done = 0
-            pending = set(futs)
-            while pending:
-                finished, pending = wait(pending, timeout=2.0, return_when="FIRST_COMPLETED")
-                for fut in finished:
-                    try:
-                        for pid, trades in fut.result().items():
-                            results.setdefault(pid, []).extend(trades)
-                    except Exception as e:  # noqa: BLE001
-                        print(f"[optimizer][warn] 分片失败: {e}")
-                    done += 1
-                    if progress_cb:
-                        progress_cb(f"分片 {done}/{len(chunks)}", 5 + int(90 * done / len(chunks)))
+            chunk_codes = {fut: ch for fut, ch in zip(futs, chunks)}
+            results, _lost = _collect_pool_results(
+                pool,
+                set(futs),
+                chunk_count=len(chunks),
+                progress_cb=progress_cb,
+                cancel_check=cancel_check,
+                chunk_codes=chunk_codes,
+            )
+        except ResearchCancelled:
+            abandoned = True
+            raise
         finally:
-            pool.shutdown(wait=True)
+            if not abandoned:
+                pool.shutdown(wait=True)
 
     # 聚合统计
     rows = []
@@ -231,11 +419,13 @@ def run_grid(
         s = summarize(trades)
         if not s.get("n_trades"):
             continue
-        rows.append({"param_id": pid, **combo_map[pid], **s})
+        rows.append({"param_id": pid, **combo_map[pid], **s, **summarize_costed_trades(trades)})
     df_out = pd.DataFrame(rows)
     if not df_out.empty:
-        df_out = df_out[df_out["n_trades"] >= BT_MIN_TRADES]  # 统计功效门槛
-        df_out = df_out.sort_values("profit_factor", ascending=False).reset_index(drop=True)
+        df_out = df_out[df_out["net_n_trades"] >= BT_MIN_TRADES]  # 统计功效门槛按实际成交计
+        df_out = df_out.sort_values(
+            ["net_profit_factor", "net_avg_return"], ascending=False, na_position="last"
+        ).reset_index(drop=True)
     return df_out
 
 

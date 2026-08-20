@@ -1,0 +1,21 @@
+# 个人稳健风险配置（P5.2 冻结口径）
+version: robust_personal_v2
+metrics:
+  min_samples: 30
+  annual_factor: 252
+  risk_free_annual: 0.02
+  var_confidence: 0.95
+  quantile_method: linear
+constraints:
+  max_single_name_pct: 0.30
+  max_industry_pct: 0.40
+  max_theme_pct: 0.40
+  max_corr_group_pct: 0.50
+  max_position_count: 30
+  max_total_position_pct: 0.90
+  min_cash_pct: 0.10
+  max_daily_addition_pct: 0.10
+  max_price_deviation_pct: 0.03
+  stale_data_days: 1
+  lot_size: 100
+  participation_cap_bps: 500

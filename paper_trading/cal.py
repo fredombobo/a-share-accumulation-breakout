@@ -103,8 +103,10 @@ def refresh_trade_cal(
     with tx(db_path, immediate=True) as conn:
         for cal_date, is_open, src in rows:
             conn.execute(
-                "INSERT OR REPLACE INTO trade_cal (cal_date, is_open, source, updated_at)"
-                " VALUES (?,?,?,?)",
+                "INSERT INTO trade_cal (cal_date, is_open, source, updated_at)"
+                " VALUES (?,?,?,?)"
+                " ON CONFLICT(cal_date) DO UPDATE SET is_open=excluded.is_open,"
+                " source=excluded.source, updated_at=excluded.updated_at",
                 (cal_date, is_open, src, now),
             )
     return {"source": source, "rows": len(rows), "start": start_d.isoformat(), "end": end_d.isoformat()}

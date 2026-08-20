@@ -1,0 +1,13 @@
+ts_code,name,exchange,security_type,list_date,delist_date
+000001.SZ,平安银行,SZSE,stock,19910403,
+600000.SH,浦发银行,SSE,stock,19991110,
+600036.SH,招商银行,SSE,stock,20020409,
+000002.SZ,万科A,SZSE,stock,19910129,
+600999.SH,示例退市股,SSE,stock,20000101,20230815
+300750.SZ,宁德时代,SZSE,stock,20180611,
+000300.SH,沪深300,SSE,index,20050408,
+399001.SZ,深证成指,SZSE,index,19950401,
+510300.SH,300ETF,SSE,etf,20120528,
+500038.SH,基金兴华,SSE,fund,19980506,
+113050.SH,南银转债,SSE,bond,20210621,
+830799.BJ,艾融软件,BSE,bse,20201113,

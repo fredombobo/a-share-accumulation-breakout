@@ -1,0 +1,273 @@
+version: 1
+source: docs/superpowers/plans/2026-08-16-institutional-console-v2-index.md
+notes: >
+  v2 DAG. Only status=ready tasks with complete dependencies may be started.
+  Exception: V2-P0-BOOTSTRAP (planning commit only, no business code).
+  v1.1 nine-point tasks remain historical complete.
+tasks:
+  # ── historical (do not reopen) ──
+  - id: NINE_POINT_CLOSED_LOOP
+    title: 个人九分闭环：实验生命周期、日证据、候选门禁、唯一下一步与发布证据
+    status: complete
+    work_package: historical
+    dependencies: []
+    acceptance:
+      - 实验任务单活动、可取消、可恢复且服务端状态权威
+      - 每个日结生成不可变数据到对账证据清单
+      - 候选必须通过净成本 OOS、WF、双基线和反过拟合门禁
+      - 总览只给出一个服务端推导的下一步
+      - 发布需要干净工作区和同版本同配置的 24 小时真实数据 PASS
+
+  - id: WINDOWS_SCAN_PROGRESS_REPLACE
+    title: Windows 扫描进度文件替换竞态修复
+    status: complete
+    work_package: historical
+    dependencies:
+      - NINE_POINT_CLOSED_LOOP
+    acceptance:
+      - 后端持有进度文件读句柄时子进程写入可有限重试成功
+      - 子进程失败必须将持久任务从 RUNNING 收口为 FAILED
+      - 实际扫描在高频状态轮询下完成且不再出现 WinError 5
+
+  # ── v2 bootstrap ──
+  - id: V2-P0-BOOTSTRAP
+    title: 冻结 v2 文档包与 task DAG 的 planning commit
+    status: complete
+    work_package: WP00
+    phase: P0
+    dependencies: []
+    acceptance:
+      - 仅纳入 v2 specs/plans 与 tasks/*.yaml
+      - 不纳入 docs/STATUS.md、docs/RESEARCH-ROADMAP.md 或任何业务代码
+      - 不改 LIVE_TRADING、不触碰 runtime DB
+
+  # ── P0 ──
+  - id: V2-P0.1-BASELINE
+    title: 重新测量并冻结真实基线 manifest
+    status: ready
+    work_package: WP00
+    phase: P0
+    dependencies:
+      - V2-P0-BOOTSTRAP
+    acceptance:
+      - scripts/capture_v2_baseline.py 生成 runtime/v2/baseline_manifest.json（不入库）
+      - manifest 含代码/dirty/配置/DB/schema/依赖/测试哈希与生成时间
+      - 相同身份稳定字段可复算；改代码或配置后 identity 变化
+      - 工作区脏或 release identity 不一致时状态为 BLOCKED
+      - 不得沿用旧 350 passed 文案作为当前 PASS
+
+  - id: V2-P0.2-ENTRY-REGISTRY
+    title: 冻结 ENTRY V1、注册表与 V2 定义草稿
+    status: blocked
+    work_package: WP10
+    phase: P0
+    dependencies:
+      - V2-P0.1-BASELINE
+      - V2-P0.4-CONTRACTS
+    acceptance:
+      - V1 golden fixture 逐字段与 SHA-256 固定
+      - 激活 V2 不改变 V1 结果
+      - 未知版本 fail-closed
+      - 默认仍为 A_POOL_STRICT_NEXT_OPEN_V1
+      - 消费者经 registry 解析并保存 semantic hash
+
+  - id: V2-P0.3-QUALITY-GATES
+    title: 固化质量门禁、架构边界与 NO_REPLACE_SQL
+    status: blocked
+    work_package: WP00
+    phase: P0
+    dependencies:
+      - V2-P0.1-BASELINE
+      - V2-P0.4-CONTRACTS
+    acceptance:
+      - API 不得直接 import sqlite3/subprocess（静态测试）
+      - LIVE_TRADING_ENABLED=true 使启动/门禁失败
+      - 生产代码无 INSERT OR REPLACE
+      - 发布 Python 证据使用 .venv312（3.12）
+      - research_status 支持 --no-token-probe
+      - quality_gate.ps1 一条命令跑 Pytest/Ruff/Mypy/frontend
+
+  - id: V2-P0.4-CONTRACTS
+    title: 冻结七闸门、错误码、flags、迁移 registry
+    status: ready
+    work_package: WP00
+    phase: P0
+    dependencies:
+      - V2-P0-BOOTSTRAP
+    acceptance:
+      - readiness 总状态优先级与设计规格一致
+      - 错误 envelope 与 ERROR-CODES-V2 对齐
+      - feature flags 默认关闭写路径；硬门不可被 flag 绕过
+      - schema_migrations_v2 字符串 ID；禁止只看 MAX(version)
+      - Web 启动只做 assert_schema_compatible
+
+  # ── P1 ──
+  - id: V2-P1.1-PIT
+    title: PIT 历史表、writer、Tushare adapter、backfill
+    status: blocked
+    work_package: WP20
+    phase: P1
+    dependencies:
+      - V2-P0.3-QUALITY-GATES
+      - V2-P0.4-CONTRACTS
+    acceptance:
+      - 同一业务键修订前后 decision_at 返回对应版本
+      - 缺 available_at/source/revision 时正式研究拒绝
+      - 时间 +08:00；Tushare 只走 tushare_init
+      - DDL 与百万行 backfill 分离；checkpoint 可续跑
+
+  - id: V2-P1.2-UNIVERSE
+    title: As-of 股票池与 instrument 规则
+    status: blocked
+    work_package: WP20
+    phase: P1
+    dependencies:
+      - V2-P1.1-PIT
+    acceptance:
+      - 上市前不进宇宙；退市后历史窗内可见、之后消失
+      - 指数/ETF/孤儿代码不进首版个股宇宙
+      - 缺 instrument rule 不得默默用全市场兜底
+
+  - id: V2-P1.3-CORP-ACTIONS
+    title: 复权、公司行为与数据质量门
+    status: blocked
+    work_package: WP20
+    phase: P1
+    dependencies:
+      - V2-P1.2-UNIVERSE
+    acceptance:
+      - 非法 OHLC/负量额为 0 覆盖；活跃股覆盖率阈值按合同
+      - 未处理公司行为阻断估值和日结
+      - 无 Token 不得 PASS 源端比对
+
+  - id: V2-P1.4-INTELLIGENCE
+    title: 市场情报领域（只读）
+    status: blocked
+    work_package: WP20
+    phase: P1
+    dependencies:
+      - V2-P1.3-CORP-ACTIONS
+    acceptance:
+      - 档案/时间线/宽度与扫描同一 snapshot ID
+      - 情报模块不创建信号或订单
+      - 新闻/社交情绪不进正式特征直至 PIT 验收
+
+  # ── P2 ──
+  - id: V2-P2-EXECUTION-CORE
+    title: 统一 Decimal 执行核心（dual-run 不写账）
+    status: blocked
+    work_package: WP10
+    phase: P2
+    dependencies:
+      - V2-P0.2-ENTRY-REGISTRY
+      - V2-P0.4-CONTRACTS
+    acceptance:
+      - ExecutionRequest/Result、FeeBreakdown 领域类型
+      - 金额零分误差 fixture
+      - V2_EXECUTION_WRITE_ENABLED 默认 false
+      - 不直接改 paper_trading/orders.py
+
+  - id: V2-P2-LEDGER-PARITY
+    title: 研究与纸面执行 parity + 零/部分成交
+    status: blocked
+    work_package: WP50
+    phase: P2
+    dependencies:
+      - V2-P2-EXECUTION-CORE
+      - V2-P1.1-PIT
+    acceptance:
+      - 研究/纸面同一撮合核心
+      - 零成交与部分成交 fixtures
+      - ENTERED 仅由 fill 产生
+
+  # ── P3 ──
+  - id: V2-P3-RESEARCH-GOVERNANCE
+    title: 实验登记、trial ledger、PBO/DSR/MinTRL/Nested WF
+    status: blocked
+    work_package: WP30
+    phase: P3
+    dependencies:
+      - V2-P1.1-PIT
+      - V2-P2-EXECUTION-CORE
+    acceptance:
+      - 预登记后才能跑正式研究
+      - 反过拟合硬门 fail-closed
+      - PASS 不等于订单/A 池
+      - 统计实现需独立复核
+
+  # ── P4 ──
+  - id: V2-P4-STRATEGIES-SIGNALS
+    title: 六形态插件、漏斗、不可变信号与 outcome
+    status: blocked
+    work_package: WP40
+    phase: P4
+    dependencies:
+      - V2-P1.4-INTELLIGENCE
+      - V2-P3-RESEARCH-GOVERNANCE
+    acceptance:
+      - 六插件 registry；默认 EXPERIMENTAL
+      - 不可变 observation + events + projection
+      - 重扫不得覆盖已成交/已退出
+      - ACTIVE_FOR_A_POOL 必须等研究门
+
+  # ── P5 ──
+  - id: V2-P5-RISK-CONSTRAINTS
+    title: 唯一约束引擎、暴露、VaR/压力、对账
+    status: blocked
+    work_package: WP50
+    phase: P5
+    dependencies:
+      - V2-P2-LEDGER-PARITY
+      - V2-P4-STRATEGIES-SIGNALS
+    acceptance:
+      - 约束拒绝码稳定
+      - 风险手算 fixture
+      - 不创建第二套现金/持仓源
+      - 仅 WP50 可改 orders/engine/settlement
+
+  # ── P6 ──
+  - id: V2-P6-DAG-AUDIT-BACKUP
+    title: 持久 DAG、审计链、告警、备份恢复
+    status: blocked
+    work_package: WP60
+    phase: P6
+    dependencies:
+      - V2-P3-RESEARCH-GOVERNANCE
+      - V2-P4-STRATEGIES-SIGNALS
+      - V2-P5-RISK-CONSTRAINTS
+    acceptance:
+      - GET 不写告警/状态/业务审计
+      - 审计 append-only hash chain
+      - 备份异位置 + 恢复演练
+      - FastAPI lifespan 不是业务事实源
+
+  # ── P7 ──
+  - id: V2-P7-API-UI
+    title: OpenAPI、typed clients、控制台页面与 E2E
+    status: blocked
+    work_package: WP70
+    phase: P7
+    dependencies:
+      - V2-P3-RESEARCH-GOVERNANCE
+      - V2-P4-STRATEGIES-SIGNALS
+      - V2-P5-RISK-CONSTRAINTS
+      - V2-P6-DAG-AUDIT-BACKUP
+    acceptance:
+      - feature Agent 不挂载共享 app、不改导航壳
+      - 浏览器/390px/键盘/恢复 E2E
+      - INSTITUTIONAL_CONSOLE_V2_ENABLED 默认 false 直至契约过
+
+  # ── P8 ──
+  - id: V2-P8-FINAL-ACCEPTANCE
+    title: 七闸门总验收与证据索引
+    status: blocked
+    work_package: WP80
+    phase: P8
+    dependencies:
+      - V2-P6-DAG-AUDIT-BACKUP
+      - V2-P7-API-UI
+    acceptance:
+      - 七闸门当前身份全部 PASS 或诚实 ENGINEERING_READY_RESEARCH_BLOCKED/BLOCKED
+      - 独立审计可复跑关键命令与 hash
+      - Agent 不得自行宣布 PERSONAL_INSTITUTIONAL_READY
+      - 合并用户 STATUS/ROADMAP 修改，禁止覆盖

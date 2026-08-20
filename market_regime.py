@@ -116,9 +116,9 @@ def ensure_index_daily(
     index_code: str = DEFAULT_INDEX,
     days: int = 120,
     *,
-    allow_network: bool = True,
+    allow_network: bool = False,
 ) -> pd.DataFrame:
-    """确保指数日线在本地库；缺失则尝试 Tushare 拉取。"""
+    """确保指数日线在本地库；显式允许网络时才补齐缺失或过期数据。"""
     from datetime import datetime, timedelta
 
     idx_df = pd.DataFrame()
@@ -126,7 +126,20 @@ def ensure_index_daily(
         idx_df = store.load_daily(ts_codes=[index_code])
     except Exception:  # noqa: BLE001
         idx_df = pd.DataFrame()
-    need_pull = idx_df is None or idx_df.empty or len(idx_df) < 30
+    expected_as_of = ""
+    try:
+        expected_as_of = str(store.max_trade_date("daily") or "")
+    except Exception:  # noqa: BLE001
+        expected_as_of = ""
+    index_as_of = ""
+    if idx_df is not None and not idx_df.empty and "trade_date" in idx_df.columns:
+        index_as_of = str(idx_df["trade_date"].astype(str).max())
+    need_pull = (
+        idx_df is None
+        or idx_df.empty
+        or len(idx_df) < 30
+        or bool(expected_as_of and index_as_of < expected_as_of)
+    )
     if not need_pull:
         return idx_df.sort_values("trade_date")
     if not allow_network:
@@ -162,12 +175,33 @@ def detect_regime(
     daily: pd.DataFrame | None = None,
     index_code: str = DEFAULT_INDEX,
     *,
-    allow_network: bool = True,
+    allow_network: bool = False,
 ) -> RegimeResult:
     """从 LocalStore 或 daily 大表推断环境。优先真实指数。"""
     idx_df = pd.DataFrame()
     if store is not None:
         idx_df = ensure_index_daily(store, index_code=index_code, allow_network=allow_network)
+        expected_as_of = ""
+        try:
+            expected_as_of = str(store.max_trade_date("daily") or "")
+        except Exception:  # noqa: BLE001
+            expected_as_of = ""
+        index_as_of = ""
+        if idx_df is not None and not idx_df.empty and "trade_date" in idx_df.columns:
+            index_as_of = str(idx_df["trade_date"].astype(str).max())
+        if expected_as_of and index_as_of < expected_as_of:
+            return RegimeResult(
+                regime="defense",
+                label="防守(指数行情过期)",
+                allow_new_entries=False,
+                max_trade_slots=0,
+                index_code=index_code,
+                as_of=index_as_of,
+                close=None,
+                ma20=None,
+                ret_20d=None,
+                notes=[f"指数行情止于 {index_as_of or '缺失'}，市场日线已到 {expected_as_of}"],
+            )
     if idx_df is not None and not idx_df.empty and len(idx_df) >= 25:
         return detect_regime_from_index_df(idx_df, index_code=index_code)
     if daily is not None and not daily.empty:

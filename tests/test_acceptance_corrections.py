@@ -13,6 +13,7 @@ from paper_trading.engine import execute_fills
 from paper_trading.errors import DomainError
 from paper_trading.orders import confirm_order, create_buy_draft, create_sell_draft, get_order
 from paper_trading.settlement import apply_corporate_action, run_settlement
+from tests.paper_market_fixture import seed_fresh_neutral_benchmark
 
 
 def _setup_db(tmp_path: Path) -> Path:
@@ -31,6 +32,7 @@ def _setup_db(tmp_path: Path) -> Path:
                 ("000002.SZ", "20260807", 20.2, 20.8, 20.0, 20.6, 90_000.0, 1_850_000.0),
             ],
         )
+        seed_fresh_neutral_benchmark(conn)
         conn.executemany(
             "INSERT OR REPLACE INTO trade_cal (cal_date, is_open, source, updated_at) "
             "VALUES (?,?,?,?)",

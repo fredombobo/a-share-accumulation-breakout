@@ -14,15 +14,15 @@
 | 打分 | `scoring.py` | 资金流 + 基本面 + 综合分 |
 | 数据 | `data_fetch.py` / `local_store.py` / `sync_daily.py` | SQLite 增量 + Tushare 直连 |
 | 扫描 | `run_screener.py` | CLI 全市场扫描 → xlsx/md/charts |
-| Web | `web/backend_app.py` + `web/frontend` | FastAPI 8000 + React 3001 |
+| Web | `web/backend_app.py` + `web/frontend` | FastAPI 8001 + React 3001 |
 | 客户端 | `tushare_init.py`（`tushare_http` 兼容转发） | `ts.pro_api` + `_DataApi__http_url=http://a.sszhixia.cn`（curl_cffi 发请求） |
 
 ## 运行前环境
 
 **Agent 入口（优先）：** `python bootstrap.py --token <TUSHARE_TOKEN> --yes --no-browser`  
-成功行：`BOOTSTRAP_OK url=http://127.0.0.1:8000/` · 说明见 `FOR_AGENTS.md` / `PROMPT_FOR_AGENT.md`  
+成功行：`BOOTSTRAP_OK url=http://127.0.0.1:8001/` · 说明见 `FOR_AGENTS.md` / `PROMPT_FOR_AGENT.md`  
 
-**小白入口：** 双击 `一键启动.bat` → 浏览器 `http://127.0.0.1:8000/` → 点「扫描」  
+**小白入口：** 双击 `一键启动.bat` → 浏览器 `http://127.0.0.1:8001/` → 点「扫描」  
 停止：双击 `停止.bat`。详见 `docs/小白使用手册.md`。
 
 ```powershell
@@ -40,7 +40,7 @@ C:\Python314\python.exe run_screener.py --top 15 --days 160 --workers 0
 C:\Python314\python.exe test_signals.py
 ```
 
-Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend_app.py` :8000。
+Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend_app.py` :8001。开发前端 :3001 代理到 :8001；:8000 固定留给 AETF Alpha。
 开发热更新才需要 `npm run dev` :3001。
 
 ## 硬约束（踩坑后写死）
@@ -79,19 +79,29 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 ## 个人研究（平台突破）
 
 - 路线图：`docs/RESEARCH-ROADMAP.md`
+- **量价预测·逻辑生成平台（挂载扩展规格）**：`docs/VOLUME-PRICE-LOGIC-PLATFORM.md`
+  实现策略：在本仓库扩展 + 只读复用 `C:\Users\13818\888\data_lake`；默认 research_only，经 DSL+闸门后才可进纸交易
 - **两区隔离**：总览 A 池 = 可交易候选；`/lab` = 参数研究（非下单）
 - 数据驱动窗：`research_windows.py` / `python research_status.py`
   - `full`：可严肃谈 OOS/edge；`degraded`：仅摸底；`insufficient`：禁止优化
 - 历史扩容：`python sync_history.py`（需**有效** Token，目标 ~730 交易日）
 - 自动窗优化：`python run_optimize_plan.py A 600 10`（勿写死 2025 窗）
 
+## 入场定义（冻结 v1）
+
+- 文档：`docs/ENTRY-DEFINITION-V1.md`
+- 代码：`ab_screener/domain/entry_definition.py`（`A_POOL_STRICT_NEXT_OPEN_V1`）
+- 规则：**strict 突破日 → 下一交易日开盘**；禁止采样日+1
+- 归因：`python run_attribution.py` · 证据：`python run_evidence_report.py`
+- 状态看板：`docs/STATUS.md`
+
 ## 优化 backlog（下一步优先）
 
-1. **P0 历史扩容**：有效 Token + `sync_history.py` → `research_status` 显示 mode=full。
-2. **数据时效**：补齐最新交易日；扫描 as_of 与真实最新对齐。
-3. **任务持久化**：扫描/Lab 任务落盘，重启可续。
-4. **测试**：API 集成烟雾 + scoring；现有 unittest 保持全绿。
-5. **参数与过拟合**：仅 full 窗下谈擂台晋升；降级结果不写 active 实盘话术。
+1. **证据跑通**：full 窗下出归因 + `run_evidence_report` JSON，人工解读净成本 OOS。
+2. **双基线写入证据包**：自动 random/MA 对比，替换 `beats_baseline=unknown`。
+3. **数据时效**：补齐最新交易日；扫描 as_of 与真实最新对齐。
+4. **架构**：拆 `web/backend_app.py` 路由；根脚本迁入 `ab_screener`。
+5. **CI**：pytest + ruff + tsc；参数与过拟合仅 full 窗谈晋升。
 
 ## 相关 Grok skill
 

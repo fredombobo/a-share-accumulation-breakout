@@ -5,13 +5,16 @@
 - mode="bench"：标杆量二次出货出场（bench_volume），固定止损兜底 + 最长持有强平。
   优先级（保守序）：stop → bench → time。
 
-入场统一：信号日 entry_i 的次日开盘价（无 open 用 close）。
+入场统一（ENTRY-DEFINITION-V1）：
+  entry_i = **信号日**索引；成交价 = 下一交易日开盘（无 open 用 close）。
+  见 ab_screener.domain.entry_definition。
 """
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
+from ab_screener.domain.entry_definition import entry_price_from_bars
 from bench_volume import bench_exit_events
 from config import (
     BENCH_EXIT_WINDOW,
@@ -25,11 +28,8 @@ from config import (
 
 
 def _entry_price(bars: pd.DataFrame, entry_i: int) -> float | None:
-    if entry_i + 1 >= len(bars):
-        return None
-    nxt = bars.iloc[entry_i + 1]
-    op = nxt.get("open")
-    return float(op) if op and not pd.isna(op) else float(nxt["close"])
+    """entry_i 为信号日索引；委托 ENTRY v1。"""
+    return entry_price_from_bars(bars, entry_i)
 
 
 def simulate_trade(
@@ -43,6 +43,7 @@ def simulate_trade(
     entry = _entry_price(bars, entry_i)
     if entry is None:
         return {"ok": False}
+    execution_i = entry_i + 1
 
     if mode == "fixed":
         stop_pct = p.get("stop_pct", STOP_LOSS_PCT)
@@ -56,15 +57,18 @@ def simulate_trade(
             if lo <= stop:  # 先止损再止盈（保守）
                 ret = stop / entry - 1
                 return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "stop",
-                        "win": ret > 0, "entry": entry, "exit_price": stop}
+                        "win": ret > 0, "entry": entry, "exit_price": stop,
+                        "entry_index": execution_i, "exit_index": j}
             if hi >= target:
                 ret = target / entry - 1
                 return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "target",
-                        "win": True, "entry": entry, "exit_price": target}
+                        "win": True, "entry": entry, "exit_price": target,
+                        "entry_index": execution_i, "exit_index": j}
             if j == min(len(bars), entry_i + 1 + max_hold) - 1:
                 ret = cl / entry - 1
                 return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "time",
-                        "win": ret > 0, "entry": entry, "exit_price": cl}
+                        "win": ret > 0, "entry": entry, "exit_price": cl,
+                        "entry_index": execution_i, "exit_index": j}
         return {"ok": False}
 
     if mode == "bench":
@@ -90,7 +94,8 @@ def simulate_trade(
                 ret = stop / entry - 1
                 return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "stop",
                         "win": False, "entry": entry, "exit_price": stop,
-                        "max_dd": round(max_dd, 4)}
+                        "max_dd": round(max_dd, 4),
+                        "entry_index": execution_i, "exit_index": j}
             peak = max(peak, float(row["high"]))
             max_dd = max(max_dd, 1 - cl / peak)
         # bench 出场：信号确认于 exit_j 收盘，次日开盘卖出；无次日则当日收盘
@@ -104,7 +109,9 @@ def simulate_trade(
         ret = px / entry - 1
         return {"ok": True, "ret": ret, "days": days, "exit": exit_type,
                 "win": ret > 0, "entry": entry, "exit_price": px,
-                "max_dd": round(max_dd, 4)}
+                "max_dd": round(max_dd, 4),
+                "entry_index": execution_i,
+                "exit_index": exit_j + 1 if exit_type == "bench" and exit_j + 1 < len(bars) else exit_j}
 
     raise ValueError(f"未知 mode: {mode}")
 

@@ -14,12 +14,14 @@ from paper_trading.account import commit_import, create_account
 from paper_trading.orders import (
     confirm_order,
     create_buy_draft,
+    create_historical_buy_draft,
 )
 from paper_trading.settlement import (
     mark_to_market,
     run_reconciliation,
     run_settlement,
 )
+from tests.paper_market_fixture import seed_fresh_neutral_benchmark
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -40,6 +42,7 @@ def _setup() -> str:
             ("000001.SZ", "20260807", 10.2, 10.5, 10.1, 10.4, 150000.0, 1550000.0),
         ],
     )
+    seed_fresh_neutral_benchmark(conn)
     conn.executemany(
         "INSERT OR REPLACE INTO trade_cal (cal_date, is_open, source, updated_at)"
         " VALUES (?,?,?,?)",
@@ -144,6 +147,9 @@ def test_settlement_full_flow():
     assert r["filled_count"] == 1
     assert r["snapshot_ok"] is True
     assert r["mark"]["trade_date"] == "20260807"
+    assert r["manifest"]["trade_date"] == "20260807"
+    assert r["manifest"]["status"] == "PARTIAL"
+    assert "MISSING_SCAN_RUN" in r["manifest"]["blockers"]
     # 快照固化
     conn = sqlite3.connect(db)
     snap = conn.execute(
@@ -156,6 +162,24 @@ def test_settlement_full_flow():
     assert cycle == ("DONE",)
     assert r["mark"]["total_asset_fen"] == snap[2]
     print(f"[PASS] 日结全流程: filled={r['filled_count']} total={snap[2]} phase={cycle[0]}")
+
+
+def test_historical_manual_order_fills_on_selected_open():
+    """Historical manual drafts fill only on the selected exchange open."""
+    db = _setup()
+    order = create_historical_buy_draft(
+        db, ts_code="000001", execution_trade_date="20260806", qty=100,
+    )
+    confirmed = confirm_order(db, order["order_id"])
+    assert confirmed["eligible_trade_date"] == "20260806"
+    result = run_settlement(db, "20260806", today="20260806")
+    assert result["filled_count"] == 1
+    with sqlite3.connect(db) as conn:
+        fill = conn.execute(
+            "SELECT order_id,quote_revision FROM pt_fill WHERE order_id=?",
+            (order["order_id"],),
+        ).fetchone()
+    assert fill == (order["order_id"], "000001.SZ:20260806")
 
 
 def test_settlement_cannot_complete_with_diff():

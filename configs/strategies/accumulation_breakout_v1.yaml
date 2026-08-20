@@ -1,0 +1,12 @@
+# 形态一：横盘吸筹 → 放量突破（v1）
+strategy_definition_id: accumulation_breakout_v1
+version: v1
+params:
+  box_max_days: 125
+  box_min_days: 20
+  box_max_amp: 0.26
+  breakout_vol_ratio: 1.6
+  breakout_chg_min: 0.02
+  breakout_chg_max: 0.095
+  require_ma60: true
+  max_pullbacks: 0

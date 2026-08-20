@@ -258,8 +258,20 @@ def run_settlement(
     if not is_open(db_path, trade_date):
         raise DomainError("NOT_TRADING_DAY", f"{trade_date} 不是交易日")
 
-    now = _now()
-    with tx(db_path, immediate=True) as conn:
+    # P1.3：未处理公司行为阻断估值与日结（fail-closed，先处理/冲正后重试）
+    holdings = [p["ts_code"] for p in get_positions(db_path)]
+    if holdings:
+        from ab_screener.application.corporate_action_service import blocking_summary
+
+        ca = blocking_summary(db_path, holdings, trade_date)
+        if ca["blocked"]:
+            raise DomainError(
+                "CORPORATE_ACTION_PENDING",
+                ca["message"],
+                details={"actions": ca["actions"]},
+            )
+
+    with tx(db_path, immediate=False) as conn:
         account = conn.execute(
             "SELECT status FROM pt_account WHERE account_id=1"
         ).fetchone()
@@ -268,25 +280,37 @@ def run_settlement(
         completed = conn.execute(
             "SELECT phase FROM pt_cycle WHERE run_date=?", (trade_date,)
         ).fetchone()
-        if completed and completed[0] == "DONE":
-            snap = conn.execute(
-                "SELECT cash_fen, market_value_fen, total_asset_fen, unrealized_pnl_fen,"
-                " positions_json FROM pt_daily_snapshot WHERE account_id=1 AND trade_date=?",
-                (trade_date,),
-            ).fetchone()
-            return {
-                "filled_count": 0,
-                "zero_fill_count": 0,
-                "expired_count": 0,
-                "mark": {
-                    "cash_fen": int(snap[0]), "market_value_fen": int(snap[1]),
-                    "total_asset_fen": int(snap[2]), "unrealized_pnl_fen": int(snap[3] or 0),
-                    "holdings": json.loads(snap[4]), "trade_date": trade_date,
-                } if snap else None,
-                "reconciliation": {"result": "OK", "diffs": []},
-                "snapshot_ok": True,
-                "idempotent": True,
-            }
+        snap = conn.execute(
+            "SELECT cash_fen, market_value_fen, total_asset_fen, unrealized_pnl_fen,"
+            " positions_json FROM pt_daily_snapshot WHERE account_id=1 AND trade_date=?",
+            (trade_date,),
+        ).fetchone() if completed and completed[0] == "DONE" else None
+    if completed and completed[0] == "DONE":
+        from ab_screener.application.daily_manifest import create_daily_manifest
+
+        manifest = create_daily_manifest(db_path, trade_date)
+        return {
+            "filled_count": 0,
+            "zero_fill_count": 0,
+            "expired_count": 0,
+            "mark": {
+                "cash_fen": int(snap[0]), "market_value_fen": int(snap[1]),
+                "total_asset_fen": int(snap[2]), "unrealized_pnl_fen": int(snap[3] or 0),
+                "holdings": json.loads(snap[4]), "trade_date": trade_date,
+            } if snap else None,
+            "reconciliation": {"result": "OK", "diffs": []},
+            "snapshot_ok": True,
+            "idempotent": True,
+            "manifest": manifest,
+        }
+
+    now = _now()
+    with tx(db_path, immediate=True) as conn:
+        account = conn.execute(
+            "SELECT status FROM pt_account WHERE account_id=1"
+        ).fetchone()
+        if not account:
+            raise DomainError("ACCOUNT_NOT_FOUND", "纸面账户不存在")
         pending = conn.execute(
             "SELECT ca.action_id, ca.ts_code, ca.ex_date FROM pt_corporate_action ca "
             "WHERE ca.status='PENDING' AND ca.ex_date<=? AND EXISTS ("
@@ -346,9 +370,15 @@ def run_settlement(
     now = _now()
     with tx(db_path, immediate=True) as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO pt_daily_snapshot (account_id, trade_date, cash_fen,"
+            "INSERT INTO pt_daily_snapshot (account_id, trade_date, cash_fen,"
             " market_value_fen, total_asset_fen, realized_pnl_fen, unrealized_pnl_fen,"
-            " drawdown_fen, positions_json) VALUES (1,?,?,?,?,0,?,NULL,?)",
+            " drawdown_fen, positions_json) VALUES (1,?,?,?,?,0,?,NULL,?)"
+            " ON CONFLICT(account_id, trade_date) DO UPDATE SET"
+            " cash_fen=excluded.cash_fen, market_value_fen=excluded.market_value_fen,"
+            " total_asset_fen=excluded.total_asset_fen,"
+            " realized_pnl_fen=excluded.realized_pnl_fen,"
+            " unrealized_pnl_fen=excluded.unrealized_pnl_fen,"
+            " drawdown_fen=excluded.drawdown_fen, positions_json=excluded.positions_json",
             (trade_date, mark["cash_fen"], mark["market_value_fen"], mark["total_asset_fen"],
              mark["unrealized_pnl_fen"], json.dumps(mark["holdings"], ensure_ascii=False)),
         )
@@ -358,6 +388,9 @@ def run_settlement(
             " finished_at=? WHERE cycle_id=?",
             (f"daily:{trade_date}", now, f"CY-{trade_date}"),
         )
+    from ab_screener.application.daily_manifest import create_daily_manifest
+
+    manifest = create_daily_manifest(db_path, trade_date)
     return {
         "filled_count": len(fills["filled"]),
         "zero_fill_count": len(fills["zero_fill"]),
@@ -367,6 +400,7 @@ def run_settlement(
         "snapshot_ok": True,
         "signal_sync": signal_sync,
         "drafts": draft_result,
+        "manifest": manifest,
     }
 
 

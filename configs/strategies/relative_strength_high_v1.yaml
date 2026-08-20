@@ -1,0 +1,6 @@
+# 形态六：相对强度高位（v1）
+strategy_definition_id: relative_strength_high_v1
+version: v1
+params:
+  lookback: 60
+  min_breakout_pct: 0.02

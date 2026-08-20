@@ -59,7 +59,7 @@ def seed_params(is_df: pd.DataFrame, oos_df: pd.DataFrame, wf_df: pd.DataFrame |
             "param_id": pid,
             "strategy": r["strategy"],
             "params_json": json.dumps(combo, ensure_ascii=False, sort_keys=True),
-            "status": "candidate",
+            "status": "legacy_unverified",
             "is_profit_factor": r.get("is_profit_factor"),
             "is_win_rate": r.get("is_win_rate"),
             "is_max_dd": r.get("is_max_drawdown"),
@@ -72,9 +72,7 @@ def seed_params(is_df: pd.DataFrame, oos_df: pd.DataFrame, wf_df: pd.DataFrame |
         if oos_pf is not None and oos_pf > best_pf:
             best_pid, best_pf = pid, oos_pf
     store.upsert_strategy_params(pd.DataFrame(rows))
-    if best_pid:
-        store.update_strategy_status(best_pid, "active", promoted_at=now)
-    return {"seeded": len(rows), "active": best_pid}
+    return {"seeded": len(rows), "active": None, "best_legacy_unverified": best_pid}
 
 
 def active_weights() -> dict[str, float]:
@@ -94,6 +92,12 @@ def weekly_arena(weeks: int = ARENA_EVAL_WEEKS, step: int = 10,
 
     dry_run=True 只评估不写状态。返回动作清单。
     """
+    if not dry_run:
+        return {
+            "actions": [],
+            "msg": "旧擂台自动晋级已停用；可信 PASS 只写 research_candidates 隔离区",
+            "disabled": True,
+        }
     store = LocalStore()
     # 评估窗口：最近 weeks 周的日历段（用日线实际交易日切）
     dates = store.distinct_dates("daily")

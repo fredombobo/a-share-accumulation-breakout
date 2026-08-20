@@ -45,6 +45,20 @@ def main() -> int:
     print(f"daily_basic 行数: {res['rows']['daily_basic']}")
     print(f"moneyflow 新增交易日: {len(res['moneyflow_dates'])} 行数: {res['rows']['moneyflow']}")
     print(f"库内最新 daily: {res['latest_daily']}  moneyflow: {res['latest_moneyflow']}")
+
+    failed_daily = res.get("failed_daily_dates") or []
+    failed_mf = res.get("failed_moneyflow_dates") or []
+    if failed_daily or failed_mf:
+        print(
+            f"!!! 同步存在失败交易日（daily={len(failed_daily)}，moneyflow={len(failed_mf)}），"
+            "本次同步未完整完成。"
+        )
+        if failed_daily:
+            print(f"    daily 失败: {failed_daily[:10]}{'…' if len(failed_daily) > 10 else ''}")
+        if failed_mf:
+            print(f"    moneyflow 失败: {failed_mf[:10]}{'…' if len(failed_mf) > 10 else ''}")
+        print("    请检查 Token/网络后重新运行本脚本（缺失日期会按日历 diff 自动补）。")
+        return 1
     return 0
 
 
