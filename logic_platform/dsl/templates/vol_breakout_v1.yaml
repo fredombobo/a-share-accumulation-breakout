@@ -1,0 +1,35 @@
+# 模板：量价突破确认（docs §6.6 #1）
+# 逻辑：横盘吸筹后收盘突破箱体上沿 + 放量（5/20 量比 ≥ 1.6）→ 入场
+strategy:
+  id: vol_breakout_v1
+  version: "1.0.0"
+  name: 量价突破确认
+  research_only: true
+
+params:
+  start: "20250101"
+  end: "20260731"
+  step: 5
+  max_codes: 200
+  lookback_bars: 180
+  workers: 4
+
+entry:
+  all:
+    - { feature: "structure.state", op: "in", value: ["BREAKOUT", "FOLLOW_THROUGH"] }
+    - { feature: "vol_ma_ratio_5_20", op: ">=", value: 1.6 }
+  any: []
+
+exit:
+  stop_pct: 0.07
+  target_pct: 0.12
+  max_hold: 15
+
+position:
+  method: fixed_pct
+  max_pct: 0.10
+  max_names: 15
+
+risk:
+  avoid_st: true
+  regime_block: false

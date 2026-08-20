@@ -1,0 +1,37 @@
+# 模板：突破后回踩缩量（docs §6.6 #2）
+# 逻辑：突破后回踩不破箱体中轴 + 连续缩量 ≥ 3 日 + 量能分位 ≤ 0.5 → 低吸入场
+strategy:
+  id: pullback_volume_v1
+  version: "1.0.0"
+  name: 突破回踩缩量低吸
+  research_only: true
+
+params:
+  start: "20250101"
+  end: "20260731"
+  step: 5
+  max_codes: 200
+  lookback_bars: 180
+  workers: 4
+
+entry:
+  all:
+    - { feature: "structure.state", op: "in", value: ["FOLLOW_THROUGH", "TIGHTENING"] }
+    - { feature: "shrink_days", op: ">=", value: 3 }
+    - { feature: "vol_percentile_60", op: "<=", value: 0.5 }
+    - { feature: "close", op: ">=", ref: "box_mid" }
+  any: []
+
+exit:
+  stop_pct: 0.06
+  target_pct: 0.10
+  max_hold: 20
+
+position:
+  method: fixed_pct
+  max_pct: 0.10
+  max_names: 15
+
+risk:
+  avoid_st: true
+  regime_block: false
