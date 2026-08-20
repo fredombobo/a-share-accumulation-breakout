@@ -68,6 +68,24 @@ def _db_fingerprint(db_path: Path) -> str:
         return "n/a"
 
 
+def _benchmark_is_current(
+    db_path: str | Path,
+    expected_as_of: str,
+    index_code: str = "000300.SH",
+) -> tuple[bool, str]:
+    """Return whether the local risk benchmark reaches the market data date."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute(
+            "SELECT MAX(trade_date) FROM daily WHERE ts_code=?",
+            (index_code,),
+        ).fetchone()
+        actual = str(row[0] or "") if row else ""
+        return bool(expected_as_of and actual == expected_as_of), actual
+    finally:
+        conn.close()
+
+
 def _code_version() -> str:
     """代码版本：包含未提交源码/前端产物变化的构建指纹。"""
     try:
@@ -190,6 +208,20 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
     last_open = open_dates[-1] if open_dates else ""
     if local_max != last_open:
         issues.append(f"本地 daily 最新 {local_max} ≠ 数据源 {last_open}")
+    benchmark_ok, benchmark_as_of = _benchmark_is_current(db_path, str(local_max or ""))
+    if not benchmark_ok:
+        issues.append(f"风险基准 000300.SH 最新 {benchmark_as_of or '缺失'} ≠ 本地 daily {local_max}")
+    try:
+        source_benchmark = pro.index_daily(
+            ts_code="000300.SH",
+            start_date=last_open,
+            end_date=last_open,
+            fields="ts_code,trade_date,open,high,low,close,vol,amount",
+        )
+        if source_benchmark is None or source_benchmark.empty:
+            issues.append(f"数据源风险基准 000300.SH 在 {last_open} 无行情")
+    except Exception as exc:  # noqa: BLE001
+        issues.append(f"风险基准接口不可用: {sanitize_error(exc)}")
 
     # 3) 活跃标的覆盖率
     try:
@@ -328,6 +360,28 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
         issues.append(f"公司行为接口不可用: {sanitize_error(e)}")
     conn.close()
 
+    # P1.3：v2 数据质量门禁（instrument 注册表迁移后激活；未迁移不阻断 legacy 门禁）
+    try:
+        with sqlite3.connect(str(db_path)) as _qc_conn:
+            _has_universe = _qc_conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table'"
+                " AND name='instrument_universe_rules'"
+            ).fetchone()
+        if _has_universe:
+            from ab_screener.application.data_quality import run_data_quality as _dq
+
+            quality = _dq(
+                db_path,
+                as_of=str(local_max or ""),
+                pro=pro,
+                latest_trade_date=str(last_open or ""),
+                seed_codes=seed_codes or [],
+            )
+            if quality["result"] != "PASS":
+                issues.append(f"v2 数据质量 {quality['result']}: {quality['summary']}")
+    except Exception as e:  # noqa: BLE001
+        issues.append(f"v2 数据质量检查异常: {sanitize_error(e)}")
+
     passed = not issues
     report = {
         "status": "PASS" if passed else "FAIL",
@@ -342,6 +396,8 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
         "corporate_action_codes_checked": corporate_action_checked,
         "local_latest_trade_date": local_max,
         "source_latest_completed_trade_date": last_open,
+        "benchmark_code": "000300.SH",
+        "benchmark_latest_trade_date": benchmark_as_of,
         "generated_at": _now(),
         "code_version": _code_version(),
         "config_hash": _config_hash(),

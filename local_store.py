@@ -10,7 +10,7 @@
 用法：
     from local_store import LocalStore
     store = LocalStore()
-    store.upsert_daily(df)          # INSERT OR REPLACE
+    store.upsert_daily(df)          # INSERT ... ON CONFLICT DO UPDATE
     df = store.load_daily('301498.SZ', start='20260601')
     store.sync_from_tushare()       # 增量同步（只拉最新）
 """
@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from time import sleep
+from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -32,9 +35,108 @@ _DB_DIR = Path(os.path.dirname(os.path.abspath(__file__))) / "runtime"
 _DB_PATH = _DB_DIR / "stock_data.db"
 
 
+def _bounded_fetch_dates(
+    dates: list[str],
+    fetch_one: Callable[[str], tuple[str, Any]],
+    *,
+    workers: int,
+) -> Iterator[tuple[str, Any]]:
+    """流式、有界并发抓取独立日期；调用方仍在主线程串行写数据库。"""
+    max_workers = max(1, min(int(workers), 8, len(dates) or 1))
+    if max_workers == 1:
+        for date in dates:
+            yield fetch_one(date)
+        return
+    date_iter = iter(dates)
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="history-fetch") as pool:
+        pending = {
+            pool.submit(fetch_one, date)
+            for date in (next(date_iter, None) for _ in range(max_workers * 2))
+            if date is not None
+        }
+        while pending:
+            future = next(as_completed(pending))
+            pending.remove(future)
+            yield future.result()
+            next_date = next(date_iter, None)
+            if next_date is not None:
+                pending.add(pool.submit(fetch_one, next_date))
+
+
+def _missing_dates_in_lookback(
+    open_dates: list[str], existing_dates: set[str], *, lookback: int
+) -> list[str]:
+    """只在请求的最近交易日窗口内计算差集。"""
+    window_size = min(max(0, int(lookback)), len(open_dates))
+    if window_size == 0:
+        return []
+    window = open_dates[-window_size:]
+    return [date for date in window if date not in existing_dates]
+
+
+def _sync_benchmark_index(
+    store: LocalStore,
+    pro: Any,
+    open_dates: list[str],
+    *,
+    benchmark_code: str = "000300.SH",
+    max_attempts: int = 3,
+    retry_delay: float = 0.5,
+) -> dict[str, Any]:
+    """Incrementally persist the benchmark used by research and data gates.
+
+    Benchmark rows share the canonical ``daily`` table, but retain their
+    provider endpoint in ``source`` so release evidence can distinguish index
+    data from stock quotations. Existing dates are never fetched again.
+    """
+    existing = store.load_daily(ts_codes=[benchmark_code])
+    existing_dates = (
+        set(existing["trade_date"].astype(str).tolist())
+        if not existing.empty and "trade_date" in existing.columns
+        else set()
+    )
+    missing_dates = [date for date in open_dates if date not in existing_dates]
+    if not missing_dates:
+        return {"dates": [], "rows": 0}
+
+    attempts = max(1, int(max_attempts))
+    for attempt in range(1, attempts + 1):
+        try:
+            frame = pro.index_daily(
+                ts_code=benchmark_code,
+                start_date=min(missing_dates),
+                end_date=max(missing_dates),
+            )
+            break
+        except Exception:
+            if attempt == attempts:
+                raise
+            sleep(max(0.0, retry_delay) * attempt)
+    if frame is None or frame.empty:
+        return {"dates": missing_dates, "rows": 0}
+
+    frame = frame.copy()
+    frame["trade_date"] = frame["trade_date"].astype(str)
+    frame = frame.loc[frame["trade_date"].isin(set(missing_dates))]
+    if frame.empty:
+        return {"dates": missing_dates, "rows": 0}
+
+    now_iso = datetime.now(_SHANGHAI_TZ).isoformat(timespec="seconds")
+    frame["ingested_at"] = now_iso
+    frame["available_at"] = now_iso
+    frame["source"] = "tushare_index_daily"
+    frame["revision"] = 1
+    frame["is_legacy"] = 0
+    return {"dates": missing_dates, "rows": store.upsert_daily(frame)}
+
+
 # 允许的表名白名单（防注入）
-_ALLOWED_TABLES = {"daily", "daily_basic", "moneyflow", "stock_basic", "fina_indicator", "scan_result",
-                   "strategy_params", "param_eval"}
+_ALLOWED_TABLES = {
+    "daily", "daily_basic", "moneyflow", "stock_basic", "fina_indicator", "scan_result",
+    "strategy_params", "param_eval", "delisted_basic",
+    "dataset_partitions", "scan_jobs", "scan_runs", "scan_run_candidates",
+    "strategy_profiles", "research_runs",
+}
 
 
 class LocalStore:
@@ -47,6 +149,13 @@ class LocalStore:
             from paper_trading.migrations import run_migrations
 
             run_migrations(self.db_path)
+        except Exception:  # noqa: BLE001
+            pass
+        # upgrade system：治理表 v9
+        try:
+            from ab_screener.data.migrations_v2 import run_v2_migrations
+
+            run_v2_migrations(self.db_path)
         except Exception:  # noqa: BLE001
             pass
 
@@ -112,6 +221,12 @@ class LocalStore:
                 ts_code TEXT PRIMARY KEY,
                 symbol TEXT, name TEXT, area TEXT, industry TEXT,
                 market TEXT, list_date TEXT,
+                updated_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS delisted_basic (
+                ts_code TEXT PRIMARY KEY,
+                name TEXT, list_date TEXT, delist_date TEXT,
                 updated_at TEXT
             );
 
@@ -291,6 +406,21 @@ class LocalStore:
         cols = [c for c in cols if c in df.columns]
         return self._upsert("stock_basic", df[cols])
 
+    def upsert_delisted_basic(self, df: pd.DataFrame) -> int:
+        """退市股名单（消除回测幸存者偏差用）。"""
+        if df is None or df.empty:
+            return 0
+        df = df.copy()
+        df["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cols = ["ts_code", "name", "list_date", "delist_date", "updated_at"]
+        cols = [c for c in cols if c in df.columns]
+        return self._upsert("delisted_basic", df[cols])
+
+    def load_delisted_codes(self) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT ts_code FROM delisted_basic").fetchall()
+        return [str(r[0]) for r in rows]
+
     def upsert_fina_indicator(self, df: pd.DataFrame) -> int:
         if df is None or df.empty:
             return 0
@@ -393,6 +523,15 @@ class LocalStore:
         with self._connect() as conn:
             return pd.read_sql(sql, conn, params=params)
 
+    # 无 trade_date 表的显式主键（ON CONFLICT 目标；未登记表 fail-closed）
+    _TABLE_PKS: ClassVar[dict[str, list[str]]] = {
+        "stock_basic": ["ts_code"],
+        "fina_indicator": ["ts_code", "ann_date"],
+        "strategy_params": ["param_id"],
+        "param_eval": ["param_id", "eval_kind", "window_start"],
+        "delisted_basic": ["ts_code"],
+    }
+
     def _upsert(self, table: str, df: pd.DataFrame) -> int:
         if df.empty:
             return 0
@@ -401,20 +540,23 @@ class LocalStore:
         cols = list(df.columns)
         placeholders = ",".join("?" * len(cols))
         # DO UPDATE：只更新本次提供的列，避免 OR REPLACE 把未提供的列抹成 NULL
+        pk: list[str] | None
         if "trade_date" in cols and table != "stock_basic":
             pk = ["ts_code", "trade_date"]
-            set_cols = [c for c in cols if c not in pk]
-            if set_cols:
-                set_clause = ",".join(f"{c}=excluded.{c}" for c in set_cols)
-                upsert_sql = (
-                    f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
-                    f"ON CONFLICT({','.join(pk)}) DO UPDATE SET {set_clause}"
-                )
-            else:
-                # 仅含主键列时无列可更新，降级为 INSERT OR IGNORE（已有则跳过）
-                upsert_sql = f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
         else:
-            upsert_sql = f"INSERT OR REPLACE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
+            pk = self._TABLE_PKS.get(table)
+            if pk is None:
+                raise ValueError(f"_upsert 无主键契约的表: {table}（请在 _TABLE_PKS 登记）")
+        set_cols = [c for c in cols if c not in pk]
+        if set_cols:
+            set_clause = ",".join(f"{c}=excluded.{c}" for c in set_cols)
+            upsert_sql = (
+                f"INSERT INTO {table} ({','.join(cols)}) VALUES ({placeholders}) "
+                f"ON CONFLICT({','.join(pk)}) DO UPDATE SET {set_clause}"
+            )
+        else:
+            # 仅含主键列时无列可更新，降级为 INSERT OR IGNORE（已有则跳过）
+            upsert_sql = f"INSERT OR IGNORE INTO {table} ({','.join(cols)}) VALUES ({placeholders})"
         rows = [tuple(None if pd.isna(x) else x for x in r) for r in df[cols].itertuples(index=False)]
         with self._connect() as conn:
             conn.executemany(upsert_sql, rows)
@@ -492,6 +634,7 @@ def sync_from_tushare(
     moneyflow_days: int | None = None,
     force: bool = False,
     verbose: bool = True,
+    fetch_workers: int = 1,
 ) -> dict:
     """增量同步：从 Tushare 拉取并写入本地库，只拉库内缺失的交易日。
 
@@ -506,9 +649,7 @@ def sync_from_tushare(
     _here = os.path.dirname(os.path.abspath(__file__))
     if _here not in sys.path:
         sys.path.insert(0, _here)
-    import time
-
-    from tushare_init import pro
+    from tushare_init import pro, sanitize_error
 
     store = LocalStore()
     now = datetime.now()
@@ -527,8 +668,10 @@ def sync_from_tushare(
         with _pt_tx(store.db_path, immediate=True) as tconn:
             for _, rcal in cal.iterrows():
                 tconn.execute(
-                    "INSERT OR REPLACE INTO trade_cal (cal_date, is_open, source, updated_at)"
-                    " VALUES (?,?,?,?)",
+                    "INSERT INTO trade_cal (cal_date, is_open, source, updated_at)"
+                    " VALUES (?,?,?,?)"
+                    " ON CONFLICT(cal_date) DO UPDATE SET is_open=excluded.is_open,"
+                    " source=excluded.source, updated_at=excluded.updated_at",
                     (str(rcal["cal_date"]), int(rcal["is_open"]), "tushare", now_iso),
                 )
     except Exception:  # noqa: BLE001
@@ -540,6 +683,17 @@ def sync_from_tushare(
     basic = pro.stock_basic(exchange="", list_status="L",
                             fields="ts_code,symbol,name,area,industry,market,list_date")
     store.upsert_stock_basic(basic)
+
+    # ── 退市股名单（回测幸存者偏差修复；失败不阻断行情同步） ──
+    try:
+        delisted = pro.stock_basic(exchange="", list_status="D",
+                                   fields="ts_code,name,list_date,delist_date")
+        store.upsert_delisted_basic(delisted)
+        if verbose:
+            print(f"[sync] 退市股名单: {len(delisted)} 只")
+    except Exception as exc:  # noqa: BLE001
+        if verbose:
+            print(f"[sync][warn] 退市股名单拉取失败: {sanitize_error(exc)[:120]}")
 
     # ── daily / daily_basic 增量（对比库内 DISTINCT 日期求差集，中间空洞也补） ──
     db_daily = set(store.distinct_dates("daily"))
@@ -554,31 +708,57 @@ def sync_from_tushare(
         print(f"[sync] daily: 库内 {len(db_daily)} 日，需拉 {len(new_dates)} 个交易日（含空洞补缺）")
 
     daily_rows = dbbasic_rows = mf_rows = 0
+    failed_daily: list[str] = []
     if new_dates:
-        for i, d in enumerate(new_dates):
+        def fetch_daily_bundle(d: str) -> tuple[str, tuple[pd.DataFrame, pd.DataFrame, str | None]]:
             try:
                 dd = pro.daily(trade_date=d)
-                if not dd.empty:
-                    # 阶段1：新同步数据填真实抓取完成时间 + 来源标记（旧数据已由 M001 标 legacy_backfill）
-                    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-                    dd = dd.copy()
-                    dd["ingested_at"] = now_iso
-                    dd["available_at"] = now_iso
-                    dd["source"] = "tushare"
-                    dd["revision"] = 1
-                    dd["is_legacy"] = 0
-                    store.upsert_daily(dd)
-                    daily_rows += len(dd)
                 db = pro.daily_basic(trade_date=d, fields="ts_code,trade_date,close,pe,pb,ps_ttm,dp,total_mv,circ_mv,turnover_rate,volume_ratio")
-                if not db.empty:
-                    store.upsert_daily_basic(db)
-                    dbbasic_rows += len(db)
-                if verbose and (i + 1) % 10 == 0:
-                    print(f"  ...已同步 {i+1}/{len(new_dates)} 日")
-                time.sleep(0.1)
+                return d, (dd, db, None)
             except Exception as e:  # noqa: BLE001
-                print(f"  [warn] {d} 同步失败: {str(e)[:80]}")
-                time.sleep(1.0)
+                return d, (pd.DataFrame(), pd.DataFrame(), sanitize_error(e)[:160])
+
+        bundles = _bounded_fetch_dates(new_dates, fetch_daily_bundle, workers=fetch_workers)
+        daily_batch: list[pd.DataFrame] = []
+        basic_batch: list[pd.DataFrame] = []
+        for i, (d, bundle) in enumerate(bundles):
+            dd, db, error = bundle
+            if error:
+                failed_daily.append(d)
+                print(f"  [warn] {d} 同步失败: {error}")
+                continue
+            if not dd.empty:
+                # 新同步数据填真实抓取完成时间 + 来源标记（旧数据标 legacy_backfill）
+                now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+                dd = dd.copy()
+                dd["ingested_at"] = now_iso
+                dd["available_at"] = now_iso
+                dd["source"] = "tushare"
+                dd["revision"] = 1
+                dd["is_legacy"] = 0
+                daily_batch.append(dd)
+            if not db.empty:
+                basic_batch.append(db)
+            if len(daily_batch) >= 10:
+                daily_rows += store.upsert_daily(pd.concat(daily_batch, ignore_index=True))
+                daily_batch.clear()
+            if len(basic_batch) >= 10:
+                dbbasic_rows += store.upsert_daily_basic(pd.concat(basic_batch, ignore_index=True))
+                basic_batch.clear()
+            if verbose and (i + 1) % 10 == 0:
+                print(f"  ...已同步 {i+1}/{len(new_dates)} 日")
+        if daily_batch:
+            daily_rows += store.upsert_daily(pd.concat(daily_batch, ignore_index=True))
+        if basic_batch:
+            dbbasic_rows += store.upsert_daily_basic(pd.concat(basic_batch, ignore_index=True))
+
+    benchmark_result = _sync_benchmark_index(store, pro, open_dates)
+    if verbose:
+        print(
+            "[sync] benchmark 000300.SH: "
+            f"requested={len(benchmark_result['dates'])} "
+            f"written={benchmark_result['rows']}"
+        )
 
     # ── moneyflow 增量（同样对比 DISTINCT 日期求差集补洞） ──
     mf_lookback = moneyflow_days or days_back
@@ -586,29 +766,53 @@ def sync_from_tushare(
     if force:
         mf_dates = open_dates[-min(mf_lookback, len(open_dates)):]
     else:
-        mf_dates = [d for d in open_dates if d not in db_mf]
-    if not mf_dates and not db_mf:
-        mf_dates = open_dates[-min(mf_lookback, len(open_dates)):]
+        mf_dates = _missing_dates_in_lookback(
+            open_dates, db_mf, lookback=mf_lookback
+        )
     if verbose:
         print(f"[sync] moneyflow: 库内 {len(db_mf)} 日，需拉 {len(mf_dates)} 个交易日（含空洞补缺）")
+    failed_moneyflow: list[str] = []
     if mf_dates:
-        for i, d in enumerate(mf_dates):
+        def fetch_moneyflow(d: str) -> tuple[str, tuple[pd.DataFrame, str | None]]:
             try:
                 m = pro.moneyflow(trade_date=d)
-                if not m.empty:
-                    store.upsert_moneyflow(m)
-                    mf_rows += len(m)
-                if verbose and (i + 1) % 5 == 0:
-                    print(f"  ...资金流已同步 {i+1}/{len(mf_dates)} 日")
-                time.sleep(0.1)
+                return d, (m, None)
             except Exception as e:  # noqa: BLE001
-                print(f"  [warn] {d} moneyflow 同步失败: {str(e)[:80]}")
-                time.sleep(1.0)
+                return d, (pd.DataFrame(), sanitize_error(e)[:160])
+
+        moneyflow_bundles = _bounded_fetch_dates(
+            mf_dates, fetch_moneyflow, workers=fetch_workers
+        )
+        moneyflow_batch: list[pd.DataFrame] = []
+        for i, (d, bundle) in enumerate(moneyflow_bundles):
+            m, error = bundle
+            if error:
+                failed_moneyflow.append(d)
+                print(f"  [warn] {d} moneyflow 同步失败: {error}")
+                continue
+            if not m.empty:
+                moneyflow_batch.append(m)
+            if len(moneyflow_batch) >= 10:
+                mf_rows += store.upsert_moneyflow(pd.concat(moneyflow_batch, ignore_index=True))
+                moneyflow_batch.clear()
+            if verbose and (i + 1) % 5 == 0:
+                print(f"  ...资金流已同步 {i+1}/{len(mf_dates)} 日")
+        if moneyflow_batch:
+            mf_rows += store.upsert_moneyflow(pd.concat(moneyflow_batch, ignore_index=True))
 
     return {
         "daily_dates": new_dates,
+        "benchmark_dates": benchmark_result["dates"],
         "moneyflow_dates": mf_dates,
-        "rows": {"daily": daily_rows, "daily_basic": dbbasic_rows, "moneyflow": mf_rows, "fina": 0},
+        "failed_daily_dates": failed_daily,
+        "failed_moneyflow_dates": failed_moneyflow,
+        "rows": {
+            "daily": daily_rows,
+            "daily_basic": dbbasic_rows,
+            "benchmark": benchmark_result["rows"],
+            "moneyflow": mf_rows,
+            "fina": 0,
+        },
         "latest_daily": store.max_trade_date("daily"),
         "latest_moneyflow": store.max_trade_date("moneyflow"),
     }

@@ -19,10 +19,13 @@ import json
 import os
 import sys
 import time
+import warnings
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+
+warnings.filterwarnings("ignore", category=DeprecationWarning, module=r"curl_cffi\..*")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
@@ -90,40 +93,45 @@ _DEFAULT_THEME_MIN = {t: THEME_MIN_PER_SECTOR for t in REQUIRED_THEMES}
 
 
 def load_market_data(days: int, force: bool = False) -> tuple[pd.DataFrame, list[str], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """加载全市场数据。返回 (stock_basic, trade_dates, daily_df, daily_basic_df, moneyflow_df)"""
-    cache_key = f"market_{days}d_{datetime.now().strftime('%Y%m%d')}.pkl"
-    cache_path = CACHE_DIR / cache_key
+    """加载全市场数据。返回 (stock_basic, trade_dates, daily_df, daily_basic_df, moneyflow_df)
 
-    if cache_path.exists() and not force:
-        print(f"[cache] 使用缓存: {cache_path}")
-        with open(cache_path, "rb") as f:
-            return pd.read_pickle(f)  # type: ignore[return-value]
+    upgrade system：SQLite 为唯一事实源；Parquet 为可重建缓存；**不再读取 pickle**。
+    旧 out/cache/*.pkl 文件保留在磁盘但不参与运行。
+    """
+    # 优先 v2 加载器（SQLite + 可选 Parquet）
+    try:
+        from ab_screener.data.market_loader import load_market_for_scan
 
-    # 最近交易日
+        basic, trade_dates, daily, dbbasic, mf, meta = load_market_for_scan(days, force=force)
+        if daily is not None and not getattr(daily, "empty", True):
+            print(
+                f"[market] source={meta.get('source')} cache_hit={meta.get('cache_hit')} "
+                f"rows={meta.get('n_rows')} as_of={meta.get('as_of')} pickle_used=False"
+            )
+            return basic, trade_dates, daily, dbbasic, mf
+        print("[market] v2 加载为空，回退 data_fetch 直连 SQLite/Tushare（仍不读 pickle）")
+    except Exception as e:  # noqa: BLE001
+        print(f"[market] v2 加载失败，回退: {str(e)[:120]}")
+
+    # 回退：通过 data_fetch（内部优先 LocalStore），禁止 pickle
     end = datetime.now().strftime("%Y%m%d")
     start = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
     cal = data_fetch.get_trade_cal(start, end)
-    trade_dates = cal[-days:]
+    trade_dates = cal[-days:] if cal else []
 
     print("[1/4] 拉取股票列表…")
     basic = data_fetch.get_stock_basic()
 
-    print(f"[2/4] 拉取 {len(trade_dates)} 个交易日全市场日线（{trade_dates[0]} ~ {trade_dates[-1]}）…")
-    daily = data_fetch.get_daily_by_dates(trade_dates, sleep=0.2)
+    print(f"[2/4] 拉取 {len(trade_dates)} 个交易日全市场日线…")
+    daily = data_fetch.get_daily_by_dates(trade_dates, sleep=0.2) if trade_dates else pd.DataFrame()
     print(f"      日线行数: {len(daily)}")
 
     print("[3/4] 拉取全市场基本面指标…")
-    dbbasic = data_fetch.get_daily_basic_by_dates(trade_dates[-1:], sleep=0.2)
+    dbbasic = data_fetch.get_daily_basic_by_dates(trade_dates[-1:], sleep=0.2) if trade_dates else pd.DataFrame()
     print(f"      基本面行数: {len(dbbasic)}")
 
-    # 预过滤后先不拉资金流（只对信号命中者拉，省时间）
     mf = pd.DataFrame()
-
-    payload = (basic, trade_dates, daily, dbbasic, mf)
-    with open(cache_path, "wb") as f:
-        pd.to_pickle(payload, f)
-    print(f"[cache] 已保存: {cache_path}")
-    return payload
+    return basic, trade_dates, daily, dbbasic, mf
 
 
 def apply_box_ladder(
@@ -325,18 +333,22 @@ def _soft_setup_row(
     meta: pd.Series,
     mf_rows: pd.DataFrame | None,
     theme: str,
+    *,
+    signal: dict | None = None,
 ) -> dict | None:
     """主题强制补齐：不要求完整突破，按箱体质量+贴近上沿+资金流打软分。"""
     from scoring import score_fundamentals
 
-    sig = detect_accumulation_breakout(
-        g2,
-        box_max_amp=0.45,
-        breakout_vol_ratio=1.05,
-        breakout_chg_min=0.005,
-        breakout_chg_max=0.15,
-        breakout_window_days=15,
-    )
+    sig = signal
+    if sig is None:
+        sig = detect_accumulation_breakout(
+            g2,
+            box_max_amp=0.45,
+            breakout_vol_ratio=1.05,
+            breakout_chg_min=0.005,
+            breakout_chg_max=0.15,
+            breakout_window_days=15,
+        )
     mv_yi = (
         pd.to_numeric(meta.get("total_mv"), errors="coerce") / 10000.0
         if pd.notna(meta.get("total_mv"))
@@ -436,7 +448,7 @@ def _theme_soft_fill(
     already: set[str],
     sig_by_code: dict[str, dict],
 ) -> list[dict]:
-    """对缺口主题从板块宇宙中软评分补齐。"""
+    """对缺口主题做观察池软评分；不得为补配额再次运行交易信号。"""
     rows: list[dict] = []
     grp = daily_sorted.groupby("ts_code")
     basic_idx = basic_latest.set_index("ts_code", drop=False)
@@ -447,15 +459,33 @@ def _theme_soft_fill(
         if not mf.empty:
             mf_by_code.update({c: g for c, g in mf.groupby("ts_code")})
 
-    for theme in shortfall_themes:
-        mask = theme_universe_mask(cand, [theme])
-        pool = [
-            c for c in cand.loc[mask, "ts_code"].tolist()
+    theme_pools = {
+        theme: [
+            c for c in cand.loc[theme_universe_mask(cand, [theme]), "ts_code"].tolist()
             if c not in already
         ]
+        for theme in shortfall_themes
+    }
+    all_theme_pool = [
+        c for c in cand.loc[theme_universe_mask(cand, list(REQUIRED_THEMES)), "ts_code"].tolist()
+        if c not in already
+    ]
+
+    def observed_signal(code: str) -> dict:
+        return sig_by_code.get(code) or {
+            "is_breakout": False,
+            "reasons": ["未通过启动预筛，仅作主题观察"],
+            "box_days": 0,
+            "box_amp": None,
+            "box_high": None,
+            "latest_close": None,
+        }
+
+    for theme in shortfall_themes:
+        pool = theme_pools[theme]
         scored: list[dict] = []
         for code in pool:
-            if code not in grp.groups and code not in daily_sorted["ts_code"].values:
+            if code not in grp.groups:
                 continue
             try:
                 g = grp.get_group(code)
@@ -468,21 +498,17 @@ def _theme_soft_fill(
                 meta = meta.iloc[0]
             g2 = g.copy()
             g2["date"] = pd.to_datetime(g2["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
-            row = _soft_setup_row(code, g2, meta, mf_by_code.get(code), theme)
+            signal = observed_signal(code)
+            row = _soft_setup_row(
+                code, g2, meta, mf_by_code.get(code), theme, signal=signal
+            )
             if row:
                 # 强制主主题为当前缺口主题（便于配额占坑）
                 row["主题板块"] = theme
                 themes = [theme] + [t for t in match_themes(row["行业"], row["名称"]) if t != theme]
                 row["主题列表"] = ",".join(dict.fromkeys(themes))
                 scored.append(row)
-                sig_by_code[code] = detect_accumulation_breakout(
-                    g2,
-                    box_max_amp=0.45,
-                    breakout_vol_ratio=1.05,
-                    breakout_chg_min=0.005,
-                    breakout_chg_max=0.15,
-                    breakout_window_days=15,
-                )
+                sig_by_code.setdefault(code, signal)
         scored.sort(key=lambda r: r["综合分"], reverse=True)
         need = int(theme_min.get(theme, 5))
         # 多取一些供总 Top 补齐
@@ -495,8 +521,7 @@ def _theme_soft_fill(
     # 若总数仍不足，从所有主题池按软分再补
     if need_total > 0 and len(rows) < need_total:
         extra_need = need_total - len(rows)
-        mask = theme_universe_mask(cand, list(REQUIRED_THEMES))
-        pool = [c for c in cand.loc[mask, "ts_code"].tolist() if c not in already]
+        pool = [c for c in all_theme_pool if c not in already]
         extras: list[dict] = []
         for code in pool[:800]:  # 上限，避免过慢
             try:
@@ -512,7 +537,9 @@ def _theme_soft_fill(
             theme = themes[0] if themes else "其他"
             g2 = g.copy()
             g2["date"] = pd.to_datetime(g2["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
-            row = _soft_setup_row(code, g2, meta, mf_by_code.get(code), theme)
+            row = _soft_setup_row(
+                code, g2, meta, mf_by_code.get(code), theme, signal=observed_signal(code)
+            )
             if row:
                 extras.append(row)
         extras.sort(key=lambda r: r["综合分"], reverse=True)
@@ -817,7 +844,9 @@ def run_scan(
     if build_watch:
         need_more = len(df_all) < target_n
         already = set(df_all["ts_code"].tolist()) if not df_all.empty else set()
-        relax_pool = all_codes - already
+        # relaxed 仍必须具备近期放量或贴近高点；复用更宽松的预筛集合，
+        # 避免在 Windows 上对已明确不具备启动特征的全市场再次完整扫描。
+        relax_pool = set(fast_codes) - already
         _prog("观察池", 70, f"relaxed 扫描 {len(relax_pool)} 只 ×{n_workers} 核…")
         new_hits = _detect_on_codes(
             relax_pool, daily_sorted, sig_by_code,
@@ -921,7 +950,7 @@ def run_scan(
 
     # 写 SQLite：A+B，reasons 带池标记
     try:
-        from local_store import LocalStore, sync_fina_for_codes
+        from local_store import LocalStore
         store = LocalStore()
         scan_rows = []
         for pool_name, part in (("A", a_df), ("B", b_df)):
@@ -965,8 +994,19 @@ def run_scan(
             except Exception:  # noqa: BLE001
                 pass
             store.upsert_scan_result(pd.DataFrame(scan_rows))
+            # 快照清理：仅保留最近 10 个交易日的扫描快照（历史快照用于审计，避免无限积累）
             try:
-                sync_fina_for_codes([r["ts_code"] for r in scan_rows[:40]], verbose=False)
+                with store._connect() as conn:
+                    keep = conn.execute(
+                        "SELECT DISTINCT trade_date FROM scan_result ORDER BY trade_date DESC LIMIT 10"
+                    ).fetchall()
+                    keep_dates = [str(r[0]) for r in keep]
+                    if keep_dates:
+                        ph = ",".join("?" * len(keep_dates))
+                        conn.execute(
+                            f"DELETE FROM scan_result WHERE trade_date NOT IN ({ph})",
+                            keep_dates,
+                        )
             except Exception:  # noqa: BLE001
                 pass
             print(f"✅ 已写入 SQLite scan_result: {len(scan_rows)} 条 (A={len(a_df)} B={len(b_df)})")

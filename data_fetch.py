@@ -19,12 +19,12 @@ from pathlib import Path
 
 import pandas as pd
 
-# 优先使用本目录 vendored 的 tushare_http；兼容旧路径
+# 优先使用本项目目录的 tushare_init；禁止注入外部旧项目路径（曾因
+# E:\openclaw\stock_picker_cn 的旧 tushare_init.py 遮蔽本项目模块，
+# 导致 sync_daily 连续失败、数据停更 —— 2026-08-16 修复）
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_LEGACY_PICKER = r"E:\openclaw\stock_picker_cn"
-for _p in (_HERE, _LEGACY_PICKER):
-    if _p and _p not in sys.path:
-        sys.path.insert(0, _p)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 from local_store import LocalStore, sync_from_tushare
 from tushare_init import pro

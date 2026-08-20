@@ -1,0 +1,313 @@
+"""PIT 回填编排：按数据集/分区键分块，checkpoint 断点续跑。
+
+契约（implementation P1.1）：
+- 分块：每个 (dataset, partition_key) 一块，单块行数 ≤ MAX_ROWS_PER_TX
+  （默认 5 万）。写前登记 checkpoint(in_progress)，成功后置 done。
+- 中断恢复：done 且 source_hash 一致的分区跳过；in_progress 续跑。
+- 按分区逐块拉取（daily 族按 trade_date、fina/holder 按 ts_code、stock_basic 单块），
+  避免一次性载入全量历史的内存峰值。
+- 覆盖率与抽样 hash 100% 通过后才允许翻转 V2_PIT_READ_ENABLED；
+  本模块提供 coverage_report() 供门禁使用。
+- 时间统一 +08:00；写入一律走 pit_writer（append-only）。
+- 镜像网关约束：fina_indicator 必须按 ts_code 拉取（不支持纯 period/日期范围），
+  因此 fina_indicator 分区键 = 标的全集，拉全历史报告期（量小，全量存储）。
+"""
+from __future__ import annotations
+
+import hashlib
+import sqlite3
+from collections.abc import Callable, Iterable
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from ab_screener.data.adapters.tushare_pit import df_to_pit_rows, get_pro_handle
+from ab_screener.data.migration_intents.aux_history_v2 import ALL_HISTORY_TABLES as HISTORY_TABLES
+from ab_screener.data.pit_writer import MAX_ROWS_PER_TX, build_records, write_chunk
+from ab_screener.domain.data_point import normalize_ts
+
+_TZ = ZoneInfo("Asia/Shanghai")
+SOURCE = "tushare"
+
+# daily 族按交易日分区；fina_indicator 按 ann_date 月分区；stock_basic 单块全量。
+# aux 族（B 阶段）：top_list/margin/cyq 按交易日；holder 按 ts_code（报告期）。
+_DAILY_FAMILY = ("daily", "daily_basic", "moneyflow", "adj_factor")
+_AUX_DAILY_FAMILY = ("top_list", "margin", "cyq")
+
+# 数据集短名全集（表名 = {ds}_history）：checkpoint/CLI/coverage 统一用短名。
+ALL_DATASETS = tuple(sorted({t[: -len("_history")] for t in HISTORY_TABLES}))
+
+
+def _hash_rows(rows: list[dict[str, Any]]) -> str:
+    blob = "\n".join(
+        hashlib.sha256(str(sorted(r.items())).encode("utf-8")).hexdigest() for r in rows
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _now_iso() -> str:
+    return datetime.now(_TZ).isoformat(timespec="seconds")
+
+
+class PitBackfill:
+    """断点续跑回填器：进程中断后从最后一个未完成分区继续。"""
+
+    def __init__(self, db_path: str | Path, pro: Any | None = None):
+        self.db_path = str(db_path)
+        self._pro = pro  # 离线测试注入 fake；None 时走根 tushare_init
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=60)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def trade_dates(self, start: str, end: str) -> list[str]:
+        """从交易日历取开市日（生产走根 pro.trade_cal；测试注入 fake）。"""
+        handle = get_pro_handle(self._pro)
+        cal = handle.trade_cal(
+            exchange="", start_date=start, end_date=end, fields="cal_date,is_open"
+        )
+        df = cal
+        if hasattr(df, "loc"):
+            df = df.loc[df["is_open"] == 1, "cal_date"].astype(str).tolist()
+        else:
+            df = [str(r["cal_date"]) for r in df if r.get("is_open") == 1]
+        return sorted(df)
+
+    def _fetch_partition(self, dataset: str, key: str) -> list[dict[str, Any]]:
+        handle = get_pro_handle(self._pro)
+        if dataset == "daily":
+            df = handle.daily(trade_date=key)
+        elif dataset == "daily_basic":
+            df = handle.daily_basic(trade_date=key)
+        elif dataset == "moneyflow":
+            df = handle.moneyflow(trade_date=key)
+        elif dataset == "adj_factor":
+            df = handle.adj_factor(trade_date=key)
+        elif dataset == "fina_indicator":
+            df = handle.fina_indicator(ts_code=key)  # key = ts_code（全历史报告期）
+        elif dataset == "stock_basic":
+            df = handle.stock_basic()
+        elif dataset == "top_list":
+            df = handle.top_list(trade_date=key)
+        elif dataset == "margin":
+            df = handle.margin_detail(trade_date=key)
+        elif dataset == "cyq":
+            df = handle.cyq_perf(trade_date=key)
+        elif dataset == "holder":
+            df = handle.top10_holders(ts_code=key)  # key = ts_code（报告期全量）
+        else:
+            raise ValueError(f"未知 PIT 数据集: {dataset}")
+        return df_to_pit_rows(df, dataset)
+
+    def run(
+        self,
+        datasets: Iterable[str],
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        partitions: dict[str, list[str]] | None = None,
+        workers: int = 1,
+        progress_cb: Callable[[str, int], None] | None = None,
+    ) -> dict[str, Any]:
+        """按数据集顺序回填。partitions 显式给出时优先（离线测试）。
+
+        workers>1：拉取（网络）并发执行，写库保持串行（SQLite 单写者）；
+        拉取失败重试 2 次后记录 failures 并继续（断点续跑兜底）。
+        """
+        ds_list = list(datasets)
+        plan = self._plan(ds_list, start=start, end=end, partitions=partitions)
+        available = normalize_ts(datetime.now(_TZ))
+        total_done = 0
+        total_rows = 0
+        total_skipped = 0
+        total_failed = 0
+        per_dataset: dict[str, dict[str, Any]] = {}
+
+        for dataset, keys in plan.items():
+            done = 0
+            skipped = 0
+            rows = 0
+            failed: list[str] = []
+            pending = []
+            with self._conn() as conn:
+                for key in keys:
+                    cp = conn.execute(
+                        "SELECT status FROM pit_backfill_checkpoints"
+                        " WHERE dataset=? AND partition_key=?", (dataset, key)
+                    ).fetchone()
+                    if cp and cp[0] == "done":
+                        skipped += 1
+                    else:
+                        pending.append(key)
+            # 并发预拉取（分批，控制内存）
+            BATCH = 64
+            for batch_start in range(0, len(pending), BATCH):
+                batch = pending[batch_start:batch_start + BATCH]
+                fetched: dict[str, Any] = {}
+                if workers > 1 and len(batch) > 1:
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        futures = {
+                            pool.submit(self._fetch_with_retry, dataset, k): k for k in batch
+                        }
+                        for fut in as_completed(futures):
+                            k = futures[fut]
+                            try:
+                                fetched[k] = fut.result()
+                            except Exception as exc:  # noqa: BLE001
+                                fetched[k] = {"__error__": f"{type(exc).__name__}: {exc}"}
+                else:
+                    for k in batch:
+                        try:
+                            fetched[k] = self._fetch_with_retry(dataset, k)
+                        except Exception as exc:  # noqa: BLE001
+                            fetched[k] = {"__error__": f"{type(exc).__name__}: {exc}"}
+                for key in batch:
+                    chunk = fetched[key]
+                    if isinstance(chunk, dict) and "__error__" in chunk:
+                        failed.append(f"{key}: {chunk['__error__']}")
+                        continue
+                    if len(chunk) > MAX_ROWS_PER_TX:
+                        raise ValueError(
+                            f"分区 {dataset}/{key} 行数 {len(chunk)} 超预算 {MAX_ROWS_PER_TX}"
+                        )
+                    src_hash = _hash_rows(chunk)
+                    with self._conn() as conn:
+                        conn.execute(
+                            "INSERT INTO pit_backfill_checkpoints (dataset, partition_key, status,"
+                            " last_key, row_count, source_hash, updated_at)"
+                            " VALUES (?,?,'in_progress',?,?,?,?)"
+                            " ON CONFLICT(dataset, partition_key) DO UPDATE SET status='in_progress',"
+                            " last_key=excluded.last_key, row_count=excluded.row_count,"
+                            " source_hash=excluded.source_hash, updated_at=excluded.updated_at",
+                            (dataset, key, key, len(chunk), src_hash, _now_iso()),
+                        )
+                        conn.commit()
+                        records = build_records(
+                            dataset, chunk, source=SOURCE, available_at=available, conn=conn
+                        )
+                        write_chunk(
+                            conn, dataset, records,
+                            partition_key=key, source=SOURCE, available_at=available,
+                        )
+                        conn.execute(
+                            "UPDATE pit_backfill_checkpoints SET status='done', row_count=?,"
+                            " updated_at=? WHERE dataset=? AND partition_key=?",
+                            (len(records), _now_iso(), dataset, key),
+                        )
+                        conn.commit()
+                    done += 1
+                    rows += len(chunk)
+                    if progress_cb:
+                        progress_cb(f"{dataset}/{key}", rows)
+            per_dataset[dataset] = {
+                "partitions_done": done, "rows": rows, "skipped": skipped,
+                "failed": failed,
+            }
+            total_done += done
+            total_rows += rows
+            total_skipped += skipped
+            total_failed += len(failed)
+
+        return {
+            "datasets": sorted(per_dataset),
+            "partitions_done": total_done,
+            "rows": total_rows,
+            "skipped": total_skipped,
+            "failed": total_failed,
+            "per_dataset": per_dataset,
+        }
+
+    def _fetch_with_retry(self, dataset: str, key: str) -> list[dict[str, Any]]:
+        """拉取分区（重试 2 次）；仍失败抛错由调用方记录。"""
+        last_err: Exception | None = None
+        for attempt in range(3):
+            try:
+                return self._fetch_partition(dataset, key)
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                if attempt < 2:
+                    from time import sleep
+
+                    sleep(0.5 * (attempt + 1))
+        raise RuntimeError(f"{dataset}/{key} 拉取失败: {last_err}") from last_err
+
+    def _plan(
+        self,
+        datasets: list[str],
+        *,
+        start: str | None,
+        end: str | None,
+        partitions: dict[str, list[str]] | None,
+    ) -> dict[str, list[str]]:
+        plan: dict[str, list[str]] = {}
+        for ds in datasets:
+            table = f"{ds}_history"
+            if table not in HISTORY_TABLES:
+                raise ValueError(f"未知 PIT 数据集: {ds}")
+            if partitions and ds in partitions:
+                plan[ds] = sorted(partitions[ds])
+            elif ds in _DAILY_FAMILY or ds in _AUX_DAILY_FAMILY:
+                if not start or not end:
+                    raise ValueError(f"{ds} 需要 start/end 以推导交易日分区")
+                plan[ds] = self.trade_dates(start, end)
+            elif ds == "fina_indicator":
+                codes = self._basic_ts_codes()
+                if not codes:
+                    raise ValueError(
+                        "fina_indicator 回填需要 stock_basic/delisted_basic 表提供 ts_code 分区键"
+                        "（镜像网关不支持纯 period 查询，必须按标的拉取）"
+                    )
+                plan[ds] = sorted(codes)
+            elif ds == "holder":
+                codes = self._basic_ts_codes()
+                if not codes:
+                    raise ValueError(
+                        "holder 回填需要 stock_basic/delisted_basic 表提供 ts_code 分区键"
+                        "（先同步基础信息）"
+                    )
+                plan[ds] = sorted(codes)
+            else:
+                plan[ds] = ["ALL"]
+        return plan
+
+    def _basic_ts_codes(self) -> list[str]:
+        """标的分区键 = 上市 + 退市 ts_code（从非 PIT 同步表读取）。"""
+        codes: set[str] = set()
+        try:
+            with self._conn() as conn:
+                for table in ("stock_basic", "delisted_basic"):
+                    try:
+                        rows = conn.execute(f"SELECT ts_code FROM {table}").fetchall()
+                        codes.update(r[0] for r in rows)
+                    except sqlite3.OperationalError:
+                        continue
+        except sqlite3.OperationalError:
+            return []
+        return sorted(codes)
+
+    def coverage_report(self, datasets: Iterable[str] | None = None) -> dict[str, Any]:
+        """各数据集已回填分区/行数；all_done 判定供门禁使用。"""
+        ds_list = list(datasets) if datasets is not None else list(ALL_DATASETS)
+        report: dict[str, Any] = {}
+        with self._conn() as conn:
+            for ds in ds_list:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM pit_backfill_checkpoints WHERE dataset=?", (ds,)
+                ).fetchone()[0]
+                done = conn.execute(
+                    "SELECT COUNT(*) FROM pit_backfill_checkpoints"
+                    " WHERE dataset=? AND status='done'", (ds,)
+                ).fetchone()[0]
+                rows = conn.execute(
+                    "SELECT COALESCE(SUM(row_count),0) FROM pit_backfill_checkpoints"
+                    " WHERE dataset=? AND status='done'", (ds,)
+                ).fetchone()[0]
+                report[ds] = {"partitions": total, "done": done, "rows": int(rows)}
+        report["all_done"] = bool(ds_list) and all(
+            v["partitions"] > 0 and v["done"] == v["partitions"] for v in report.values()
+        )
+        return report

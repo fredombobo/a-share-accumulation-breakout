@@ -29,23 +29,55 @@ def gap_check(min_dates: int = 720) -> dict:
     store = LocalStore()
     dates = store.distinct_dates("daily")
     n = len(dates)
+    index = store.load_daily(ts_codes=["000300.SH"])
+    index_latest = (
+        str(index["trade_date"].astype(str).max())
+        if index is not None and not index.empty and "trade_date" in index.columns
+        else None
+    )
+    latest = dates[-1] if dates else None
     return {
         "n_dates": n,
         "earliest": dates[0] if dates else None,
-        "latest": dates[-1] if dates else None,
-        "ok": n >= min_dates,
+        "latest": latest,
+        "index_code": "000300.SH",
+        "index_latest": index_latest,
+        "index_ok": bool(latest and index_latest == latest),
+        "ok": n >= min_dates and bool(latest and index_latest == latest),
     }
 
 
-def backfill_daily(days_back: int = HISTORY_SYNC_DAYS, moneyflow_days: int = 300, verbose: bool = True) -> dict:
+def backfill_daily(
+    days_back: int = HISTORY_SYNC_DAYS,
+    moneyflow_days: int = 300,
+    verbose: bool = True,
+    fetch_workers: int = 8,
+) -> dict:
     """扩容主入口。差集逻辑保证可重复执行（中断后重跑自动续传）。"""
     if verbose:
         print(f"[backfill] 目标 daily {days_back} 交易日 / moneyflow {moneyflow_days} 交易日")
-    result = sync_from_tushare(days_back=days_back, moneyflow_days=moneyflow_days, force=False, verbose=verbose)
+    result = sync_from_tushare(
+        days_back=days_back,
+        moneyflow_days=moneyflow_days,
+        force=False,
+        verbose=verbose,
+        fetch_workers=fetch_workers,
+    )
+    # 风控环境基准独立来自 index_daily；股票 daily 不包含指数。
+    from market_regime import ensure_index_daily
+
+    index = ensure_index_daily(
+        LocalStore(),
+        index_code="000300.SH",
+        days=max(120, days_back),
+        allow_network=True,
+    )
+    result["index_rows"] = 0 if index is None else len(index)
     check = gap_check()
     if verbose:
         print(f"[backfill] 完成: daily_dates={len(result.get('daily_dates', []))} 新增, "
-              f"库内共 {check['n_dates']} 日 ({check['earliest']}~{check['latest']}), ok={check['ok']}")
+              f"库内共 {check['n_dates']} 日 ({check['earliest']}~{check['latest']}), "
+              f"index={check['index_latest']}, ok={check['ok']}")
     return {"sync": result, "check": check}
 
 

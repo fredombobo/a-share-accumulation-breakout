@@ -9,7 +9,7 @@
   2) 检查/创建 .env（引导填写 Token）
   3) 安装依赖
   4) 增量同步行情（库空则首次多拉一些）
-  5) 启动 Web（单端口 :8000，自带前端）
+  5) 启动 Web（单端口 :8001，自带前端）
   6) 打开浏览器
 
 停止：双击「停止.bat」或 Ctrl+C 后关窗口
@@ -31,6 +31,8 @@ REQ = ROOT / "requirements.txt"
 DIST = ROOT / "web" / "frontend" / "dist" / "index.html"
 RUNTIME = ROOT / "runtime"
 DB = RUNTIME / "stock_data.db"
+BACKEND_PORT = 8001
+BACKEND_ORIGIN = f"http://127.0.0.1:{BACKEND_PORT}"
 
 
 def _banner(msg: str) -> None:
@@ -188,7 +190,8 @@ def _start_server(py: str) -> subprocess.Popen:
     out_log = RUNTIME / "easy_backend.out.log"
     err_log = RUNTIME / "easy_backend.err.log"
     backend = ROOT / "web" / "backend_app.py"
-    print("[启动] Web 服务 http://127.0.0.1:8000/ …")
+    print(f"[启动] Web 服务 {BACKEND_ORIGIN}/ …")
+    os.environ["AB_BACKEND_PORT"] = str(BACKEND_PORT)
     # 前台模式更易 Ctrl+C；小白双击用新窗口
     if os.environ.get("EASY_START_FOREGROUND") == "1":
         # 直接 exec 风格
@@ -207,7 +210,7 @@ def _start_server(py: str) -> subprocess.Popen:
     return p
 
 
-def _port_in_use(port: int = 8000) -> bool:
+def _port_in_use(port: int = BACKEND_PORT) -> bool:
     """检查端口是否已被占用（存在监听者）。"""
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -218,74 +221,64 @@ def _port_in_use(port: int = 8000) -> bool:
             return False
 
 
-def _wait_health(timeout: float = 40.0) -> bool:
+def _parse_ab_health(payload: dict | None) -> dict | None:
+    """仅当 /api/health 属于本项目 backend_app 时返回 payload。
+
+    避免 FinAgent 等也提供 /api/health 的服务被误判为 AB 已启动
+    （否则前端会 404：API endpoint /api/overview not found）。
+    """
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("status") != "ok":
+        return None
+    # AB 独有字段；FinAgent 通常只有 status/timestamp
+    if payload.get("scanner_engine") or payload.get("build_version") or "guided_ui_enabled" in payload:
+        return payload
+    return None
+
+
+def _fetch_health(timeout: float = 2.0) -> dict | None:
+    import json
     import urllib.request
 
-    url = "http://127.0.0.1:8000/api/health"
+    try:
+        with urllib.request.urlopen(f"{BACKEND_ORIGIN}/api/health", timeout=timeout) as r:
+            if r.status != 200:
+                return None
+            return json.loads(r.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _wait_health(timeout: float = 40.0) -> bool:
     t0 = time.time()
     while time.time() - t0 < timeout:
-        try:
-            with urllib.request.urlopen(url, timeout=2) as r:
-                if r.status == 200:
-                    return True
-        except Exception:  # noqa: BLE001
-            time.sleep(0.5)
+        if _parse_ab_health(_fetch_health(2.0)) is not None:
+            return True
+        time.sleep(0.5)
     return False
 
 
 def _health_build_version() -> str:
     """读取运行中后端的 build_version；异常返回空串。"""
-    import json
-    import urllib.request
-
-    try:
-        with urllib.request.urlopen("http://127.0.0.1:8000/api/health", timeout=3) as r:
-            return str((json.loads(r.read().decode("utf-8")) or {}).get("build_version") or "")
-    except Exception:  # noqa: BLE001
-        return ""
+    payload = _parse_ab_health(_fetch_health(3.0)) or {}
+    return str(payload.get("build_version") or "")
 
 
 def _restart_backend(py: str, reason: str) -> None:
-    """停止运行中的后端进程（按 pid 文件 + 端口进程兜底），随后由 main 重新拉起。"""
+    """通过具备所有权校验的停止脚本关闭本项目服务。"""
     print(f"[版本] {reason}")
-    pid_file = RUNTIME / "backend.pid"
-    killed: list[str] = []
-    if pid_file.is_file():
-        try:
-            pid = int(pid_file.read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
-            pid = None
-        if pid:
-            for tool in (["taskkill", "/F", "/T", "/PID", str(pid)],
-                         ["taskkill", "/F", "/PID", str(pid)]):
-                r = subprocess.run(tool, capture_output=True, timeout=10, check=False)
-                if r.returncode == 0:
-                    killed.append(str(pid))
-                    break
-    if not killed:
-        # 兜底：找监听 8000 的进程
-        try:
-            import socket
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.5)
-                if s.connect_ex(("127.0.0.1", 8000)) == 0:
-                    out = subprocess.run(
-                        ["netstat", "-ano"], capture_output=True, text=True,
-                        timeout=10, check=False,
-                    )
-                    for line in out.stdout.splitlines():
-                        if ":8000" in line and "LISTEN" in line:
-                            pid = line.split()[-1]
-                            subprocess.run(["taskkill", "/F", "/T", "/PID", pid],
-                                           capture_output=True, timeout=10, check=False)
-                            killed.append(pid)
-                            break
-        except Exception:  # noqa: BLE001
-            pass
-    if killed:
-        print(f"[版本] 已停止旧后端进程: {', '.join(killed)}")
-    else:
-        print("[版本] 未找到旧后端进程，直接重启…")
+    stop_script = ROOT / "stop_ui.ps1"
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(stop_script)],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    if result.returncode != 0:
+        print("[版本] 安全停止失败；不会终止未确认所有权的进程")
     time.sleep(1.0)
 
 
@@ -327,6 +320,13 @@ def main(argv: list[str] | None = None) -> int:
     elif not ok_token:
         print("[数据] 无 Token，跳过同步（可先看界面说明）")
 
+    # 端口上若是其它项目（如 FinAgent），不能当 AB 已启动
+    foreign = _port_in_use(BACKEND_PORT) and _parse_ab_health(_fetch_health(1.5)) is None
+    if foreign:
+        print(f"[启动] 端口 {BACKEND_PORT} 被其它服务占用（非 AB Screener）")
+        print("       为避免误停其它项目，本次启动已中止。")
+        return 1
+
     if _wait_health(timeout=4.0):
         print("[启动] 服务已在运行")
         # 版本检测：源码或前端产物更新 → 自动重启后端
@@ -348,25 +348,24 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             pass  # 无 build_version 模块时保持旧行为
         if not no_browser:
-            webbrowser.open("http://127.0.0.1:8000/")
-        print("打开: http://127.0.0.1:8000/")
+            webbrowser.open(f"{BACKEND_ORIGIN}/")
+        print(f"打开: {BACKEND_ORIGIN}/")
         return 0
 
     proc = _start_server(py)
     if not _wait_health(timeout=45):
         print("[错误] 服务未就绪，请查看 runtime/easy_backend.err.log")
-        if _port_in_use(8000):
+        if _port_in_use(BACKEND_PORT):
             print()
-            print("[提示] 端口 8000 已被其他进程占用（可能是上次未正确关闭的残留服务）。")
+            print(f"[提示] 端口 {BACKEND_PORT} 已被其他进程占用。")
             print("       请先双击「停止.bat」清理残留进程，再重新启动。")
-            print("       若仍无法停止，可在任务管理器结束名为 python.exe 的残留进程。")
         return 1
 
     print()
-    print("✓ 已启动  http://127.0.0.1:8000/")
+    print(f"✓ 已启动  {BACKEND_ORIGIN}/")
     print("  点「扫描」→ 等 5～15 分钟 → 看 A 池")
     if not no_browser:
-        webbrowser.open("http://127.0.0.1:8000/")
+        webbrowser.open(f"{BACKEND_ORIGIN}/")
 
     if interactive and sys.platform.startswith("win"):
         print("服务在后台运行中。按回车仅关闭本窗口…")

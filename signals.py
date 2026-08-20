@@ -37,14 +37,22 @@ from config import (
     BOX_POS_TREND_MAX_DROP,
     BREAKOUT_CHG_MAX,
     BREAKOUT_CHG_MIN,
+    BREAKOUT_MA60_PULLBACK_TOL,
+    BREAKOUT_MAX_PULLBACKS,
+    BREAKOUT_REQUIRE_MA60,
     BREAKOUT_VOL_RATIO,
     BREAKOUT_VS_RECENT_VOL_RATIO,
+    RELAXED_BREAKOUT_MAX_PULLBACKS,
     TREND_SLOPE_LIMIT,
     VOL_SHRINK_RATIO,
 )
 
 # 突破确认窗口（最近 N 天内发生放量突破都算“启动”）
 BREAKOUT_WINDOW_DAYS = 5
+
+# 箱体起点前必须保留的最少历史根数（v2 位置护栏 fail-closed 配套：
+# 起点过前的箱体会吞噬箱前历史，导致位置判定失效）
+BOX_PRE_MIN_HISTORY = 10
 
 # ── 箱体结构参数（专业形态）──
 BOX_EDGE_FRAC = 0.18          # 触及带：相对箱体高度的比例
@@ -57,12 +65,35 @@ BOX_CLOSE_AMP_MAX_RATIO = 1.05  # 收盘振幅相对稳健振幅可略宽
 BOX_OUTLIER_TRIM = True       # 去影线极值
 
 
+def _percentile_sorted(values: np.ndarray, percentile: float) -> float:
+    """已排序、无 NaN 小数组的线性分位数，避免热循环重复进入 nanpercentile。"""
+    if len(values) == 1:
+        return float(values[0])
+    position = (len(values) - 1) * percentile / 100.0
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    weight = position - lower
+    return float(values[lower] * (1.0 - weight) + values[upper] * weight)
+
+
+def _median_fast(values: np.ndarray) -> float:
+    """小型一维数组中位数，供箱体搜索热循环复用。"""
+    n = len(values)
+    if n == 0:
+        return 0.0
+    middle = n // 2
+    partitioned = np.partition(values, middle)
+    if n % 2:
+        return float(partitioned[middle])
+    return float((np.max(partitioned[:middle]) + partitioned[middle]) * 0.5)
+
+
 def _linreg_slope(values: np.ndarray) -> float:
     """收盘价序列的线性回归斜率（相对均值归一化，日度）。"""
     if len(values) < 5:
         return float("inf")
-    x = np.arange(len(values), dtype=float)
-    y = values.astype(float)
+    x: np.ndarray = np.arange(len(values), dtype=float)
+    y: np.ndarray = values.astype(float)
     mean_x, mean_y = x.mean(), y.mean()
     denom = ((x - mean_x) ** 2).sum()
     if denom == 0 or mean_y == 0:
@@ -75,8 +106,8 @@ def _linreg_r2(values: np.ndarray) -> float:
     """线性趋势解释度 R²；箱体应偏低（非单边通道）。"""
     if len(values) < 5:
         return 1.0
-    y = values.astype(float)
-    x = np.arange(len(y), dtype=float)
+    y: np.ndarray = values.astype(float)
+    x: np.ndarray = np.arange(len(y), dtype=float)
     mean_y = y.mean()
     ss_tot = ((y - mean_y) ** 2).sum()
     if ss_tot <= 1e-12:
@@ -97,6 +128,7 @@ def _robust_support_resistance(
     highs: np.ndarray,
     lows: np.ndarray,
     closes: np.ndarray,
+    close_median: float | None = None,
 ) -> tuple[float, float, float]:
     """稳健支撑/阻力。
 
@@ -108,31 +140,35 @@ def _robust_support_resistance(
     h = np.asarray(highs, dtype=float)
     l = np.asarray(lows, dtype=float)
     c = np.asarray(closes, dtype=float)
+    h = h[np.isfinite(h)]
+    l = l[np.isfinite(l)]
+    c = c[np.isfinite(c)]
     n = len(c)
+    if not len(h) or not len(l) or not n:
+        return 0.0, 0.0, 0.0
     if n < 5:
-        res, sup = float(np.nanmax(h)), float(np.nanmin(l))
-        mid = (res + sup) / 2.0 if res > sup else float(np.nanmean(c))
+        res, sup = float(np.max(h)), float(np.min(l))
+        mid = (res + sup) / 2.0 if res > sup else float(np.mean(c))
         return res, sup, mid
+
+    h_sorted = np.sort(h)
+    l_sorted = np.sort(l)
 
     if BOX_OUTLIER_TRIM and n >= 30:
         # 长平台：用 92/8 分位作结构边界，比裸 max/min 稳
-        res = float(np.nanpercentile(h, 92))
-        sup = float(np.nanpercentile(l, 8))
+        res = _percentile_sorted(h_sorted, 92)
+        sup = _percentile_sorted(l_sorted, 8)
         # 但真实箱顶/箱底常贴近局部峰谷；用「分位与次极值」折中
-        h_sorted = np.sort(h[~np.isnan(h)])
-        l_sorted = np.sort(l[~np.isnan(l)])
         if len(h_sorted) >= 3:
             # 阻力：次高与 92 分位取较高者中偏保守 → 取 max(次高*0.3+最高*0.0, p92)
             # 实务：阻力取「去掉最高影线后的最高」与 p92 的较大者（保证可突破）
             res_trim = float(h_sorted[-2])  # 去掉单日最高影
             res = max(res, min(res_trim, float(h_sorted[-1])))
-            res = float(np.median([res, res_trim, float(np.nanpercentile(h, 90))]))
+            res = sorted((res, res_trim, _percentile_sorted(h_sorted, 90)))[1]
         if len(l_sorted) >= 3:
             sup_trim = float(l_sorted[1])  # 去掉单日最低影
-            sup = float(np.median([sup, sup_trim, float(np.nanpercentile(l, 10))]))
+            sup = sorted((sup, sup_trim, _percentile_sorted(l_sorted, 10)))[1]
     elif BOX_OUTLIER_TRIM and n >= 12:
-        h_sorted = np.sort(h[~np.isnan(h)])
-        l_sorted = np.sort(l[~np.isnan(l)])
         res = float(h_sorted[-2]) if len(h_sorted) >= 2 else float(h_sorted[-1])
         sup = float(l_sorted[1]) if len(l_sorted) >= 2 else float(l_sorted[0])
         # 若次极值与极值接近，用极值（真箱顶）
@@ -141,17 +177,17 @@ def _robust_support_resistance(
         if len(l_sorted) >= 2 and l_sorted[0] >= l_sorted[1] * 0.985:
             sup = float(l_sorted[0])
     else:
-        res = float(np.nanmax(h))
-        sup = float(np.nanmin(l))
+        res = float(np.max(h))
+        sup = float(np.min(l))
 
     if not np.isfinite(res) or not np.isfinite(sup) or res <= 0 or sup <= 0:
-        res = float(np.nanmax(c))
-        sup = float(np.nanmin(c))
+        res = float(np.max(c))
+        sup = float(np.min(c))
     if res < sup:
         res, sup = sup, res
     mid = (res + sup) / 2.0
     # 中轴用收盘中位微调，避免阻力/支撑被影线轻微偏移
-    c_med = float(np.nanmedian(c))
+    c_med = close_median if close_median is not None else _median_fast(c)
     if abs(c_med - mid) / max(mid, 1e-9) < 0.05:
         mid = 0.6 * mid + 0.4 * c_med
     return res, sup, mid
@@ -192,17 +228,19 @@ def _count_boundary_touches(
     # 中部 25%~75% 区间占用
     lo_m = support + 0.25 * height
     hi_m = support + 0.75 * height
-    mid_hits = np.sum((closes >= lo_m) & (closes <= hi_m))
+    mid_hits: np.ndarray = np.sum((closes >= lo_m) & (closes <= hi_m))
     mid_frac = float(mid_hits / max(len(closes), 1))
     return int(sup_touches), int(res_touches), mid_frac
 
 
-def _count_swings(closes: np.ndarray, min_move_frac: float = 0.015) -> int:
+def _count_swings(
+    closes: np.ndarray, min_move_frac: float = 0.015, *, center: float | None = None
+) -> int:
     """有效摆动次数：相对中轴至少 min_move_frac 的方向切换次数。"""
     if len(closes) < 8:
         return 0
-    c = closes.astype(float)
-    mid = float(np.nanmedian(c))
+    c: np.ndarray = closes.astype(float)
+    mid = center if center is not None else _median_fast(c)
     thr = max(abs(mid) * min_move_frac, 1e-6)
     # 平滑：3 日均，减少噪声摆动
     if len(c) >= 5:
@@ -232,15 +270,15 @@ def _count_swings(closes: np.ndarray, min_move_frac: float = 0.015) -> int:
     return int(swings)
 
 
-def _half_drift(closes: np.ndarray) -> float:
+def _half_drift(closes: np.ndarray, *, center: float | None = None) -> float:
     """前半/后半收盘中位漂移（相对中轴）。"""
     n = len(closes)
     if n < 8:
         return 0.0
     half = n // 2
-    a = float(np.nanmedian(closes[:half]))
-    b = float(np.nanmedian(closes[half:]))
-    mid = float(np.nanmedian(closes))
+    a = _median_fast(closes[:half])
+    b = _median_fast(closes[half:])
+    mid = center if center is not None else _median_fast(closes)
     if mid <= 0:
         return 0.0
     return abs(b - a) / mid
@@ -255,6 +293,7 @@ def evaluate_box_window(
     box_max_amp: float = BOX_MAX_AMP,
     slope_limit: float = TREND_SLOPE_LIMIT,
     require_structure: bool = True,
+    fast_fail: bool = False,
 ) -> dict[str, Any]:
     """评估一段 K 线是否构成合格吸筹箱体。返回 metrics + ok 标志。"""
     h = np.asarray(highs, dtype=float)
@@ -283,7 +322,8 @@ def evaluate_box_window(
         out["fail"].append("窗口过短")
         return out
 
-    res, sup, mid = _robust_support_resistance(h, l, c)
+    close_median = _median_fast(c)
+    res, sup, mid = _robust_support_resistance(h, l, c, close_median)
     height = res - sup
     if height <= 0 or mid <= 0:
         out["fail"].append("边界无效")
@@ -292,21 +332,12 @@ def evaluate_box_window(
     amp = height / mid  # 用中轴归一，比 /min 更稳
     # 兼容旧定义展示：也算 (hi-lo)/lo
     amp_lo = height / max(sup, 1e-9)
-    c_max, c_min = float(np.nanmax(c)), float(np.nanmin(c))
+    c_max, c_min = float(np.max(c)), float(np.min(c))
     close_amp = (c_max - c_min) / max(c_min, 1e-9)
 
     slope = _linreg_slope(c)
     r2 = _linreg_r2(c)
-    sup_t, res_t, mid_frac = _count_boundary_touches(h, l, c, res, sup)
-    swings = _count_swings(c)
-    drift = _half_drift(c)
-
-    vol_shrink = None
-    if vols is not None and len(vols) == n:
-        half = max(1, n // 2)
-        fv = float(np.nanmean(vols[:half]))
-        bv = float(np.nanmean(vols[half:]))
-        vol_shrink = (bv / fv) if fv > 0 else None
+    drift = _half_drift(c, center=close_median)
 
     # 时长自适应振幅：越长允许略宽（√T），但封顶
     length_scale = min(1.25, 1.0 + 0.12 * math.log(max(n, 20) / 20.0))
@@ -324,6 +355,32 @@ def evaluate_box_window(
         fails.append(f"单边通道R²={r2:.2f}")
     if close_amp > amp_limit * BOX_CLOSE_AMP_MAX_RATIO * 1.15:
         fails.append(f"收盘振幅{close_amp:.1%}过大")
+
+    if fast_fail and fails:
+        out.update({
+            "resistance": res,
+            "support": sup,
+            "mid": mid,
+            "amp": float(amp),
+            "amp_lo": float(amp_lo),
+            "close_amp": float(close_amp),
+            "slope": float(slope),
+            "r2": float(r2),
+            "half_drift": float(drift),
+            "fail": fails,
+            "amp_limit": float(amp_limit),
+        })
+        return out
+
+    sup_t, res_t, mid_frac = _count_boundary_touches(h, l, c, res, sup)
+    swings = _count_swings(c, center=close_median)
+
+    vol_shrink = None
+    if vols is not None and len(vols) == n:
+        half = max(1, n // 2)
+        fv = float(np.mean(vols[:half]))
+        bv = float(np.mean(vols[half:]))
+        vol_shrink = (bv / fv) if fv > 0 else None
 
     if require_structure:
         if sup_t < BOX_MIN_SUP_TOUCHES:
@@ -433,6 +490,7 @@ def _find_best_box(
                 v_all[start: end + 1],
                 box_max_amp=box_max_amp,
                 require_structure=require_structure,
+                fast_fail=True,
             )
             if not m["ok"]:
                 continue
@@ -469,6 +527,66 @@ def _find_best_box(
     return best
 
 
+def _find_best_box_fixed_end(
+    obs: pd.DataFrame,
+    end: int,
+    *,
+    box_min_days: int,
+    box_max_days: int,
+    box_max_amp: float,
+    require_structure: bool = True,
+) -> dict[str, Any] | None:
+    """箱体右端固定为 end（=突破日前一根），搜索最优起点（v2）。
+
+    修复：旧实现允许箱体右端延伸到突破窗口内，长箱评分会把突破日「吞」进箱体、
+    抬高箱顶，导致真突破被漏判。v2 改为「先定突破日 → 再在其前找箱体」，
+    箱体绝不包含突破日及其后的 K 线。
+    """
+    h_all = obs["_h"].to_numpy(dtype=float)
+    l_all = obs["_l"].to_numpy(dtype=float)
+    c_all = obs["_c"].to_numpy(dtype=float)
+    v_all = obs["_v"].to_numpy(dtype=float)
+
+    best: dict[str, Any] | None = None
+    best_score = -1e18
+    start_lo = max(0, end - box_max_days + 1)
+    start_hi = end - box_min_days + 1
+    for start in range(start_hi, start_lo - 1, -1):
+        # 箱前历史保护：起点过前会吞掉箱前平台（位置护栏失效），必须留足历史
+        if start < BOX_PRE_MIN_HISTORY:
+            continue
+        length = end - start + 1
+        # 步长采样：长箱稀疏（与旧实现一致的性能策略）
+        if length > 90 and (start % 3) != 0 and start != start_lo or length > 45 and (start % 2) != 0 and start != start_lo:
+            continue
+        m = evaluate_box_window(
+            h_all[start: end + 1],
+            l_all[start: end + 1],
+            c_all[start: end + 1],
+            v_all[start: end + 1],
+            box_max_amp=box_max_amp,
+            require_structure=require_structure,
+            fast_fail=True,
+        )
+        if not m["ok"]:
+            continue
+        length_bonus = 8.0 * math.log(max(length, box_min_days) / float(box_min_days))
+        # 箱前历史惩罚：start 越靠左（箱前历史越少），惩罚越重
+        pre_pen = max(0.0, BOX_POS_LOOKBACK - start) * 0.4
+        score = float(m["quality"]) + length_bonus - pre_pen
+        if score > best_score:
+            best_score = score
+            best = {"start": start, "end": end, "length": length, "metrics": m, "score": score}
+
+    if best is None and require_structure:
+        return _find_best_box_fixed_end(
+            obs, end,
+            box_min_days=box_min_days, box_max_days=box_max_days,
+            box_max_amp=box_max_amp * 1.05, require_structure=False,
+        )
+    return best
+
+
 def detect_accumulation_breakout(
     df: pd.DataFrame,
     box_max_days: int | None = None,
@@ -482,6 +600,8 @@ def detect_accumulation_breakout(
     box_max_mid_drawdown: float | None = None,
     pos_trend_max_drop: float | None = None,
     breakout_vs_recent_vol_ratio: float | None = None,
+    require_ma60: bool | None = None,
+    max_pullbacks: int | None = None,
 ) -> dict:
     """对单只股票 K 线做横盘吸筹 + 启动检测。
 
@@ -490,6 +610,12 @@ def detect_accumulation_breakout(
     box_max_mid_drawdown：箱体中轴相对窗口前段高点的最大回撤（防下跌中继）。
     pos_trend_max_drop：近 BOX_POS_TREND_LOOKBACK 日涨跌幅下限（防大趋势下跌）。
     breakout_vs_recent_vol_ratio：突破日量 / 前5日均量 下限（放量双重确认）。
+
+    v2 新增（防假突破 / 底部震荡误选，2026-08-16）：
+    require_ma60：突破后收盘须站上 MA60（过滤长期均线下方底部震荡假突破）；
+                  None → strict 默认开启、relaxed 关闭。
+    max_pullbacks：突破日之后收盘跌破箱体上沿的允许次数（站稳检验）；
+                   None → strict=0、relaxed=1。
     """
     box_max_days = box_max_days or BOX_MAX_DAYS
     box_min_days = box_min_days or BOX_MIN_DAYS
@@ -509,6 +635,12 @@ def detect_accumulation_breakout(
         if breakout_vs_recent_vol_ratio is None
         else breakout_vs_recent_vol_ratio
     )
+    if require_ma60 is None:
+        require_ma60 = BREAKOUT_REQUIRE_MA60 if require_structure else False
+    if max_pullbacks is None:
+        max_pullbacks = (
+            BREAKOUT_MAX_PULLBACKS if require_structure else RELAXED_BREAKOUT_MAX_PULLBACKS
+        )
 
     result: dict[str, Any] = {
         "is_breakout": False,
@@ -525,6 +657,7 @@ def detect_accumulation_breakout(
         "ma5": None,
         "ma10": None,
         "ma20": None,
+        "ma60": None,
         "reasons": [],
     }
 
@@ -543,6 +676,8 @@ def detect_accumulation_breakout(
     df["_h"] = pd.to_numeric(df["high"], errors="coerce")
     df["_l"] = pd.to_numeric(df["low"], errors="coerce")
     df = df.dropna(subset=["_c"]).reset_index(drop=True)
+    df["_h"] = df["_h"].fillna(df["_c"])
+    df["_l"] = df["_l"].fillna(df["_c"])
     if len(df) < need_bars:
         result["reasons"].append("清洗后K线不足")
         return result
@@ -550,9 +685,11 @@ def detect_accumulation_breakout(
     ma5 = df["_c"].rolling(5).mean().iloc[-1]
     ma10 = df["_c"].rolling(10).mean().iloc[-1]
     ma20 = df["_c"].rolling(20).mean().iloc[-1]
+    ma60 = df["_c"].rolling(60).mean().iloc[-1]
     result["ma5"] = None if pd.isna(ma5) else float(ma5)
     result["ma10"] = None if pd.isna(ma10) else float(ma10)
     result["ma20"] = None if pd.isna(ma20) else float(ma20)
+    result["ma60"] = None if pd.isna(ma60) else float(ma60)
 
     # 观察窗：最长箱体 + 突破窗口 + 余量
     obs_len = min(len(df), box_max_days + breakout_window_days + 5)
@@ -561,14 +698,50 @@ def detect_accumulation_breakout(
         result["reasons"].append("观察窗口不足")
         return result
 
-    best = _find_best_box(
-        obs,
-        box_min_days=box_min_days,
-        box_max_days=box_max_days,
-        box_max_amp=box_max_amp,
-        breakout_window_days=breakout_window_days,
-        require_structure=require_structure,
-    )
+    # ── v2 两步式：先找突破日（窗口内从新到旧），再在其前一根之前找箱体 ──
+    # 修复：旧实现先找箱体（右端可延伸到突破窗口内），长箱评分会把突破日吞进
+    # 箱体抬高箱顶，导致真突破漏判；v2 固定「箱体右端 = 突破日前一日」。
+    breakout_found: dict[str, Any] | None = None
+    best: dict[str, Any] | None = None
+    search_end = len(obs) - 1
+    win_left = max(0, len(obs) - breakout_window_days)
+    for i in range(search_end, win_left - 1, -1):
+        row = obs.iloc[i]
+        rc = float(row["_c"])
+        rv = float(row["_v"])
+        if i <= 0:
+            continue
+        prev_close = float(obs.iloc[i - 1]["_c"])
+        if prev_close <= 0:
+            continue
+        chg = rc / prev_close - 1.0
+        if not (breakout_chg_min <= chg <= breakout_chg_max):
+            continue
+        cand = _find_best_box_fixed_end(
+            obs, i - 1,
+            box_min_days=box_min_days, box_max_days=box_max_days,
+            box_max_amp=box_max_amp, require_structure=require_structure,
+        )
+        if cand is None:
+            continue
+        cm = cand["metrics"]
+        cbox = obs.iloc[cand["start"]: cand["end"] + 1]
+        cbox_avg_vol = float(cbox["_v"].mean()) if len(cbox) else 0.0
+        if rc <= float(cm["resistance"]) * 1.001:
+            continue
+        if cbox_avg_vol <= 0 or rv < breakout_vol_ratio * cbox_avg_vol:
+            continue
+        breakout_found = {
+            "date": str(row["date"]),
+            "close": rc,
+            "vol": rv,
+            "vol_ratio": rv / cbox_avg_vol if cbox_avg_vol > 0 else 0.0,
+            "pct_chg": chg,
+            "pos_in_obs": int(i),
+        }
+        best = cand
+        break
+
     if best is None:
         result["reasons"].append("未找到合格横盘箱体")
         return result
@@ -581,64 +754,32 @@ def detect_accumulation_breakout(
     slope = float(m["slope"])
     vol_shrink = m.get("vol_shrink")
 
-    # ── 箱体位置约束：中轴相对窗口前段高点的回撤（防下跌中继误选） ──
+    # ── 箱体位置约束（v2）：基于完整窗口 —— 箱体起点前 BOX_POS_LOOKBACK 日高点 ──
+    # 修复：旧实现基于 obs 尾部切片，长箱体（起点贴近 obs 左沿）时箱前历史不足，
+    #       护栏静默失效 → 底部震荡/下跌中继被当吸筹平台选入。
     box_mid = (box_high + box_low) / 2.0
-    pre_end = max(1, best["start"])  # 箱体开始之前的段落
-    pre_seg = obs.iloc[:pre_end].tail(BOX_POS_LOOKBACK)
+    df_start = len(df) - len(obs)  # obs 首行在完整 df 中的索引
+    box_df_start = df_start + int(best["start"])
+    pre_full = df.iloc[max(0, box_df_start - BOX_POS_LOOKBACK): box_df_start]
     pre_high = None
-    if len(pre_seg) >= 10:
-        _ph = pd.to_numeric(pre_seg["high"], errors="coerce")
+    if len(pre_full) >= 10:
+        _ph = pd.to_numeric(pre_full["high"], errors="coerce")
         pre_high = float(_ph.max()) if _ph.notna().any() else None
-    mid_drawdown = (box_mid / pre_high - 1.0) if (pre_high and pre_high > 0) else 0.0
+    # fail-closed：箱前历史不足 → 位置未知，直接判不通过（防数据不足混入）
+    mid_drawdown = (box_mid / pre_high - 1.0) if (pre_high and pre_high > 0) else -1.0
 
-    # ── 大趋势约束：近 BOX_POS_TREND_LOOKBACK 日涨跌幅（防大趋势下跌） ──
-    _closes = pd.to_numeric(obs["_c"], errors="coerce").dropna()
+    # ── 大趋势约束（v2）：基于完整窗口最近 BOX_POS_TREND_LOOKBACK 日 ──
+    _all_closes = pd.to_numeric(df["_c"], errors="coerce").dropna()
     trend_ret = (
-        float(_closes.iloc[-1] / _closes.iloc[-BOX_POS_TREND_LOOKBACK] - 1.0)
-        if len(_closes) >= BOX_POS_TREND_LOOKBACK
-        else 0.0
+        float(_all_closes.iloc[-1] / _all_closes.iloc[-BOX_POS_TREND_LOOKBACK] - 1.0)
+        if len(_all_closes) >= BOX_POS_TREND_LOOKBACK
+        else -1.0  # 历史不足 → fail-closed
     )
 
     last = obs.iloc[-1]
     last_close = float(last["_c"])
     last_vol = float(last["_v"])
     box_avg_vol = float(box["_v"].mean()) if len(box) else 0.0
-
-    # ── 突破：仅在箱体结束之后的窗口内寻找 ──
-    # 突破日必须 > box end，且落在最近 breakout_window_days
-    search_start = best["end"] + 1
-    search_end = len(obs) - 1
-    win_left = max(search_start, len(obs) - breakout_window_days)
-    breakout_found = None
-    if win_left <= search_end:
-        for i in range(search_end, win_left - 1, -1):
-            row = obs.iloc[i]
-            rc = float(row["_c"])
-            rv = float(row["_v"])
-            # 收盘有效突破阻力（允许 0.1% 浮点误差）
-            if rc <= box_high * 1.001:
-                continue
-            if box_avg_vol <= 0 or rv < breakout_vol_ratio * box_avg_vol:
-                continue
-            # 前收
-            if i <= 0:
-                continue
-            prev_close = float(obs.iloc[i - 1]["_c"])
-            if prev_close <= 0:
-                continue
-            chg = rc / prev_close - 1.0
-            if not (breakout_chg_min <= chg <= breakout_chg_max):
-                continue
-            # 突破日最高价应至少触及/越过阻力（避免仅缺口定义争议；收盘已过即可）
-            breakout_found = {
-                "date": str(row["date"]),
-                "close": rc,
-                "vol": rv,
-                "vol_ratio": rv / box_avg_vol if box_avg_vol > 0 else 0.0,
-                "pct_chg": chg,
-                "pos_in_obs": int(i),
-            }
-            break
 
     # ── 突破日量 / 前5日均量（放量双重确认，防箱体缩量稀释分母虚高） ──
     recent_vol_ratio = None
@@ -649,6 +790,15 @@ def detect_accumulation_breakout(
             _p5v = float(pd.to_numeric(_pre5["_v"], errors="coerce").mean())
             if _p5v > 0:
                 recent_vol_ratio = float(breakout_found["vol"] / _p5v)
+
+    # ── 突破后站稳检验（v2 防假突破/一日游）：突破日之后收盘跌回箱体上沿的次数 ──
+    pullbacks = 0
+    if breakout_found is not None:
+        _i = breakout_found["pos_in_obs"]
+        after = obs.iloc[_i + 1:]
+        if len(after):
+            _ac = pd.to_numeric(after["_c"], errors="coerce")
+            pullbacks = int((_ac <= box_high * (1.0 - BREAKOUT_MA60_PULLBACK_TOL)).sum())
 
     cond_box = box_amp <= (m.get("amp_limit") or box_max_amp) * 1.01
     cond_flat = abs(slope) <= TREND_SLOPE_LIMIT * 1.05
@@ -666,18 +816,23 @@ def detect_accumulation_breakout(
             or m.get("mid_frac", 0) >= 0.2
         )
     cond_break = breakout_found is not None
-    cond_hold = last_close > box_high
+    # 站稳 = 最新收盘仍在箱体上沿之上，且突破后未跌破上沿超过允许次数
+    cond_hold = last_close > box_high and pullbacks <= max_pullbacks
     cond_ma = (
         result["ma5"] is not None
         and result["ma20"] is not None
         and last_close > result["ma20"]
         and result["ma5"] > result["ma20"]
     )
+    # v2：长期均线过滤（strict）：收盘须站上 MA60，剔除长期均线下方的底部震荡假突破
+    cond_ma60 = (not require_ma60) or (
+        result["ma60"] is not None and last_close > float(result["ma60"])
+    )
     cond_position = mid_drawdown >= -box_max_mid_drawdown
     cond_trend = trend_ret >= pos_trend_max_drop
     cond_recent_vol = recent_vol_ratio is None or recent_vol_ratio >= breakout_vs_recent_vol_ratio
 
-    bf = breakout_found or {}
+    bf: dict[str, Any] = breakout_found or {}
     vol_ratio = bf.get("vol_ratio")
     pct_chg = bf.get("pct_chg")
 
@@ -714,9 +869,12 @@ def detect_accumulation_breakout(
         "cond_break": bool(cond_break),
         "cond_hold": bool(cond_hold),
         "cond_ma": bool(cond_ma),
+        "cond_ma60": bool(cond_ma60),
         "cond_position": bool(cond_position),
         "cond_trend": bool(cond_trend),
         "cond_recent_vol": bool(cond_recent_vol),
+        "hold_pullbacks": int(pullbacks),
+        "max_pullbacks_allowed": int(max_pullbacks),
     })
 
     failures: list[str] = []
@@ -731,9 +889,16 @@ def detect_accumulation_breakout(
     if not cond_break:
         failures.append(f"窗口内未放量突破阻力({last_close:.2f} vs {box_high:.2f})")
     if not cond_hold:
-        failures.append(f"已跌回箱体({last_close:.2f}<{box_high:.2f})")
+        if last_close <= box_high:
+            failures.append(f"已跌回箱体({last_close:.2f}<{box_high:.2f})")
+        else:
+            failures.append(f"突破后回踩{pullbacks}次(允许{max_pullbacks})，未站稳")
     if not cond_ma:
         failures.append("均线未多头")
+    if not cond_ma60:
+        failures.append(
+            f"收盘未站上MA60({result['ma60']:.2f})，疑似长期均线下方底部震荡假突破"
+        )
     if not cond_position:
         failures.append(f"箱体位置过深(中轴回撤{mid_drawdown:+.0%}，下跌中继，非吸筹平台)")
     if not cond_trend:
@@ -755,6 +920,7 @@ def detect_accumulation_breakout(
             f"(支撑触{m.get('sup_touches')}压力触{m.get('res_touches')})",
             f"{bf.get('date', '')}放量{vol_ratio:.1f}倍突破" if vol_ratio else "放量突破",
             f"涨幅{pct_chg:.1%}" if pct_chg is not None else "",
+            "突破后站稳无回踩" if pullbacks == 0 else f"突破后回踩{pullbacks}次",
         ]
 
     return result
@@ -817,6 +983,9 @@ def score_breakout_strength(sig: dict) -> float:
         s += 3.0
     if sig.get("cond_ma"):
         s += 3.0
+    # v2：突破后回踩惩罚（relaxed 允许 1 次回踩时体现差异）
+    if int(sig.get("hold_pullbacks") or 0) > 0:
+        s -= 4.0
 
     chg = sig.get("breakout_pct_chg")
     if chg is not None:

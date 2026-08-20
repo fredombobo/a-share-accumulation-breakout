@@ -30,8 +30,10 @@ RUNTIME = ROOT / "runtime"
 DB = RUNTIME / "stock_data.db"
 DIST_INDEX = ROOT / "web" / "frontend" / "dist" / "index.html"
 BACKEND = ROOT / "web" / "backend_app.py"
-OPEN_URL = "http://127.0.0.1:8000/"
-HEALTH_URL = "http://127.0.0.1:8000/api/health"
+BACKEND_PORT = 8001
+BACKEND_ORIGIN = f"http://127.0.0.1:{BACKEND_PORT}"
+OPEN_URL = f"{BACKEND_ORIGIN}/"
+HEALTH_URL = f"{BACKEND_ORIGIN}/api/health"
 
 PLACEHOLDER_TOKENS = frozenset({"", "your_token_here", "changeme", "xxx", "TOKEN", "<TUSHARE_TOKEN>"})
 
@@ -187,14 +189,29 @@ def sync_market(py: str, days: int | None) -> None:
 
 
 def health_ok(timeout: float = 2.0) -> bool:
+    """仅当隔离端口上是本项目 AB backend 时返回 True。
+
+    FinAgent 等也有 /api/health 且 status=ok，但没有 /api/overview，
+    误判会导致前端「API endpoint /api/overview not found」。
+    """
+    import json
     import urllib.error
     import urllib.request
 
     try:
         with urllib.request.urlopen(HEALTH_URL, timeout=timeout) as r:
-            return r.status == 200
-    except (urllib.error.URLError, TimeoutError, OSError):
+            if r.status != 200:
+                return False
+            payload = json.loads(r.read().decode("utf-8") or "{}")
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError):
         return False
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return False
+    return bool(
+        payload.get("scanner_engine")
+        or payload.get("build_version")
+        or "guided_ui_enabled" in payload
+    )
 
 
 def wait_health(timeout: float = 60.0) -> bool:
@@ -206,7 +223,7 @@ def wait_health(timeout: float = 60.0) -> bool:
     return False
 
 
-def _port_in_use(port: int = 8000) -> bool:
+def _port_in_use(port: int = BACKEND_PORT) -> bool:
     """检查端口是否已被占用（存在监听者）。"""
     import socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -223,13 +240,14 @@ def start_server(py: str, foreground: bool) -> subprocess.Popen | None:
     if health_ok(timeout=1.0):
         _log("[3/4] 服务已在运行")
         return None
-    if _port_in_use(8000):
-        _log("[3/4] 端口 8000 已被占用但服务不响应（疑似残留进程）")
-        _log("       请先运行 停止.bat（或 stop_ui.ps1）清理残留进程后再启动")
+    if _port_in_use(BACKEND_PORT):
+        _log(f"[3/4] 端口 {BACKEND_PORT} 已被其它服务占用，AB 不会强制终止它")
+        _log("       请确认占用者，或先运行 stop_ui.ps1 停止本项目旧实例")
         return None
 
     RUNTIME.mkdir(parents=True, exist_ok=True)
-    _log("[3/4] 启动 Web 服务 :8000 …")
+    _log(f"[3/4] 启动 Web 服务 :{BACKEND_PORT} …")
+    os.environ["AB_BACKEND_PORT"] = str(BACKEND_PORT)
 
     if foreground:
         # 阻塞在前台，适合 Agent 托管长进程

@@ -2,7 +2,8 @@
 Tushare 唯一标准初始化入口（全项目只引用本文件）
 ================================================
 
-用户指定的标准调用方式：
+用户指定的标准调用方式（2026-08-16 权威版，后续所有模块一律引用本文件初始化，
+不得在其它文件重复初始化）：
 
 ```python
 import os
@@ -23,8 +24,8 @@ pro = get_pro()
 兼容旧写法：`from tushare_http import pro`（转发到本模块）。
 
 说明：
-  - 直连节点 `a.sszhixia.cn` 会对裸 `requests` TLS 指纹拦截（10054），
-    本文件在官方 `ts.pro_api` 初始化后，用 curl_cffi 接管 query，调用方式不变。
+  - 用户指定直连节点 `a.sszhixia.cn`；本文件在官方 `ts.pro_api` 初始化后，
+    用 curl_cffi 接管 query（抗 TLS 指纹拦截），调用方式不变。
   - Token 必须通过项目 `.env` 或环境变量的 `TUSHARE_TOKEN` 提供；项目
     `.env` 是本项目权威配置，避免父进程残留旧 Token。
 """
@@ -34,8 +35,11 @@ import json
 import os
 import re
 import time
+import warnings
 from pathlib import Path
 from typing import Any
+
+warnings.filterwarnings("ignore", message=r".*Eventlet is deprecated.*", category=DeprecationWarning)
 
 # 清除代理污染
 for _k in (

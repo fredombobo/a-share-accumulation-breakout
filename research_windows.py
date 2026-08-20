@@ -48,7 +48,8 @@ class ResearchPlan:
     oos_n_dates: int
     wf_windows: list[tuple[str, str, str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
-    can_claim_edge: bool = False  # 仅 full 模式且 n_dates 够才允许「有 edge」表述
+    data_ready_for_edge_validation: bool = False
+    can_claim_edge: bool = False  # 仅数据覆盖永远不足以声称 edge；需运行级门禁另行判定
     target_history_days: int = HISTORY_SYNC_DAYS
 
     def to_dict(self) -> dict[str, Any]:
@@ -155,7 +156,8 @@ def recommend_research_plan(dates: list[str] | None = None) -> ResearchPlan:
             tev = _clip_window(dates, vs, ve)
             if tr and tev and tr[2] >= 60 and tev[2] >= 30:
                 wf.append((tr[0], tr[1], tev[0], tev[1]))
-        notes.append("完整 24 月 IS + 12 月 OOS，可严肃讨论参数稳定性")
+        notes.append("完整 24 月 IS + 12 月 OOS，具备执行净成本 OOS/WF 验证的前提")
+        notes.append("数据已就绪不等于存在 edge；仍需净成本、基线与晋级门禁全部通过")
         return ResearchPlan(
             mode="full",
             label="完整验证窗",
@@ -170,7 +172,8 @@ def recommend_research_plan(dates: list[str] | None = None) -> ResearchPlan:
             oos_n_dates=oos_full[2],
             wf_windows=wf or _build_wf_from_dates(dates),
             notes=notes,
-            can_claim_edge=True,
+            data_ready_for_edge_validation=True,
+            can_claim_edge=False,
         )
 
     # 降级：时间序列前 65% IS，后 35% OOS（严格不交叉）
@@ -255,9 +258,9 @@ def research_status_dict(probe_token: bool = True) -> dict[str, Any]:
         next_steps.append("1. python sync_history.py   # Token 可用，开始历史扩容")
         next_steps.append("2. python research_status.py  # 确认 mode=full 后再严肃优化")
     else:
-        next_steps.append("1. python run_optimize_plan.py A 600 10")
-        next_steps.append("2. python pipeline_seed.py A 600 10")
-        next_steps.append("3. 界面 /lab 查看排行榜；A 池仍以扫描+防守环境为准")
+        next_steps.append("1. 在 /lab 使用自动 full 窗运行网格搜索")
+        next_steps.append("2. 查看净成本 OOS、三窗 WF 与双基线可信报告")
+        next_steps.append("3. PASS 仅作为隔离候选；A 池仍以独立扫描+防守环境为准")
 
     return {
         "as_of_check": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

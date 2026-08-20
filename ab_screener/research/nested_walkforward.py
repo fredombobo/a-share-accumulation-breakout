@@ -1,0 +1,74 @@
+"""正式统计：嵌套 Walk-Forward（P3.2）。
+
+规则：
+- 测试窗 = 初始训练期之后的等宽窗口；训练折 = 测试窗前全部历史（扩展窗，
+  无日期重叠，测试折只评估一次、绝不参与选择）。
+- 样本不足 / NaN / 测试窗 <2 → FAIL（不静默降级）。
+"""
+from __future__ import annotations
+
+from typing import Any
+
+import numpy as np
+
+
+class NestedWalkforwardError(ValueError):
+    """嵌套 WF 输入非法（fail-closed）。"""
+
+
+def nested_walkforward(
+    returns: np.ndarray,
+    n_test_windows: int,
+    *,
+    train_frac: float = 0.6,
+    min_train_periods: int = 20,
+    selector=None,
+) -> dict[str, Any]:
+    """returns: (T,) 单组合收益序列。selector(train_returns) -> float 用于训练折选参。"""
+    arr = np.asarray(returns, dtype=float).reshape(-1)
+    if arr.ndim != 1 or arr.size == 0:
+        raise NestedWalkforwardError("收益序列为空或形状非法")
+    if np.isnan(arr).any() or np.isinf(arr).any():
+        raise NestedWalkforwardError("收益序列含 NaN/Inf（拒绝静默降级）")
+    if n_test_windows < 2:
+        raise NestedWalkforwardError("测试窗数必须 ≥2")
+    t = arr.size
+    initial_train = max(min_train_periods, int(round(t * train_frac)))
+    available = t - initial_train
+    if available < n_test_windows:
+        raise NestedWalkforwardError("样本不足：初始训练期 + 测试窗超出样本长度")
+    window_len = available // n_test_windows
+    if window_len < 1:
+        raise NestedWalkforwardError("测试窗过短（样本不足）")
+
+    windows: list[dict[str, Any]] = []
+    for i in range(n_test_windows):
+        test_start = initial_train + i * window_len
+        test_end = min(test_start + window_len, t)
+        train = arr[0:test_start]  # 扩展窗：测试前全部历史（无重叠）
+        if len(train) < min_train_periods:
+            raise NestedWalkforwardError(
+                f"训练样本不足: {len(train)} < {min_train_periods}（窗 {i}）"
+            )
+        train_metric = float(selector(train)) if selector is not None else float(train.mean())
+        test_metric = float(arr[test_start:test_end].mean())
+        windows.append(
+            {
+                "window": i,
+                "train_start": 0,
+                "train_end": int(test_start),
+                "test_start": int(test_start),
+                "test_end": int(test_end),
+                "train_metric": round(train_metric, 6),
+                "test_metric": round(test_metric, 6),
+            }
+        )
+    positive_test = [w for w in windows if w["test_metric"] > 0]
+    ratio = len(positive_test) / len(windows)
+    verdict = "PASS" if ratio >= 0.6 else "FAIL"
+    return {
+        "windows": windows,
+        "positive_test_ratio": round(ratio, 4),
+        "verdict": verdict,
+        "reason": "正收益测试窗比例" if verdict == "PASS" else "正收益测试窗比例不足 60%",
+    }

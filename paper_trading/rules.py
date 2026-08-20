@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from config import COMMISSION_MIN_YUAN, COMMISSION_RATE
+
 from .errors import ERR_UNKNOWN_INSTRUMENT, DomainError
 
 _TZ = ZoneInfo("Asia/Shanghai")
@@ -22,8 +24,8 @@ _TZ = ZoneInfo("Asia/Shanghai")
 class InstrumentRule:
     ts_code: str
     inst_type: str            # STOCK | ETF
-    commission_bps: int = 5
-    min_commission_fen: int = 500
+    commission_bps: int = int(COMMISSION_RATE * 10_000)   # 与 config 统一（万五）
+    min_commission_fen: int = int(COMMISSION_MIN_YUAN * 100)  # 最低 5 元
     sell_tax_bps: int = 10    # 股票 10bp；ETF 0
     other_fee_bps: int = 1
     slippage_bps: int = 10    # 股票 10bp；ETF 5bp
@@ -54,6 +56,44 @@ def default_rule(ts_code: str, inst_type: str | None = None) -> InstrumentRule:
         return InstrumentRule(ts_code=ts_code, inst_type="ETF",
                               sell_tax_bps=0, slippage_bps=5)
     return InstrumentRule(ts_code=ts_code, inst_type="STOCK")
+
+
+def peek_rule(db_path: str | Path, ts_code: str) -> InstrumentRule:
+    """Read an instrument rule without creating database state."""
+    db_path = Path(db_path)
+    import sqlite3
+
+    with sqlite3.connect(str(db_path), timeout=30) as conn:
+        row = conn.execute(
+            "SELECT ts_code, inst_type, commission_bps, min_commission_fen,"
+            " sell_tax_bps, other_fee_bps, slippage_bps, lot_size"
+            " FROM instrument_rules WHERE ts_code=?", (ts_code,),
+        ).fetchone()
+    return InstrumentRule(*row) if row else default_rule(ts_code)
+
+
+def require_rule(db_path: str | Path, ts_code: str) -> InstrumentRule:
+    """严格路径（v2 P1.2）：无规则行 → 显式失败，禁止默认推断/自动落库兜底。
+
+    订单/回测等需要「缺 instrument rule 返回明确失败」的路径必须调用本函数；
+    遗留自动创建路径（get_rule）仅保留给历史流程。
+    """
+    db_path = Path(db_path)
+    import sqlite3
+
+    with sqlite3.connect(str(db_path), timeout=30) as conn:
+        row = conn.execute(
+            "SELECT ts_code, inst_type, commission_bps, min_commission_fen,"
+            " sell_tax_bps, other_fee_bps, slippage_bps, lot_size"
+            " FROM instrument_rules WHERE ts_code=?", (ts_code,),
+        ).fetchone()
+    if row is None:
+        raise DomainError(
+            ERR_UNKNOWN_INSTRUMENT,
+            f"缺少 instrument 规则: {ts_code}（严格路径禁止默认值兜底）",
+            details={"ts_code": ts_code},
+        )
+    return InstrumentRule(*row)
 
 
 def get_rule(db_path: str | Path, ts_code: str) -> InstrumentRule:

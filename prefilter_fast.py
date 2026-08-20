@@ -2,6 +2,7 @@
 全市场扫描预筛（加速）
 ======================
 在逐只 detect 之前，用最近交易日量能/涨跌粗筛，砍掉明显不可能突破的票。
+upgrade system：向量化 groupby，避免纯 Python 逐票循环。
 """
 from __future__ import annotations
 
@@ -18,43 +19,52 @@ def volume_breakout_candidates(
     vol_ratio_min: float = 1.15,
     near_high_pct: float = 0.08,
 ) -> set[str]:
-    """返回「近 lookback 日有放量 或 接近区间高点」的代码集合。
-
-    - vol_ratio_min: 末日量 / 前段均量
-    - near_high_pct: 收盘距区间最高价不超过该比例
-    """
-    code_set = set(codes)
+    """返回「近 lookback 日有放量 或 接近区间高点」的代码集合。"""
+    code_set = {str(c) for c in codes}
     if daily is None or daily.empty or not code_set:
         return code_set
 
-    d = daily[daily["ts_code"].isin(code_set)].copy()
-    if d.empty:
+    need_cols = {"ts_code", "trade_date", "close", "high"}
+    if not need_cols.issubset(set(daily.columns)):
         return set()
-    d["vol"] = pd.to_numeric(d.get("vol", d.get("volume")), errors="coerce").fillna(0)
+    vol_col = "vol" if "vol" in daily.columns else ("volume" if "volume" in daily.columns else None)
+    if vol_col is None:
+        return set()
+
+    d = daily.loc[daily["ts_code"].isin(code_set), ["ts_code", "trade_date", "close", "high", vol_col]].copy()
+    d = d.rename(columns={vol_col: "vol"})
+    d["vol"] = pd.to_numeric(d["vol"], errors="coerce").fillna(0.0)
     d["close"] = pd.to_numeric(d["close"], errors="coerce")
     d["high"] = pd.to_numeric(d["high"], errors="coerce")
     d = d.dropna(subset=["close"])
     d = d.sort_values(["ts_code", "trade_date"])
+    d = d.groupby("ts_code", sort=False, group_keys=False).tail(lookback)
 
-    keep: set[str] = set()
-    for code, g in d.groupby("ts_code"):
-        g = g.tail(lookback)
-        if len(g) < 10:
-            continue
-        vols = g["vol"].values
-        closes = g["close"].values
-        highs = g["high"].values
-        last_v = float(vols[-1])
-        avg_v = float(vols[:-1].mean()) if len(vols) > 1 else 0.0
-        last_c = float(closes[-1])
-        hi = float(highs.max())
-        vol_ok = avg_v > 0 and last_v >= vol_ratio_min * avg_v
-        # 近 5 日任一日放量也算
-        if not vol_ok and len(vols) >= 6:
-            tail_avg = float(vols[:-5].mean()) if len(vols) > 5 else avg_v
-            if tail_avg > 0 and float(vols[-5:].max()) >= vol_ratio_min * tail_avg:
-                vol_ok = True
-        near_hi = hi > 0 and last_c >= hi * (1.0 - near_high_pct)
-        if vol_ok or near_hi:
-            keep.add(str(code))
-    return keep
+    # 样本不足剔除
+    cnt = d.groupby("ts_code")["close"].transform("size")
+    d = d.loc[cnt >= 10]
+    if d.empty:
+        return set()
+
+    g = d.groupby("ts_code", sort=False)
+    last = g.tail(1).set_index("ts_code")
+    sum_vol = g["vol"].sum()
+    n = g["vol"].size()
+    last_vol = last["vol"]
+    avg_prev = (sum_vol - last_vol) / (n - 1).clip(lower=1)
+    cond_vol = (avg_prev > 0) & (last_vol >= vol_ratio_min * avg_prev)
+
+    # 近 5 日最大量 vs 更早均量
+    d = d.copy()
+    d["_rev"] = g.cumcount(ascending=False)
+    max5 = d.loc[d["_rev"] < 5].groupby("ts_code")["vol"].max()
+    early_avg = d.loc[d["_rev"] >= 5].groupby("ts_code")["vol"].mean()
+    cond_r5 = (early_avg.reindex(last.index) > 0) & (
+        max5.reindex(last.index) >= vol_ratio_min * early_avg.reindex(last.index)
+    )
+
+    win_hi = g["high"].max()
+    cond_hi = (win_hi > 0) & (last["close"] >= win_hi.reindex(last.index) * (1.0 - near_high_pct))
+
+    mask = cond_vol.fillna(False) | cond_r5.fillna(False) | cond_hi.fillna(False)
+    return {str(x) for x in last.index[mask]}

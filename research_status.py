@@ -39,7 +39,11 @@ def main() -> int:
     print(f"研究模式: {plan['mode']}  — {plan['label']}")
     print(f"  IS : {plan['is_start']} ~ {plan['is_end']}  ({plan['is_n_dates']} 日)")
     print(f"  OOS: {plan['oos_start']} ~ {plan['oos_end']}  ({plan['oos_n_dates']} 日)")
-    print(f"  可声称 edge: {'是' if plan['can_claim_edge'] else '否（仅摸底）'}")
+    print(
+        "  数据可进行 edge 验证: "
+        f"{'是' if plan.get('data_ready_for_edge_validation') else '否'}"
+    )
+    print(f"  当前可声称 edge: {'是' if plan['can_claim_edge'] else '否（仍需净成本 OOS/WF/基线门禁）'}")
     if plan.get("wf_windows"):
         print(f"  WF 窗口数: {len(plan['wf_windows'])}")
         for i, w in enumerate(plan["wf_windows"], 1):

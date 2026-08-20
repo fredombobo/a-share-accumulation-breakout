@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime
@@ -21,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from .db import tx
 from .errors import DomainError
-from .rules import get_rule
+from .rules import InstrumentRule, get_rule
 
 _TZ = ZoneInfo("Asia/Shanghai")
 
@@ -69,6 +70,51 @@ def _is_limit_one_word(db_path: Path, ts_code: str, trade_date: str, side: str) 
     return bar["open"] == bar["high"] == bar["low"] and bar["close"] <= bar["open"]
 
 
+def estimate_fill(bar: dict[str, Any], side: str, qty: int,
+                  rule: InstrumentRule) -> dict[str, Any]:
+    """Pure deterministic fill estimate shared by review and execution."""
+    if bar["vol"] <= 0:
+        return {"reason": "ZERO_VOLUME", "fill_qty": 0}
+    one_word = bar["open"] == bar["high"] == bar["low"]
+    if one_word and ((side == "BUY" and bar["close"] >= bar["open"])
+                     or (side == "SELL" and bar["close"] <= bar["open"])):
+        return {"reason": f"LIMIT_ONE_WORD_{side}", "fill_qty": 0}
+
+    slippage = rule.slippage_bps / 10_000.0
+    ref_open = bar["open"]
+    fill_px = ref_open * (1 + slippage if side == "BUY" else 1 - slippage)
+    fill_px = max(bar["low"], min(bar["high"], fill_px))
+    # 参与率上限：daily.vol 单位是「手」（100 股/手），先 ×100 转股再取 5%，
+    # 再按交易单位向下取整（2026-08-16 修复：原实现把「手」当「股」，上限约 100 倍过严）
+    vol_shares = float(bar["vol"]) * 100.0
+    max_qty = int(vol_shares * 0.05 // rule.lot_size) * rule.lot_size
+    fill_qty = min(qty, max_qty)
+    if fill_qty < rule.lot_size:
+        return {"reason": "INSUFFICIENT_LIQUIDITY", "fill_qty": 0,
+                "max_qty": max_qty}
+
+    notional_fen = int(round(fill_px * fill_qty * 100))
+    commission_fen = max(
+        rule.min_commission_fen,
+        int(round(notional_fen * rule.commission_bps / 10_000)),
+    )
+    tax_fen = int(round(notional_fen * rule.sell_tax_bps / 10_000)) \
+        if side == "SELL" else 0
+    other_fee_fen = int(round(notional_fen * rule.other_fee_bps / 10_000))
+    return {
+        "reason": None,
+        "reference_open": ref_open,
+        "fill_price": fill_px,
+        "fill_price_micro": int(round(fill_px * 1_000_000)),
+        "fill_qty": fill_qty,
+        "max_qty": max_qty,
+        "notional_fen": notional_fen,
+        "commission_fen": commission_fen,
+        "tax_fen": tax_fen,
+        "other_fee_fen": other_fee_fen,
+    }
+
+
 def execute_fills(
     db_path: str | Path,
     trade_date: str,
@@ -110,53 +156,42 @@ def execute_fills(
                 zero_fill.append({"order_id": order_id, "ts_code": ts_code,
                                   "reason": "NO_QUOTE", "qty": qty})
                 continue
-            if bar["vol"] <= 0:
+            estimate = estimate_fill(bar, side, qty, rule)
+            if estimate["fill_qty"] == 0:
                 zero_fill.append({"order_id": order_id, "ts_code": ts_code,
-                                  "reason": "ZERO_VOLUME", "qty": qty})
+                                  "reason": estimate["reason"], "qty": qty,
+                                  **({"max_qty": estimate["max_qty"]}
+                                     if "max_qty" in estimate else {})})
                 continue
-            # 一字涨停买单 / 一字跌停卖单 → 零成交
-            if _is_limit_one_word(db_path, ts_code, trade_date, side):
-                zero_fill.append({"order_id": order_id, "ts_code": ts_code,
-                                  "reason": f"LIMIT_ONE_WORD_{side}", "qty": qty})
-                continue
-
-            # 基准价：开盘价 + 滑点（BUY 加、SELL 减），限在高低区间
-            slippage = rule.slippage_bps / 10_000.0
-            ref_open = bar["open"]
-            if side == "BUY":
-                fill_px = ref_open * (1 + slippage)
-            else:
-                fill_px = ref_open * (1 - slippage)
-            fill_px = max(bar["low"], min(bar["high"], fill_px))
-
-            # 最大成交量 = 当日成交量 × 5%，按整手向下取整
-            max_qty = int(bar["vol"] * 0.05 // rule.lot_size) * rule.lot_size
-            fill_qty = min(qty, max_qty)
-            if fill_qty < rule.lot_size:
-                # 成交量不足以成交一手 → 零成交
-                zero_fill.append({"order_id": order_id, "ts_code": ts_code,
-                                  "reason": "INSUFFICIENT_LIQUIDITY", "qty": qty,
-                                  "max_qty": max_qty})
-                continue
-
-            # 成交价微元
-            fill_price_micro = int(round(fill_px * 1_000_000))
-            # 费用（分）：佣金 + 税 + 其他
-            notional_fen = int(round(fill_px * fill_qty * 100))
-            commission = max(rule.min_commission_fen,
-                             int(round(notional_fen * rule.commission_bps / 10_000)))
-            tax = int(round(notional_fen * rule.sell_tax_bps / 10_000)) if side == "SELL" else 0
-            other = int(round(notional_fen * rule.other_fee_bps / 10_000))
+            ref_open = float(estimate["reference_open"])
+            fill_price_micro = int(estimate["fill_price_micro"])
+            fill_qty = int(estimate["fill_qty"])
+            notional_fen = int(estimate["notional_fen"])
+            commission = int(estimate["commission_fen"])
+            tax = int(estimate["tax_fen"])
+            other = int(estimate["other_fee_fen"])
 
             fill_id = _new_id("FILL")
             now = _now()
+            # P2.3 执行血缘：fee_breakdown / 版本 / 参与率 / quote 时点 / input hash
+            input_hash = f"{order_id}:{ts_code}:{trade_date}"
+            fee_breakdown = {
+                "commission_fen": commission,
+                "stamp_tax_fen": tax,
+                "other_fee_fen": other,
+                "slippage_fen": 0,
+            }
             # 1) 成交
             conn.execute(
                 "INSERT INTO pt_fill (fill_id, order_id, ref_open_price_micro,"
-                " fill_price_micro, qty, commission_fen, tax_fen, fill_model_version,"
-                " quote_revision, filled_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " fill_price_micro, qty, commission_fen, tax_fen, other_fee_fen,"
+                " fee_breakdown_json, fill_model_version, cost_version, participation_bps,"
+                " quote_available_at, input_hash, rule_version, quote_revision, filled_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (fill_id, order_id, int(round(ref_open * 1_000_000)), fill_price_micro,
-                 fill_qty, commission, tax, FILL_MODEL_VERSION, f"{ts_code}:{trade_date}", now),
+                 fill_qty, commission, tax, other, json.dumps(fee_breakdown, ensure_ascii=False),
+                 FILL_MODEL_VERSION, "legacy-v1", 500, "", input_hash, "v1",
+                 f"{ts_code}:{trade_date}", now),
             )
             # 2) 现金流水
             if side == "BUY":
