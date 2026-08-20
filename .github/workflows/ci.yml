@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ruff (full repo)
+        run: ruff check . --exclude web/frontend/node_modules
+
+      - name: Mypy (key modules)
+        run: |
+          mypy signals.py optimizer.py walkforward.py local_store.py config.py \
+            ab_screener/domain/costs.py ab_screener/domain/entry_definition.py \
+            ab_screener/domain/entry_definition_v2.py \
+            ab_screener/research/backtest_engine.py ab_screener/research/trusted_run.py \
+            paper_trading/rules.py paper_trading/engine.py backtest_custom.py
+
+      - name: Architecture boundaries
+        run: python scripts/check_architecture.py
+
+      - name: Pytest (offline suite)
+        run: pytest tests/ -q -k "not browser"
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/frontend/package-lock.json
+
+      - name: Install frontend deps
+        run: npm ci
+
+      - name: Type-check + build
+        run: npm run build

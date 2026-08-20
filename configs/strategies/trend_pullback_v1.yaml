@@ -1,0 +1,5 @@
+# 形态三：上升趋势回踩（v1）
+strategy_definition_id: trend_pullback_v1
+version: v1
+params:
+  ma20_touch_tolerance: 0.03

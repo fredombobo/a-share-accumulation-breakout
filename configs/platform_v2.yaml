@@ -1,0 +1,21 @@
+# v2.0 平台 feature flags（开发默认；发布默认在对应阶段验收后切换）
+# 契约：platform-contracts §1；解析器 ab_screener/application/platform_config.py
+# 硬门（不可被 flag 关闭）：资金/份额/T+1/不做空/数据时点/对账/LIVE_TRADING_ENABLED=false
+
+flags:
+  # PIT 双写验证通过后才切正式读
+  V2_PIT_READ_ENABLED: false
+  # 只比较旧/新执行核心（P2 前恒 true）
+  V2_EXECUTION_DUAL_RUN_ENABLED: true
+  # parity 通过后才允许新核心写纸面账本
+  V2_EXECUTION_WRITE_ENABLED: false
+  # 六形态插件 registry 完整后启用
+  V2_STRATEGY_REGISTRY_ENABLED: false
+  # 组合风控 observe→enforce（P5）
+  V2_RISK_ENFORCEMENT_ENABLED: false
+  # 自动 EOD DAG（P6）
+  DAILY_SCHEDULER_ENABLED: false
+  # v2 控制台（P7）
+  INSTITUTIONAL_CONSOLE_V2_ENABLED: false
+  # 硬断言：本项目永不真实下单
+  LIVE_TRADING_ENABLED: false

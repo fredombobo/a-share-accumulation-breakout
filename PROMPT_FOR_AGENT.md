@@ -36,9 +36,9 @@ python bootstrap.py --yes --no-browser
 
 ## 成功标准
 
-1. 终端出现 `BOOTSTRAP_OK url=http://127.0.0.1:8000/`
-2. `http://127.0.0.1:8000/api/health` 返回 JSON 且 status 正常
-3. 告诉我：打开 http://127.0.0.1:8000/ ，点「扫描」，约 5～15 分钟后看 **A 池**
+1. 终端出现 `BOOTSTRAP_OK url=http://127.0.0.1:8001/`
+2. `http://127.0.0.1:8001/api/health` 返回 JSON 且 status 正常
+3. 告诉我：打开 http://127.0.0.1:8001/ ，点「扫描」，约 5～15 分钟后看 **A 池**
 
 ## 约束
 
@@ -52,5 +52,5 @@ python bootstrap.py --yes --no-browser
 ## 更短版（一行给 Agent）
 
 ```text
-克隆 https://github.com/fredombobo/a-share-accumulation-breakout ，执行 python bootstrap.py --token <我的TUSHARE_TOKEN> --yes ，成功后打开 http://127.0.0.1:8000/ 并说明点「扫描」看 A 池。Token 勿泄露。
+克隆 https://github.com/fredombobo/a-share-accumulation-breakout ，执行 python bootstrap.py --token <我的TUSHARE_TOKEN> --yes ，成功后打开 http://127.0.0.1:8001/ 并说明点「扫描」看 A 池。Token 勿泄露。
 ```

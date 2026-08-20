@@ -1,0 +1,20 @@
+{
+  "box_max_amp": 0.26,
+  "box_max_days": 125,
+  "box_min_days": 20,
+  "breakout_chg_max": 0.095,
+  "breakout_chg_min": 0.02,
+  "breakout_vol_ratio": 1.6,
+  "exit_window": 10,
+  "name": "default-accumulation-breakout",
+  "notes": [],
+  "profile_id": "default",
+  "schema_version": 1,
+  "status": "active",
+  "stop_pct": 0.07,
+  "strong_reset": 3,
+  "top_n_trade": 20,
+  "top_n_watch": 30,
+  "version": "1.0.0",
+  "vol_ratio_min": 1.5
+}

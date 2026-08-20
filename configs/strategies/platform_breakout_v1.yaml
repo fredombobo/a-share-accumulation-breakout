@@ -1,0 +1,7 @@
+# 形态四：平台突破（v1）
+strategy_definition_id: platform_breakout_v1
+version: v1
+params:
+  platform_days: 15
+  max_amp: 0.12
+  vol_ratio: 1.5

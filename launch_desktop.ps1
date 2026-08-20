@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Continue'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
 $LogDir = Join-Path $Root 'runtime'
@@ -31,7 +31,8 @@ try {
   $ready = $false
   for ($i = 0; $i -lt 50; $i++) {
     try {
-      $r = Invoke-WebRequest 'http://127.0.0.1:3001/' -UseBasicParsing -TimeoutSec 2
+      # 单端口模式：后端 8001 自带前端，无需等待 :3001 dev 服务
+      $r = Invoke-WebRequest 'http://127.0.0.1:8001/api/health' -UseBasicParsing -TimeoutSec 2
       if ($r.StatusCode -eq 200) { $ready = $true; break }
     } catch { Start-Sleep -Milliseconds 400 }
   }
@@ -39,12 +40,12 @@ try {
   Write-Host ''
   if ($ready) {
     Write-Host '  Ready. Opening browser...' -ForegroundColor Green
-    Log 'frontend ready'
+    Log 'backend ready'
   } else {
-    Write-Host '  Frontend still starting, open browser anyway...' -ForegroundColor Yellow
-    Log 'frontend not ready'
+    Write-Host '  Backend still starting, open browser anyway...' -ForegroundColor Yellow
+    Log 'backend not ready'
   }
-  Start-Process 'http://127.0.0.1:3001/'
+  Start-Process 'http://127.0.0.1:8001/'
 
   Write-Host ''
   Write-Host ('  Log: ' + $LaunchLog) -ForegroundColor DarkGray

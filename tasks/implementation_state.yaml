@@ -1,0 +1,207 @@
+version: 1
+updated_at: "2026-08-18T08:30:00+08:00"
+program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
+overall_status: BLOCKED
+overall_note: >
+  Design frozen. Planning commit is V2-P0-BOOTSTRAP.
+  P0-P6 complete; P7.1 API routers 已交付（P7.2 前端拆分待续）;
+  P8 总验收待办. Do not claim PERSONAL_INSTITUTIONAL_READY.
+python_evidence_runtime: .venv312
+forbidden_python_as_sole_evidence: "3.14 / bare python"
+live_trading_enabled: false
+protected_user_docs:
+  - docs/STATUS.md
+  - docs/RESEARCH-ROADMAP.md
+ready_now:
+  - V2-P0.1-BASELINE
+  - V2-P0.4-CONTRACTS
+tasks:
+  NINE_POINT_CLOSED_LOOP:
+    status: complete
+    work_package: historical
+  WINDOWS_SCAN_PROGRESS_REPLACE:
+    status: complete
+    work_package: historical
+  V2-P0-BOOTSTRAP:
+    status: complete
+    work_package: WP00
+    assignee: integration-agent
+    note: planning commit only; no business code
+    completed_evidence:
+      - "v2 specs + plans + tasks DAG committed without STATUS/ROADMAP"
+  V2-P0.1-BASELINE:
+    status: complete
+    work_package: WP00
+    assignee: integration-agent
+    baseline_commit: null
+    started_at: "2026-08-17T19:40:00+08:00"
+    completed_evidence:
+      - "scripts/capture_v2_baseline.py + tests/test_v2_baseline_manifest.py 落地"
+      - "venv312（Python 3.12.10）权威证据环境创建；全量离线门禁 335 passed"
+      - "runtime/v2/baseline_manifest.json identity=2947fcb075fc221c（稳定可复算）"
+      - "requirements 补全 pyyaml/lark/joblib/scikit-learn/httpx（干净环境缺口修复）"
+      - "test_trusted_report 桩签名同步 include_delisted 新签名"
+      - "docs/ACCEPTANCE-V2-P0.md 验收记录（当前 BLOCKED=WORKTREE_DIRTY 属预期）"
+  V2-P0.4-CONTRACTS:
+    status: complete
+    work_package: WP00
+    assignee: integration-agent
+    baseline_commit: null
+    started_at: "2026-08-17T20:10:00+08:00"
+    completed_evidence:
+      - "ab_screener/domain/errors_v2.py 错误码注册表 + V2Error envelope（20 码冻结）"
+      - "ab_screener/application/platform_config.py + configs/platform_v2.yaml（resolved hash + 8 flags + LIVE 硬门）"
+      - "ab_screener/domain/readiness.py 七闸门判定（BLOCKED / ENGINEERING_READY_RESEARCH_BLOCKED / OK）"
+      - "ab_screener/data/migration_registry.py + schema_check.py + scripts/migrate_v2.py（--plan/--apply 副本专用）"
+      - "docs/API-CONTRACT-V2.md、docs/ERROR-CODES-V2.md、ADR-020/021、requirements-lock-py312.txt"
+      - "测试 3 文件 20 用例全绿（错误码/配置/迁移注册表）"
+  V2-P0.2-ENTRY-REGISTRY:
+    status: complete
+    work_package: WP10
+    assignee: integration-agent
+    started_at: "2026-08-17T20:40:00+08:00"
+    completed_evidence:
+      - "ab_screener/domain/entry_registry.py（解析/指纹/verify fail-closed）"
+      - "ab_screener/domain/entry_definition_v2.py（A_POOL_STRICT_NEXT_OPEN_V2 + V2_SEMANTIC_DELTAS）"
+      - "tests/test_entry_definition_v1_golden.py + tests/test_entry_definition_v2.py（10+8 用例）+ fixtures/entry_v1_golden.json"
+      - "消费者接入 registry 指纹：evidence/attribution/backtest_signals/trusted_run/backtest_engine 报告携带 entry_semantic_hash"
+      - "write_evidence_report 落盘前校验指纹；hash 漂移拒绝生成"
+      - "docs/ENTRY-DEFINITION-V2.md"
+  V2-P0.3-QUALITY-GATES:
+    status: complete
+    work_package: WP00
+    assignee: integration-agent
+    started_at: "2026-08-17T21:00:00+08:00"
+    completed_evidence:
+      - "生产代码 INSERT OR REPLACE 清零（paper_trading/cal.py、paper_trading/settlement.py、local_store.py、migration_registry.py）"
+      - "scripts/check_architecture.py 存量债务白名单（backend_app/scan_router 记 P5 债务）+ --strict"
+      - "scripts/quality_gate.ps1 一条命令跑 ruff/mypy/check_architecture/pytest/frontend_build"
+      - ".github/workflows/ci.yml 增 Architecture boundaries 步骤；mypy 范围纳入 entry_definition_v2"
+      - "test_architecture_boundaries 5/5 绿（含 quality_gate.ps1 存在性）"
+  V2-P1.1-PIT:
+    status: complete
+    work_package: WP20
+    assignee: integration-agent
+    started_at: "2026-08-18T00:40:00+08:00"
+    completed_evidence:
+      - "ab_screener/domain/data_point.py PIT 五元组（revision/available_at/source/content_hash，+08:00，fail-closed）"
+      - "ab_screener/data/pit_writer.py 追加写（单事务≤5万行）+ raw_ingest_manifests + append-only 触发器"
+      - "ab_screener/data/pit_repository.py read_asof(decision_at) 修订切换"
+      - "ab_screener/data/adapters/tushare_pit.py 仅复用根 tushare_init"
+      - "ab_screener/data/migration_intents/pit_history_v2.py 注册 v2:pit_history（migrate_v2.py 导入即注册）"
+      - "ab_screener/application/pit_backfill.py + scripts/backfill_pit_v2.py（checkpoint 断点续跑/preflight/coverage）"
+      - "docs/DATA-DICTIONARY-PIT-V2.md；离线测试 19 用例全绿（repository/writer/backfill_resume）"
+  V2-P1.2-UNIVERSE:
+    status: complete
+    work_package: WP20
+    assignee: integration-agent
+    started_at: "2026-08-18T01:20:00+08:00"
+    completed_evidence:
+      - "ab_screener/domain/instrument.py 证券分类（stock/index/etf/fund/bond/bse/other）+ 生命周期 [list_date, delist_date)"
+      - "ab_screener/data/instrument_repository.py（instrument_universe_rules 投影 upsert + PIT 历史 + universe_asof/require_instrument fail-closed）"
+      - "ab_screener/data/migration_intents/instrument_history_v2.py 注册 v2:instrument_rules（依赖 v2:pit_history）"
+      - "optimizer.research_universe(as_of=...) 按时点过滤，注册表为空/未迁移 fail-closed"
+      - "paper_trading/rules.py require_rule 严格路径（无规则显式失败，禁止默认兜底）"
+      - "tests/test_instrument_universe_asof.py + test_optimizer_asof_universe.py + fixtures/universe_lifecycle.csv；20 用例全绿"
+      - "表名避开 paper_trading.instrument_rules（成本规则）同名冲突"
+  V2-P1.3-CORP-ACTIONS:
+    status: complete
+    work_package: WP20
+    assignee: integration-agent
+    started_at: "2026-08-18T01:50:00+08:00"
+    completed_evidence:
+      - "ab_screener/data/migration_intents/corporate_actions_v2.py 注册 v2:corporate_actions（账本 + 状态投影分离）"
+      - "ab_screener/data/corporate_action_repository.py（append-only 账本/追加冲正/幂等入账/adj_factor_asof 复用 PIT）"
+      - "ab_screener/application/corporate_action_service.py（blocking_check 日结阻断，账本未迁移门禁不激活）"
+      - "ab_screener/application/data_quality.py（重复键/OHLC/负量额/覆盖率≥98%/持仓100%/源端比对；无 Token=INSUFFICIENT）"
+      - "paper_trading/settlement.py 日结前公司行为阻断；real_data_gate.py 集成 v2 数据质量（迁移后激活）"
+      - "tests/test_adjustment_asof.py + test_data_quality_v2.py；全量离线门禁绿"
+      - "migration_registry._ensure_intents 自完备（不再依赖导入顺序）"
+  V2-P1.4-INTELLIGENCE:
+    status: complete
+    work_package: WP20
+    assignee: integration-agent
+    started_at: "2026-08-18T02:20:00+08:00"
+    completed_evidence:
+      - "ab_screener/intelligence/{catalog,timeline,events,breadth,quality}.py（只读市场情报）"
+      - "ab_screener/data/intelligence_repository.py（snapshot_fingerprint 按 manifest 失效 + dataset_status）"
+      - "公司行为时间线携带 available_at（PIT）+ 状态投影；宽度/档案/来源状态"
+      - "tests/test_intelligence_catalog + test_market_breadth + test_event_timeline_pit；9 用例绿"
+      - "信息模块只读（测试断言无写入）；新闻/社交情绪不进入正式特征"
+  V2-P2-EXECUTION-CORE:
+    status: complete
+    work_package: WP10
+    assignee: integration-agent
+    started_at: "2026-08-18T03:00:00+08:00"
+    completed_evidence:
+      - "ab_screener/domain/execution/{models,fees,market_rules,fill_model,settlement_rules,dual_run}.py（整数分/微元账务，浮点输入拒绝）"
+      - "费用逐项复算（佣金最低值/印花税/其他费/滑点/tick/FIFO/T+1），误差零分"
+      - "参与率限量（默认5%）+ 整手取整 + 资金/持仓约束 + 负现金/超卖/重复成交拒绝"
+      - "costs.dual_run_observer 写路径切换门（P2.2 parity 前不切换）"
+      - "docs/EXECUTION-MODEL-V2.md；测试 17 用例全绿（core_v2 + money_exactness）"
+  V2-P2-LEDGER-PARITY:
+    status: complete
+    work_package: WP50
+    assignee: integration-agent
+    started_at: "2026-08-18T03:40:00+08:00"
+    completed_evidence:
+      - "migration_intents/execution_lineage_v2.py 注册 v2:execution_lineage（pt_fill 血缘列，与 paper M009 幂等对齐）"
+      - "paper_trading/migrations.py M009：fee_breakdown_json/cost_version/participation_bps/quote_available_at/input_hash/rule_version/other_fee_fen"
+      - "engine.execute_fills 落血缘字段；input_hash=order_id:ts_code:trade_date 确定可复现"
+      - "历史成交不重写；写路径仍 legacy-v1（dual-run 门）；现金流水不回滚"
+      - "tests/test_execution_lineage.py 4 用例；全量离线门禁绿"
+  V2-P3-RESEARCH-GOVERNANCE:
+    status: complete
+    work_package: WP30
+    assignee: integration-agent
+    started_at: "2026-08-18T04:20:00+08:00"
+    completed_evidence:
+      - "P3.1 实验 registry/trial ledger/产物仓库 + 迁移 v2:research_governance（核心字段不可变/失败取消拒绝同登记/产物哈希防篡改）"
+      - "P3.2 正式统计：cscv_pbo（论文口径 rank 1=最差）/deflated_sharpe（SR0=E[max]）/min_track_record/nested_walkforward（扩展窗无重叠，测试折只评一次）"
+      - "validation.v2_statistics_block + trusted_run 报告集成（样本不足=INSUFFICIENT 不伪造）"
+      - "P3.3 cost_stress（1×/2×/3×）+ capacity（ADV20/退出天数/账户规模档）"
+      - "P3.4 promotion_v2（ROBUST_PERSONAL_V2/STRICT_RESEARCH_V2 双口径，PASS 仅 CANDIDATE）+ artifact_manifest 篡改检测"
+      - "新增测试 46 用例（registration/trial_ledger/cscv/dsr/mintrl/nested_wf/stress/capacity/promotion/tamper/stats_block）"
+  V2-P4-STRATEGIES-SIGNALS:
+    status: complete
+    work_package: WP40
+    assignee: integration-agent
+    started_at: "2026-08-18T05:30:00+08:00"
+    completed_evidence:
+      - "P4.1: strategies 六插件契约 + regimes/defensive_overlay_v1 + 7 config yaml（9 用例）"
+      - "P4.2: ScanProfile 版本化（profile_id 跨版本稳定）+ scan_funnel（显式阶段/异常隔离/集合守恒）+ signal_pipeline（插件观察幂等落库）+ 独立 API routers（P7 挂载）+ 迁移 v2:scan_profiles（9 用例）"
+      - "P4.3: v2:signals 迁移 + 信号生命周期状态机（ENTERED 只由 fill）+ signal_outcomes（UNFILLABLE NULL 不填 0）（14 用例）"
+  V2-P5-RISK-CONSTRAINTS:
+    status: complete
+    work_package: WP50
+    assignee: integration-agent
+    started_at: "2026-08-18T07:00:00+08:00"
+    completed_evidence:
+      - "domain/risk: models(15 稳定拒绝码)/constraints(统一引擎, 卖出不被买入集中度误拦)/scenarios(指数/行业/相关/流动性/1x2x3x成本/停牌/连续跌停)/analytics(TWR/波动/Sharpe/回撤/VaR95/CVaR95/集中度, 证据不足 INSUFFICIENT)"
+      - "paper_trading/risk_adapter: pt DB → PortfolioState + evaluate_order_risk（Review/confirm 共用；observe 模式，先观察后 enforce）"
+      - "application/portfolio_risk + data/risk_repository + 迁移 v2:portfolio_risk（append-only 风险快照含行情/规则/配置版本）+ configs/risk/robust_personal_v2.yaml"
+      - "测试 29 用例（constraints/integration/metrics/snapshot_pit/scenarios）"
+  V2-P6-DAG-AUDIT-BACKUP:
+    status: complete
+    work_package: WP60
+    assignee: integration-agent
+    started_at: "2026-08-18T07:40:00+08:00"
+    completed_evidence:
+      - "P6.1: operations/dag（唯一 DAG 顺序/幂等键/scope）+ scheduler（attempt 保留/崩溃续跑/上游 FAIL 阻断）+ 租约（防并发）+ 迁移 v2:operations"
+      - "P6.2: audit_service（append-only hash chain + 敏感脱敏 + 每日签名锚定 AB_BACKUP_ROOT/audit-anchors）+ alerts（事件化幂等）"
+      - "P6.3: operations/backup（SQLite online backup + hash 校验 + 原子命名 + 保留≥7 份/24h/不删唯一备份）+ health 聚合"
+      - "P6.4: integrations/holdings_state 只读适配器（字段拆分/旧 synced_at 保守映射 unknown/stale/O 闸门不得 PASS）"
+      - "测试 19 用例（dag/audit_hash_chain/backup_restore/holdings_state）；scripts/soak_monitor、restore_runbook 待 P8 集成"
+  V2-P7-API-UI:
+    status: ready
+    work_package: WP70
+    assignee: integration-agent
+    note: "P7.1 后端 v2 routers 已交付（intelligence/strategies/risk/system/monitor + 既有 scan_profiles/signals 挂载 + OpenAPI 契约测试 3 用例）；P7.2 前端 API/类型与大页面、backend_app 深度拆分待后续"
+    started_at: "2026-08-18T08:20:00+08:00"
+    completed_evidence:
+      - "api/routers/{intelligence,strategies,risk,system,monitor}.py 独立 router（不直写 SQL 业务逻辑，薄封装已建 domain）"
+      - "app_factory.include_v2_routers 挂载全部 v2 routers（含既有 scan_profiles/signals）"
+      - "tests/test_openapi_contract_v2.py：v2 最小公共 API 存在性 + 重复 path=0 + tags（3 用例）"
+  V2-P8-FINAL-ACCEPTANCE:
+    status: blocked
+    work_package: WP80

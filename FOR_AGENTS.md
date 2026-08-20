@@ -32,19 +32,19 @@ python bootstrap.py --yes --no-browser
 1. Writes `.env` with the token (gitignored)
 2. `pip install -r requirements.txt`
 3. Incremental market sync into local SQLite (`runtime/`, gitignored)
-4. Starts FastAPI on **:8000** serving the built React UI (`web/frontend/dist`)
-5. Prints machine-readable: `BOOTSTRAP_OK url=http://127.0.0.1:8000/`
+4. Starts FastAPI on **:8001** serving the built React UI (`web/frontend/dist`)
+5. Prints machine-readable: `BOOTSTRAP_OK url=http://127.0.0.1:8001/`
 
 ## Success check
 
 ```bash
-curl -s http://127.0.0.1:8000/api/health
-curl -s http://127.0.0.1:8000/api/setup-status
+curl -s http://127.0.0.1:8001/api/health
+curl -s http://127.0.0.1:8001/api/setup-status
 ```
 
 ## User next click (not agent)
 
-Open `http://127.0.0.1:8000/` → button **扫描** → wait ~5–15 min → read **A 池**.
+Open `http://127.0.0.1:8001/` → button **扫描** → wait ~5–15 min → read **A 池**.
 
 ## Flags
 

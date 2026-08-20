@@ -1,6 +1,9 @@
-﻿# AB-Screener one-click start (backend :8000 + frontend :3001)
+# AB-Screener one-click start (backend :8001 + frontend :3001)
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$BackendPort = 8001
+$FrontendPort = 3001
+$BackendUrl = "http://127.0.0.1:$BackendPort"
 if (Test-Path 'C:\Python314\python.exe') { $Py = 'C:\Python314\python.exe' } else { $Py = 'python' }
 $Backend = Join-Path $Root 'web\backend_app.py'
 $Frontend = Join-Path $Root 'web\frontend'
@@ -8,28 +11,42 @@ $LogDir = Join-Path $Root 'runtime'
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $NpmCmd = $null
-foreach ($c in @('E:\Program Files\nodejs\npm.cmd','C:\Program Files\nodejs\npm.cmd', (Join-Path $env:ProgramFiles 'nodejs\npm.cmd'))) {
-  if ($c -and (Test-Path -LiteralPath $c)) { $NpmCmd = $c; break }
+foreach ($candidate in @('E:\Program Files\nodejs\npm.cmd','C:\Program Files\nodejs\npm.cmd', (Join-Path $env:ProgramFiles 'nodejs\npm.cmd'))) {
+  if ($candidate -and (Test-Path -LiteralPath $candidate)) { $NpmCmd = $candidate; break }
 }
 if (-not $NpmCmd) {
-  $n = Get-Command npm.cmd -ErrorAction SilentlyContinue
-  if ($n) { $NpmCmd = $n.Source }
+  $npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if ($npm) { $NpmCmd = $npm.Source }
 }
 
 function Test-Port([int]$Port) {
   try {
-    $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-    return ($null -ne $c)
+    $connection = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+    return ($null -ne $connection)
   } catch {
-    $pat = ':' + $Port + '.*LISTENING'
-    $out = netstat -ano 2>$null | Select-String $pat
-    return ($null -ne $out)
+    $pattern = ':' + $Port + '.*LISTENING'
+    $output = netstat -ano 2>$null | Select-String $pattern
+    return ($null -ne $output)
+  }
+}
+
+function Get-AbHealth {
+  try {
+    $health = Invoke-RestMethod "$BackendUrl/api/health" -TimeoutSec 2
+    if ($null -eq $health -or $health.status -ne 'ok') { return $null }
+    $names = @($health.PSObject.Properties.Name)
+    if ($names -contains 'scanner_engine') { return $health }
+    if (($names -contains 'build_version') -and $health.build_version) { return $health }
+    if ($names -contains 'guided_ui_enabled') { return $health }
+    return $null
+  } catch {
+    return $null
   }
 }
 
 Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-foreach ($k in @('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy')) {
-  Remove-Item ('Env:' + $k) -ErrorAction SilentlyContinue
+foreach ($key in @('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy')) {
+  Remove-Item ('Env:' + $key) -ErrorAction SilentlyContinue
 }
 
 if ($NpmCmd) {
@@ -44,57 +61,74 @@ Write-Host ('Root: ' + $Root)
 Write-Host ('Python: ' + $Py)
 Write-Host ('npm: ' + $NpmCmd)
 
-if (Test-Port 8000) {
-  Write-Host '[backend] already on :8000' -ForegroundColor Yellow
+$abHealth = Get-AbHealth
+if ($abHealth) {
+  Write-Host "[backend] AB Screener already on :$BackendPort" -ForegroundColor Yellow
 } else {
-  Write-Host '[backend] starting :8000 ...'
-  $blogOut = Join-Path $LogDir 'backend.out.log'
-  $blogErr = Join-Path $LogDir 'backend.err.log'
-  $bpid = Join-Path $LogDir 'backend.pid'
-  $p = Start-Process -FilePath $Py -ArgumentList $Backend -WorkingDirectory (Join-Path $Root 'web') -RedirectStandardOutput $blogOut -RedirectStandardError $blogErr -PassThru -WindowStyle Hidden
-  Set-Content -Path $bpid -Value $p.Id -Encoding ascii
-  Write-Host ('[backend] pid=' + $p.Id)
+  if (Test-Port $BackendPort) {
+    throw "Port $BackendPort is occupied by another service. AB Screener will not stop or replace it."
+  }
+  Write-Host "[backend] starting :$BackendPort ..."
+  $backendLogOut = Join-Path $LogDir 'backend.out.log'
+  $backendLogErr = Join-Path $LogDir 'backend.err.log'
+  $backendPid = Join-Path $LogDir 'backend.pid'
+  $env:AB_BACKEND_PORT = [string]$BackendPort
+  $process = Start-Process -FilePath $Py -ArgumentList $Backend -WorkingDirectory (Join-Path $Root 'web') -RedirectStandardOutput $backendLogOut -RedirectStandardError $backendLogErr -PassThru -WindowStyle Hidden
+  Set-Content -Path $backendPid -Value $process.Id -Encoding ascii
+  Write-Host ('[backend] pid=' + $process.Id)
 }
 
-if (Test-Port 3001) {
-  Write-Host '[frontend] already on :3001' -ForegroundColor Yellow
+if (Test-Port $FrontendPort) {
+  Write-Host "[frontend] already on :$FrontendPort" -ForegroundColor Yellow
 } else {
   if (-not $NpmCmd) { throw 'npm.cmd not found. Install Node.js first.' }
-  $nm = Join-Path $Frontend 'node_modules'
-  if (-not (Test-Path -LiteralPath $nm)) {
+  $nodeModules = Join-Path $Frontend 'node_modules'
+  if (-not (Test-Path -LiteralPath $nodeModules)) {
     Write-Host '[frontend] npm install ...'
     Push-Location $Frontend
     & $NpmCmd install
-    $code = $LASTEXITCODE
+    $exitCode = $LASTEXITCODE
     Pop-Location
-    if ($code -ne 0) { throw 'npm install failed' }
+    if ($exitCode -ne 0) { throw 'npm install failed' }
   }
-  Write-Host '[frontend] starting :3001 ...'
-  $flogOut = Join-Path $LogDir 'frontend.out.log'
-  $flogErr = Join-Path $LogDir 'frontend.err.log'
-  $fpid = Join-Path $LogDir 'frontend.pid'
-  $argList = '/c ""' + $NpmCmd + '" run dev -- --host 127.0.0.1 --port 3001"'
-  $p2 = Start-Process -FilePath 'cmd.exe' -ArgumentList $argList -WorkingDirectory $Frontend -RedirectStandardOutput $flogOut -RedirectStandardError $flogErr -PassThru -WindowStyle Hidden
-  Set-Content -Path $fpid -Value $p2.Id -Encoding ascii
-  Write-Host ('[frontend] pid=' + $p2.Id)
+  Write-Host "[frontend] starting :$FrontendPort ..."
+  $frontendLogOut = Join-Path $LogDir 'frontend.out.log'
+  $frontendLogErr = Join-Path $LogDir 'frontend.err.log'
+  $frontendPid = Join-Path $LogDir 'frontend.pid'
+  $env:AB_BACKEND_URL = $BackendUrl
+  $arguments = '/c ""' + $NpmCmd + '" run dev -- --host 127.0.0.1 --port ' + $FrontendPort + '"'
+  $frontendProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList $arguments -WorkingDirectory $Frontend -RedirectStandardOutput $frontendLogOut -RedirectStandardError $frontendLogErr -PassThru -WindowStyle Hidden
+  Set-Content -Path $frontendPid -Value $frontendProcess.Id -Encoding ascii
+  Write-Host ('[frontend] pid=' + $frontendProcess.Id)
 }
 
-$ok = $false
-for ($i = 0; $i -lt 40; $i++) {
-  try {
-    $h = Invoke-RestMethod 'http://127.0.0.1:8000/api/health' -TimeoutSec 2
-    if ($h.status -eq 'ok') { $ok = $true; break }
-  } catch {
-    Start-Sleep -Milliseconds 500
+$ready = $false
+for ($attempt = 0; $attempt -lt 40; $attempt++) {
+  if ($null -ne (Get-AbHealth)) {
+    $ready = $true
+    break
   }
+  Start-Sleep -Milliseconds 500
 }
-if ($ok) {
-  Write-Host '[health] ok' -ForegroundColor Green
+
+if ($ready) {
+  Write-Host '[health] AB Screener ok' -ForegroundColor Green
+  try {
+    $overview = Invoke-WebRequest "$BackendUrl/api/overview?pool=A" -UseBasicParsing -TimeoutSec 8
+    if ($overview.StatusCode -eq 200) {
+      Write-Host '[overview] ok' -ForegroundColor Green
+    } else {
+      Write-Host ('[overview] unexpected status ' + $overview.StatusCode) -ForegroundColor Yellow
+    }
+  } catch {
+    Write-Host ('[overview] FAIL: ' + $_.Exception.Message) -ForegroundColor Red
+  }
 } else {
-  Write-Host '[health] backend not ready - see runtime\backend.err.log' -ForegroundColor Yellow
+  Write-Host '[health] backend not ready - see runtime\backend.err.log' -ForegroundColor Red
 }
 
 Write-Host ''
-Write-Host 'UI:  http://127.0.0.1:3001/' -ForegroundColor Green
-Write-Host 'API: http://127.0.0.1:8000/api/health'
+Write-Host "UI:  http://127.0.0.1:$FrontendPort/" -ForegroundColor Green
+Write-Host "API: $BackendUrl/api/health"
+Write-Host 'AETF Alpha remains isolated on http://127.0.0.1:8000/'
 Write-Host 'Stop: .\stop_ui.ps1'

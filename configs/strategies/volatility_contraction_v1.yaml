@@ -1,0 +1,6 @@
+# 形态二：波动收缩 → 突破（v1）
+strategy_definition_id: volatility_contraction_v1
+version: v1
+params:
+  lookback: 20
+  vol_shrink_pct: 0.5

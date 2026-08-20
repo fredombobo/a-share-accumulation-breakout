@@ -1,0 +1,5 @@
+# 防守 overlay（v1）：只改变开仓许可，不产生买单
+overlay_id: defensive_overlay_v1
+version: v1
+params:
+  max_drawdown_before_block: 0.10

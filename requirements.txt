@@ -4,6 +4,7 @@
 # 依据 C:\Python314\python.exe 实测：pandas 2.3.3 / numpy 2.4.3 / matplotlib 3.10.8 /
 # openpyxl 3.1.5 / mplfinance 0.12.10b0 / requests 2.32.5。
 pandas~=2.3.0
+pyarrow~=23.0
 numpy~=2.4.0
 curl_cffi~=0.13
 tushare~=1.4
@@ -14,3 +15,7 @@ fastapi~=0.110
 uvicorn~=0.27
 pydantic~=2.0
 requests~=2.32.0
+pyyaml>=6.0     # logic_platform 配置
+lark>=1.1       # logic_platform DSL 解析器
+joblib>=1.3     # logic_platform 预测模型（sklearn 配套）
+scikit-learn>=1.5  # logic_platform 预测模型（HistGradientBoosting 等）
