@@ -37,10 +37,10 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
       tooltip: {
         formatter: (p: any) => {
           const d = p.data
-          const sign = d.net_wan >= 0 ? '+' : ''
-          return `<b>${d.name}</b><br/>净流入：${sign}${fmt(d.net_wan)}<br/>日期：${data.trade_date}`
+          const direction = d.net_wan >= 0 ? '净流入' : '净流出'
+          return `<div style="color:#f8fafc"><b style="color:#fff">${d.name}</b><br/>${direction}：${fmt(Math.abs(d.net_wan))}<br/>日期：${data.trade_date}</div>`
         },
-        textStyle: { color: c.text },
+        textStyle: { color: '#f8fafc' },
         backgroundColor: 'rgba(0,0,0,0.75)',
         borderColor: 'transparent',
       },

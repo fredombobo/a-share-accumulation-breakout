@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  ApiError,
   api,
   PaperCorporateAction,
   PaperDashboard,
@@ -7,7 +8,11 @@ import {
   PaperImportPreview,
   PaperOrder,
   PaperPosition,
+  ReleaseReadiness,
 } from '../api/client'
+import PaperGuided from '../components/paper/PaperGuided'
+import { useViewMode, ViewModeToggle } from '../components/guidance/BeginnerUi'
+import { IcoCheck, IcoShield, IcoWarn } from '../components/Icons'
 
 const fen2yuan = (fen: number | null | undefined) => (fen ?? 0) / 100
 const micro2yuan = (m: number | null | undefined) => (m ?? 0) / 1_000_000
@@ -20,6 +25,9 @@ const stateColor = (s: string) => {
 }
 const fmt = (n: number | null | undefined, d = 2) =>
   n == null ? '—' : n.toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d })
+
+const technicalError = (error: unknown) =>
+  error instanceof ApiError ? `Error: [${error.code}] ${error.message}` : String(error)
 
 const yuanInputToFen = (value: string) => {
   const match = value.trim().match(/^(0|[1-9]\d*)(?:\.(\d{0,2}))?$/)
@@ -38,6 +46,7 @@ const localTradeDate = () => {
 }
 
 export default function PaperTrading() {
+  const { mode: viewMode, setMode: setViewMode } = useViewMode('paper')
   const [tab, setTab] = useState<'dash' | 'orders' | 'fills' | 'import' | 'recon' | 'settings'>('dash')
   const [dash, setDash] = useState<PaperDashboard | null>(null)
   const [positions, setPositions] = useState<PaperPosition[]>([])
@@ -46,9 +55,11 @@ export default function PaperTrading() {
   const [recon, setRecon] = useState<Record<string, unknown>[]>([])
   const [actions, setActions] = useState<PaperCorporateAction[]>([])
   const [gates, setGates] = useState<Record<string, unknown> | null>(null)
+  const [release, setRelease] = useState<ReleaseReadiness | null>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
+  const [simulationDate, setSimulationDate] = useState('')
   // 创建账户
   const [cashInput, setCashInput] = useState('100000')
   // 买入草稿
@@ -63,7 +74,8 @@ export default function PaperTrading() {
 
   const refresh = useCallback(async () => {
     try {
-      const [d, p, o, f, r, a, g] = await Promise.all([
+      const [h, d, p, o, f, r, a, g, releaseEvidence] = await Promise.all([
+        api.health(),
         api.paperDashboard(),
         api.paperPositions(),
         api.paperOrders(),
@@ -71,6 +83,7 @@ export default function PaperTrading() {
         api.paperReconciliation(),
         api.paperCorporateActions(),
         api.paperGates(),
+        api.releaseReadiness(),
       ])
       setDash(d)
       setPositions(p.positions)
@@ -79,11 +92,14 @@ export default function PaperTrading() {
       setRecon(r.items)
       setActions(a.items)
       setGates(g)
+      setRelease(releaseEvidence)
+      if (h.guided_ui_enabled === false) setViewMode('advanced')
+      setSimulationDate((current) => current || String(h.as_of || localTradeDate()).replaceAll('-', ''))
       setErr('')
     } catch (e) {
-      setErr(String(e))
+      setErr(technicalError(e))
     }
-  }, [])
+  }, [setViewMode])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -94,23 +110,36 @@ export default function PaperTrading() {
       setMsg(okMsg)
       await refresh()
     } catch (e) {
-      setErr(String(e))
+      setErr(technicalError(e))
     } finally {
       setBusy(false)
     }
   }
 
+  if (viewMode === 'guided') {
+    return (
+      <PaperGuided
+        dashboard={dash}
+        positions={positions}
+        onChanged={refresh}
+        onAdvanced={() => setViewMode('advanced')}
+      />
+    )
+  }
+
   return (
     <div className="paper">
+      <ViewModeToggle mode="advanced" onChange={() => setViewMode('guided')} />
       <div className="paper-banner">
-        📋 纸面仿真交易 — 仅模拟，不会向券商下单 · LIVE_TRADING_DISABLED
+        <IcoShield size={14} style={{ marginRight: 6 }} />
+        纸面仿真交易 — 仅模拟，不会向券商下单 · LIVE_TRADING_DISABLED
       </div>
 
-      {err && <div className="err" style={{ color: '#dc2626', marginBottom: 8 }}>⚠️ {err}</div>}
-      {msg && <div style={{ color: '#16a34a', marginBottom: 8 }}>✅ {msg}</div>}
+      {err && <div className="err" style={{ color: 'var(--up-ink)', marginBottom: 8 }}><IcoWarn size={13} style={{ marginRight: 4 }} />{err}</div>}
+      {msg && <div style={{ color: 'var(--ok-ink)', marginBottom: 8 }}><IcoCheck size={13} style={{ marginRight: 4 }} />{msg}</div>}
 
       <div className="paper-tabs" role="tablist" aria-label="纸面交易工作台">
-        {([['dash', '📊 账户'], ['orders', '📝 订单'], ['fills', '💱 成交'], ['import', '📥 导入'], ['recon', '🔍 对账'], ['settings', '⚙️ 设置']] as const).map(([k, label]) => (
+        {([['dash', '账户'], ['orders', '订单'], ['fills', '成交'], ['import', '导入'], ['recon', '对账'], ['settings', '设置']] as const).map(([k, label]) => (
           <button key={k} type="button" role="tab" aria-selected={tab === k}
             className={tab === k ? 'active' : ''} onClick={() => setTab(k)}>
             {label}
@@ -183,15 +212,37 @@ export default function PaperTrading() {
 
       {tab === 'orders' && (
         <div>
+          <div className="paper-panel" style={{ marginBottom: 10 }}>
+            <label htmlFor="paperSimulationDate" style={{ fontWeight: 700 }}>
+              模拟成交日（开盘）
+            </label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+              <input
+                id="paperSimulationDate"
+                data-testid="paper-simulation-date"
+                value={simulationDate}
+                onChange={(event) => setSimulationDate(event.target.value.replaceAll('-', ''))}
+                placeholder="YYYYMMDD"
+                inputMode="numeric"
+                style={{ padding: 6, width: 130, borderRadius: 4, border: '1px solid #ccc' }}
+              />
+              <span style={{ color: '#64748b', fontSize: 13 }}>
+                历史手工演练会按该日真实开盘价撮合；必须是开市日且本地有行情，不代表 A 池信号。
+              </span>
+            </div>
+          </div>
           <div className="paper-panel paper-order-forms">
             <div>
               <b>买入草稿</b>
               <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                <input placeholder="代码如 000001.SZ" value={buyCode} onChange={(e) => setBuyCode(e.target.value)} style={{ padding: 6, width: 130, borderRadius: 4, border: '1px solid #ccc' }} />
-                <input placeholder="数量" value={buyQty} onChange={(e) => setBuyQty(e.target.value)} inputMode="numeric" style={{ padding: 6, width: 80, borderRadius: 4, border: '1px solid #ccc' }} />
-                <button disabled={busy} onClick={() => run(() => api.paperCreateDraft({ side: 'BUY', ts_code: buyCode.toUpperCase(), trade_date: localTradeDate(), qty: parseInt(buyQty) }), '买入草稿已创建')}
+                <input data-testid="paper-buy-code" placeholder="代码如 688105" value={buyCode} onChange={(e) => setBuyCode(e.target.value)} style={{ padding: 6, width: 130, borderRadius: 4, border: '1px solid #ccc' }} />
+                <input data-testid="paper-buy-qty" placeholder="数量" value={buyQty} onChange={(e) => setBuyQty(e.target.value)} inputMode="numeric" style={{ padding: 6, width: 80, borderRadius: 4, border: '1px solid #ccc' }} />
+                <button data-testid="paper-historical-buy" disabled={busy} onClick={() => run(() => api.paperCreateDraft({
+                  side: 'BUY', mode: 'MANUAL_HISTORY', ts_code: buyCode.toUpperCase(),
+                  execution_trade_date: simulationDate, qty: parseInt(buyQty),
+                }), '历史买入草稿已创建')}
                   style={{ padding: '6px 12px', borderRadius: 4, background: '#dc2626', color: '#fff', border: 'none', cursor: 'pointer' }}>
-                  创建买入
+                  创建历史买入
                 </button>
               </div>
             </div>
@@ -212,23 +263,25 @@ export default function PaperTrading() {
           <div className="paper-table-wrap">
           <table style={{ width: '100%', borderCollapse: 'collapse' }} className="paper-table">
             <thead><tr style={{ textAlign: 'left', color: '#6b7280' }}>
-              <th>ID</th><th>代码</th><th>方向</th><th>数量</th><th>状态</th><th>预留(元)</th><th>拒绝原因</th><th>操作</th>
+              <th>ID</th><th>来源</th><th>代码</th><th>方向</th><th>数量</th><th>拟成交日</th><th>状态</th><th>预留(元)</th><th>拒绝原因</th><th>操作</th>
             </tr></thead>
             <tbody>
-              {orders.length === 0 && <tr><td colSpan={8} style={{ color: '#9ca3af', padding: 12 }}>暂无订单</td></tr>}
+              {orders.length === 0 && <tr><td colSpan={10} style={{ color: '#9ca3af', padding: 12 }}>暂无订单</td></tr>}
               {orders.map((o) => (
                 <tr key={o.order_id}>
                   <td style={{ fontSize: 11 }}>{o.order_id.slice(0, 12)}</td>
+                  <td>{o.source === 'MANUAL_HISTORY' ? '历史手工' : (o.source || '信号')}</td>
                   <td>{o.ts_code}</td>
                   <td style={{ color: o.side === 'BUY' ? '#dc2626' : '#16a34a', fontWeight: 600 }}>{o.side}</td>
                   <td>{o.qty}</td>
+                  <td>{o.eligible_trade_date || '确认后计算'}</td>
                   <td style={{ color: stateColor(o.state), fontWeight: 600 }}>{o.state}</td>
                   <td>{fmt(fen2yuan(o.reserve_fen))}</td>
                   <td style={{ fontSize: 11, color: '#6b7280' }}>{o.reject_reason || ''}</td>
                   <td>
                     {o.state === 'DRAFT' && (
                       <button onClick={() => {
-                        if (window.confirm(`确认冻结订单 ${o.order_id.slice(0, 12)}？确认后不可修改，将在下一可交易日开盘仿真撮合。`)) {
+                        if (window.confirm(`确认冻结订单 ${o.order_id.slice(0, 12)}？确认后不可修改，将在 ${o.eligible_trade_date || '下一可交易日'} 开盘仿真撮合。`)) {
                           run(() => api.paperConfirmOrder(o.order_id), '订单已确认并完成预交易检查')
                         }
                       }}
@@ -253,12 +306,11 @@ export default function PaperTrading() {
           </table>
           </div>
 
-          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
-            <input id="cycleDate" defaultValue={localTradeDate()} style={{ padding: 6, width: 120, borderRadius: 4, border: '1px solid #ccc' }} aria-label="交易日" />
+          <div style={{ marginTop: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span style={{ color: '#64748b', fontSize: 13 }}>成交日：{simulationDate || '未选择'}</span>
             <button disabled={busy} onClick={() => {
-              const el = document.getElementById('cycleDate') as HTMLInputElement
-              if (window.confirm(`确认对 ${el.value} 执行日结撮合？`)) {
-                run(() => api.paperRunCycle(el.value), '日结完成')
+              if (window.confirm(`确认对 ${simulationDate} 执行日结撮合？`)) {
+                run(() => api.paperRunCycle(simulationDate), '日结完成')
               }
             }} style={{ padding: '6px 14px', borderRadius: 4, background: '#7c3aed', color: '#fff', border: 'none', cursor: 'pointer' }}>
               ▶ 手动补跑日结
@@ -398,6 +450,14 @@ export default function PaperTrading() {
           <section className="paper-panel">
             <h3>数据与质量门禁</h3>
             <p className="muted">真实数据门禁独立运行；失败不会被日常仿真静默视为通过。</p>
+            <div className={`paper-notice ${release?.ready ? 'ok' : 'warn'}`}>
+              <strong>{release?.ready ? '当前版本可以发布' : '当前版本不可发布'}</strong>
+              <span>
+                {release?.ready
+                  ? '代码、配置、数据库与 24 小时内真实数据门禁完全匹配。'
+                  : (release?.blockers?.map((item) => item.message).join('；') || '正在核对发布证据…')}
+              </span>
+            </div>
             <pre className="paper-json">{JSON.stringify(gates, null, 2)}</pre>
           </section>
 

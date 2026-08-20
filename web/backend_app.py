@@ -11,10 +11,12 @@
   GET  /api/stock/{ts_code}/flow → 个股+板块资金流趋势
   GET  /api/health
 
-启动：uvicorn backend_app:app --port 8000
+启动：设置 AB_BACKEND_PORT=8001 后运行 python backend_app.py
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import sys
@@ -36,10 +38,11 @@ for _p in (str(_BASE), str(_PARENT)):
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ab_screener.research.store import ResearchRunStore
 from build_version import build_version as _compute_build_version
 from local_store import LocalStore
 from scoring import (
@@ -50,18 +53,53 @@ from signals import detect_accumulation_breakout
 # 后端构建版本与启动时间：启动器据此检测「源码或前端产物更新」并自动重启
 _BUILD_VERSION = _compute_build_version()
 _STARTED_AT = datetime.now().isoformat(timespec="seconds")
+_INSTANCE_ID = uuid.uuid4().hex[:12]
 _LOGGER = logging.getLogger(__name__)
 
 if os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true":
     raise RuntimeError("LIVE_TRADING_ENABLED 必须保持 false；本项目不包含真实下单能力")
 
+# P0.4 契约接线（P8）：启动时只断言 schema 兼容（绝不自动 DDL），
+# 未应用迁移/checksum 漂移 → 拒绝启动（fail-closed）。
+from ab_screener.data.schema_check import assert_schema_compatible
+
+assert_schema_compatible(_PARENT / "runtime" / "stock_data.db")
+
 app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
+
+# P7.1 装配：v2 routers（与 legacy API 并存；重复 path 由 OpenAPI 测试断言为 0）。
+# 本文件已自带 legacy /api/scan 路由，故跳过 scan_router 避免重复 Operation ID。
+from ab_screener.api.app_factory import include_v2_routers
+
+include_v2_routers(app, include_scan_router=False)
+# 2026-08-16 整改：CORS 从 "*" 收敛为本机白名单（单端口 8001 + 开发前端 3001）。
+# 本服务只绑 127.0.0.1，但跨源读写在浏览器内即可完成——放开 "*" 等于让任意网页
+# 读取持仓/纸面账户并触发扫描。同源请求不需要 CORS，白名单只为 vite 开发代理服务。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://127.0.0.1:8001",
+        "http://localhost:8001",
+        "http://127.0.0.1:3001",
+        "http://localhost:3001",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _mount_logic_router() -> None:
+    """挂载 logic_platform 路由（延迟 import 防循环；失败仅告警不影响宿主）。"""
+    try:
+        from logic_platform.api.routes import router as _logic_router
+
+        app.include_router(_logic_router)
+        _LOGGER.info("logic_platform router 已挂载 /api/logic")
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("logic_platform router 挂载失败: %s", exc)
+
+
+_mount_logic_router()
 
 
 def _paper_enabled() -> bool:
@@ -81,6 +119,44 @@ async def paper_feature_gate(request: Request, call_next):
                                  "message": "纸面交易模块已关闭", "details": {},
                                  "retryable": False}},
         )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def local_only_guard(request: Request, call_next):
+    """防跨站：Host 须为本机主机名、写操作 Origin 须为本机主机名。
+
+    2026-08-16 整改（对应 CORS "*" 漏洞）：绑定 127.0.0.1 不能阻止用户浏览器里
+    的恶意网页向本服务发起请求（CSRF / DNS rebinding）。规则：
+      - Host 的主机名必须是 127.0.0.1 / localhost / ::1（端口不限——dev 前端
+        或本机其它工具端口都放行，外部域名 rebinding 一律拒绝）；
+      - 写方法（POST/PUT/PATCH/DELETE）若带 Origin，其主机名同样必须是本机；
+      - 不带 Origin 的写请求（curl / Agent 脚本）放行，保持 CLI 兼容。
+    """
+    import urllib.parse
+
+    def _hostname_of(raw: str) -> str:
+        try:
+            host = urllib.parse.urlparse(raw if "//" in raw else f"//{raw}").hostname
+            return (host or "").lower()
+        except (ValueError, AttributeError):
+            return ""
+
+    local_hostnames = {"127.0.0.1", "localhost", "::1"}
+    # starlette TestClient 默认 Host=testserver：仅测试放行（攻击者无法注册该域名做 rebinding）
+    local_hostnames.add("testserver")
+
+    host = request.headers.get("host") or ""
+    if host and _hostname_of(host) not in local_hostnames:
+        return JSONResponse(status_code=403, content={"detail": "仅允许本机访问"})
+
+    if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        origin = request.headers.get("origin") or request.headers.get("referer")
+        if origin and _hostname_of(origin) not in local_hostnames:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "跨站写请求被拒绝（仅允许本机来源）"},
+            )
     return await call_next(request)
 
 
@@ -155,6 +231,20 @@ def _log(task: dict, msg: str) -> None:
         task["log"] = task["log"][-200:]
 
 
+def _finish_persisted_scan_failure(
+    task_id: str,
+    error: str,
+    *,
+    db_path: str | Path | None = None,
+) -> bool:
+    """Move the durable scan job to FAILED without overriding a terminal state."""
+    from ab_screener.application.scan_jobs import finish_persisted_scan_failure
+
+    return finish_persisted_scan_failure(
+        task_id, error, db_path=db_path or (_PARENT / "runtime" / "stock_data.db")
+    )
+
+
 def _run_scan_worker(task_id: str, top: int, days: int) -> None:
     """后台线程：拉起「可杀」扫描子进程，轮询进度；取消时 taskkill 整树。
 
@@ -162,9 +252,9 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
     现改为独立进程 + 进度文件，cancel 可强制结束整棵进程树。
     """
     import json
-    import subprocess
     import time as _time
 
+    from ab_screener.application.scan_spawn import ScanChild, spawn_scan_runner
     from scan_runtime import (
         cancel_flag_check,
         clamp_progress,
@@ -208,6 +298,17 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             force_terminal(t, "cancelled", stage=stage, log_fn=_log, msg=msg)
             t["cancel_requested"] = True
             t["worker_pid"] = None
+        try:
+            from ab_screener.application.scan_jobs import CANCELLED, ScanJobStore
+
+            ScanJobStore(_store.db_path).finish(
+                task_id,
+                status=CANCELLED,
+                error_code="CANCELLED",
+                error_message=msg,
+            )
+        except Exception:  # noqa: BLE001
+            pass
         _prune_scan_tasks()
 
     def report(stage: str, progress: int, msg: str = "") -> None:
@@ -226,7 +327,7 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             if msg:
                 _log(t, msg)
 
-    def _kill_job(proc: subprocess.Popen | None) -> None:
+    def _kill_job(proc: ScanChild | None) -> None:
         try:
             cancel_path.write_text("1", encoding="utf-8")
         except OSError:
@@ -248,7 +349,7 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-    proc: subprocess.Popen | None = None
+    proc: ScanChild | None = None
     try:
         with _SCAN_LOCK:
             task["started_at"] = datetime.now().isoformat()
@@ -258,28 +359,14 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             _mark_cancelled(msg="启动前已取消")
             return
 
-        runner = _PARENT / "scan_job_runner.py"
-        cmd = [
-            sys.executable,
-            str(runner),
-            "--task-id", task_id,
-            "--top", str(top),
-            "--days", str(days),
-            "--progress", str(progress_path),
-            "--result", str(result_path),
-            "--cancel-file", str(cancel_path),
-        ]
-        # CREATE_NEW_PROCESS_GROUP 便于 Windows 整树结束
-        creationflags = 0
-        if os.name == "nt":
-            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-
-        proc = subprocess.Popen(
-            cmd,
-            cwd=str(_PARENT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
+        proc = spawn_scan_runner(
+            task_id=task_id,
+            top=top,
+            days=days,
+            progress=progress_path,
+            result=result_path,
+            cancel_file=cancel_path,
+            cwd=_PARENT,
         )
         with _SCAN_LOCK:
             t = _SCAN_TASKS.get(task_id)
@@ -339,29 +426,55 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             return
 
         if result.get("status") == "error" or (proc and proc.returncode not in (0, None) and not result):
+            error_message = str(result.get("error") or f"exit={proc.returncode if proc else '?'}")
             with _SCAN_LOCK:
                 t = _SCAN_TASKS.get(task_id)
                 if t:
                     force_terminal(
                         t, "error", stage="失败",
-                        error=str(result.get("error") or f"exit={proc.returncode if proc else '?'}"),
+                        error=error_message,
                         log_fn=_log, msg="scan subprocess error",
                     )
+            _finish_persisted_scan_failure(task_id, error_message, db_path=_store.db_path)
             return
 
         count_a = int(result.get("count_a") or result.get("count") or 0)
         count_b = int(result.get("count_b") or 0)
-        report(
-            "完成", 100,
-            f"A={count_a} B={count_b} 环境={(result.get('regime') or {}).get('label')} "
-            f"{result.get('elapsed_sec')}s",
-        )
+        report("固化审计", 99, "正在原子写入扫描结果与运行审计")
+        from ab_screener.application.scan_audit import complete_scan_run
+        from ab_screener.domain.profile import default_profile
+        from research_windows import recommend_research_plan
+
         with _SCAN_LOCK:
             t = _SCAN_TASKS.get(task_id)
             if t is None:
                 return
             if t.get("cancel_requested"):
                 force_terminal(t, "cancelled", stage="已取消", log_fn=_log, msg="完成写入前取消")
+                return
+            profile = default_profile()
+            completed = complete_scan_run(
+                _store.db_path,
+                run_id=task_id,
+                task_id=task_id,
+                as_of=str(result.get("latest_date") or ""),
+                days=days,
+                result=result if isinstance(result, dict) else {},
+                count_a=count_a,
+                count_b=count_b,
+                strategy_snapshot=profile.to_canonical_dict(),
+                config_hash=profile.config_hash(),
+                code_version=_BUILD_VERSION,
+                research_mode=recommend_research_plan().mode,
+            )
+            if not completed:
+                force_terminal(
+                    t,
+                    "cancelled",
+                    stage="已取消",
+                    log_fn=_log,
+                    msg="扫描审计落库前收到取消请求",
+                )
                 return
             t["status"] = "done"
             t["progress"] = 100
@@ -384,6 +497,12 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             # 新扫描完成：清除 overview 轻量缓存，避免展示旧数据
             _OVERVIEW_CACHE["key"] = None
             _OVERVIEW_CACHE["payload"] = None
+        report(
+            "完成",
+            100,
+            f"A={count_a} B={count_b} 环境={(result.get('regime') or {}).get('label')} "
+            f"{result.get('elapsed_sec')}s",
+        )
 
     except Exception as e:  # noqa: BLE001
         _kill_job(proc)
@@ -395,6 +514,16 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
                 force_terminal(t, "cancelled", stage="已取消", log_fn=_log, msg=f"异常中取消: {e}")
             else:
                 force_terminal(t, "error", stage="失败", error=str(e)[:500], log_fn=_log, msg=str(e)[:200])
+        try:
+            from ab_screener.application.scan_jobs import CANCELLED, FAILED, ScanJobStore
+
+            st = ScanJobStore(_PARENT / "runtime" / "stock_data.db")
+            if cancel_requested():
+                st.finish(task_id, status=CANCELLED, error_code="CANCELLED")
+            else:
+                st.finish(task_id, status=FAILED, error_code="ERROR", error_message=str(e)[:500])
+        except Exception:  # noqa: BLE001
+            pass
     finally:
         with _SCAN_LOCK:
             t = _SCAN_TASKS.get(task_id)
@@ -410,6 +539,7 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             if t is not None:
                 t["worker_pid"] = None
         _prune_scan_tasks()
+
 
 # ── 数据读取（SQLite） ──
 
@@ -581,15 +711,24 @@ def scan_status(task_id: str | None = None):
         if task_id:
             task = _SCAN_TASKS.get(task_id)
             if task is None:
-                raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+                task = None
+            else:
+                keys = ("id", "status", "stage", "progress", "cancel_requested", "result", "error", "worker_pid")
+                return {k: task.get(k) for k in keys}
+        elif _SCAN_TASKS:
+            # 返回最新内存任务
+            latest = max(_SCAN_TASKS.values(), key=lambda t: t.get("started_at") or "")
             keys = ("id", "status", "stage", "progress", "cancel_requested", "result", "error", "worker_pid")
-            return {k: task.get(k) for k in keys}
-        if not _SCAN_TASKS:
-            return {"status": "idle", "stage": "无任务", "progress": 0}
-        # 返回最新任务
-        latest = max(_SCAN_TASKS.values(), key=lambda t: t.get("started_at") or "")
-        keys = ("id", "status", "stage", "progress", "cancel_requested", "result", "error", "worker_pid")
-        return {k: latest.get(k) for k in keys}
+            return {k: latest.get(k) for k in keys}
+
+    # 服务重启后从持久任务表恢复查询语义。
+    from ab_screener.application.scan_jobs import ScanJobStore, to_api_status
+
+    store = ScanJobStore(_store.db_path)
+    job = store.get(task_id) if task_id else store.latest()
+    if task_id and not job:
+        raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
+    return to_api_status(job)
 
 
 @app.post("/api/scan/{task_id}/cancel")
@@ -605,22 +744,45 @@ def cancel_scan(task_id: str):
     with _SCAN_LOCK:
         task = _SCAN_TASKS.get(task_id)
         if task is None:
+            task = None
+        else:
+            if is_terminal(task.get("status")):
+                return {
+                    "status": task["status"],
+                    "stage": task.get("stage"),
+                    "task_id": task_id,
+                    "cancel_requested": bool(task.get("cancel_requested")),
+                }
+            ev = _SCAN_CANCEL_EVENTS.get(task_id)
+            if ev is None:
+                ev = threading.Event()
+                _SCAN_CANCEL_EVENTS[task_id] = ev
+            request_cancel(task, ev)
+            task["stage"] = "取消中…正在终止扫描进程"
+            worker_pid = task.get("worker_pid")
+            stage = task["stage"]
+
+    if task is None:
+        from ab_screener.application.scan_jobs import (
+            CANCELLED,
+            QUEUED,
+            ScanJobStore,
+            to_api_status,
+        )
+
+        store = ScanJobStore(_store.db_path)
+        persisted = store.get(task_id)
+        if not persisted:
             raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
-        if is_terminal(task.get("status")):
-            return {
-                "status": task["status"],
-                "stage": task.get("stage"),
-                "task_id": task_id,
-                "cancel_requested": bool(task.get("cancel_requested")),
-            }
-        ev = _SCAN_CANCEL_EVENTS.get(task_id)
-        if ev is None:
-            ev = threading.Event()
-            _SCAN_CANCEL_EVENTS[task_id] = ev
-        request_cancel(task, ev)
-        task["stage"] = "取消中…正在终止扫描进程"
-        worker_pid = task.get("worker_pid")
-        stage = task["stage"]
+        if persisted.get("status") in ("CANCELLED", "SUCCEEDED", "FAILED"):
+            return to_api_status(persisted)
+        store.request_cancel(task_id)
+        cancel_file = _PARENT / "runtime" / f"scan_{task_id}.cancel"
+        cancel_file.parent.mkdir(parents=True, exist_ok=True)
+        cancel_file.write_text("1", encoding="utf-8")
+        if persisted.get("status") == QUEUED:
+            store.finish(task_id, status=CANCELLED, error_code="CANCELLED")
+        return to_api_status(store.get(task_id))
 
     # 立刻写 cancel 文件 + 杀进程树（不等 worker 线程醒来）
     try:
@@ -641,6 +803,13 @@ def cancel_scan(task_id: str):
         prune=_prune_scan_tasks,
         log_fn=_log,
     )
+    # 同步持久任务取消标记
+    try:
+        from ab_screener.application.scan_jobs import ScanJobStore
+
+        ScanJobStore(_store.db_path).request_cancel(task_id)
+    except Exception:  # noqa: BLE001
+        pass
     return {
         "status": "cancelling",
         "stage": stage,
@@ -673,6 +842,28 @@ def _parse_pool_tier(reasons: str) -> tuple[str, str]:
     return "B", "unknown"
 
 
+@app.get("/api/scan/runs")
+def list_scan_runs(limit: int = 20):
+    """扫描回放列表（upgrade system）。"""
+    from ab_screener.data.scan_run_repository import list_scan_runs as _list_runs
+
+    return {"runs": _list_runs(_store.db_path, limit)}
+
+
+@app.get("/api/scan/runs/{run_id}")
+def get_scan_run(run_id: str):
+    """单次扫描运行 + 漏斗。"""
+    from ab_screener.data.scan_run_repository import ScanRunNotFound, ScanRunSchemaMissing
+    from ab_screener.data.scan_run_repository import get_scan_run as _get_run
+
+    try:
+        return _get_run(_store.db_path, run_id)
+    except ScanRunNotFound:
+        raise HTTPException(status_code=404, detail="run not found")
+    except ScanRunSchemaMissing as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+
+
 @app.post("/api/scan")
 def start_scan(req: ScanRequest):
     """触发异步扫描，立即返回 task_id。
@@ -680,6 +871,14 @@ def start_scan(req: ScanRequest):
     并发互斥：已有排队/运行中的扫描时返回 409，避免多线程×多进程把 CPU/内存打爆。
     """
     running = _running_task_id()
+    if not running:
+        try:
+            from ab_screener.application.scan_jobs import ScanJobStore
+
+            active = ScanJobStore(_store.db_path).latest_active()
+            running = str(active["task_id"]) if active else None
+        except Exception:  # noqa: BLE001
+            running = None
     if running:
         raise HTTPException(
             status_code=409,
@@ -688,9 +887,34 @@ def start_scan(req: ScanRequest):
     top = max(5, min(req.top, 50))
     days = max(30, min(req.days, 250))
     task_id = _new_task(top, days)
+    # upgrade system：持久任务用 upsert_running（禁止 INSERT OR REPLACE 覆盖终态）
+    try:
+        from ab_screener.application.scan_jobs import ScanJobStore
+
+        ScanJobStore(_store.db_path).upsert_running(task_id, top_n=top, days=days)
+    except Exception:  # noqa: BLE001
+        pass
     t = threading.Thread(target=_run_scan_worker, args=(task_id, top, days), daemon=True)
     t.start()
-    return {"status": "started", "task_id": task_id, "top": top, "days": days}
+    cfg_hash = None
+    try:
+        from ab_screener.domain.profile import default_profile
+
+        cfg_hash = default_profile().config_hash()
+    except Exception:  # noqa: BLE001
+        cfg_hash = None
+    as_of = _store.max_trade_date("daily")
+    return {
+        "status": "started",
+        "task_id": task_id,
+        "top": top,
+        "days": days,
+        "run_id": task_id,
+        "config_hash": cfg_hash,
+        "as_of": as_of,
+        "dataset_version": as_of,
+        "engine_path": "subprocess_v2",  # 子进程扫描 + 持久 job 双写
+    }
 
 
 @app.get("/api/health")
@@ -704,6 +928,23 @@ def health():
         reg = regime.to_dict()
     except Exception:  # noqa: BLE001
         reg = {"regime": "unknown", "label": "未知"}
+    # upgrade system 扩展字段（可选，保持兼容）
+    schema_ver = None
+    research_mode = None
+    worker_hb = None
+    try:
+        from ab_screener.data.scan_run_repository import active_scan_worker, schema_max_version
+
+        schema_ver = schema_max_version(_store.db_path)
+        worker_hb = active_scan_worker(_store.db_path)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from research_windows import recommend_research_plan
+
+        research_mode = recommend_research_plan().mode
+    except Exception:  # noqa: BLE001
+        research_mode = None
     return {
         "status": "ok",
         "time": datetime.now().isoformat(),
@@ -712,6 +953,17 @@ def health():
         "regime": reg,
         "build_version": _BUILD_VERSION,
         "started_at": _STARTED_AT,
+        "instance_id": _INSTANCE_ID if "_INSTANCE_ID" in globals() else None,
+        "schema_version": schema_ver,
+        "research_mode": research_mode,
+        # 实际执行路径：内存任务 + scan_job_runner 子进程 + scan_jobs 双写
+        "scanner_engine": os.environ.get("SCANNER_ENGINE", "subprocess_v2"),
+        "market_cache_mode": os.environ.get("MARKET_CACHE_MODE", "parquet"),
+        "scan_worker": worker_hb,
+        "live_trading_enabled": False,
+        "guided_ui_enabled": os.environ.get("GUIDED_UI_ENABLED", "true").lower()
+        not in {"0", "false", "no", "off"},
+        "pickle_read_enabled": False,
     }
 
 
@@ -742,7 +994,7 @@ def overview(pool: str = "A"):
             regime = detect_regime(store=_store).to_dict()
         except Exception:  # noqa: BLE001
             regime = {"regime": "neutral", "label": "中性"}
-        payload = {
+        payload: dict[str, object] = {
             "as_of": as_of,
             "count": 0,
             "pool": pool.upper(),
@@ -1001,50 +1253,57 @@ def paper_dashboard():
     from paper_trading.errors import ERR_UNKNOWN_ACCOUNT, DomainError
 
     try:
-        import sqlite3
+        from ab_screener.data.paper_query import load_dashboard_extras
 
         acct = get_account(_DB)
         eq = opening_equity(_DB)
-        with sqlite3.connect(str(_DB)) as conn:
-            curve_rows = conn.execute(
-                "SELECT trade_date, cash_fen, market_value_fen, total_asset_fen,"
-                " realized_pnl_fen, unrealized_pnl_fen, drawdown_fen "
-                "FROM pt_daily_snapshot WHERE account_id=1 ORDER BY trade_date DESC LIMIT 250"
-            ).fetchall()
-            unresolved = conn.execute(
-                "SELECT COUNT(*) FROM pt_reconciliation WHERE status IN ('OPEN','ESCALATED') "
-                "AND result!='OK'"
-            ).fetchone()[0]
-            reserves = conn.execute(
-                "SELECT COALESCE(SUM(reserve_fen),0), COALESCE(SUM(reserved_qty),0) "
-                "FROM pt_order WHERE account_id=1 AND state IN ('CONFIRMED','QUEUED')"
-            ).fetchone()
-        curve = [{"trade_date": row[0], "cash_fen": row[1],
-                  "market_value_fen": row[2], "total_asset_fen": row[3],
-                  "realized_pnl_fen": row[4], "unrealized_pnl_fen": row[5],
-                  "drawdown_fen": row[6]} for row in reversed(curve_rows)]
+        extras = load_dashboard_extras(_DB)
         return {
             "account": acct,
             "equity": eq,
-            "equity_curve": curve,
+            "equity_curve": extras["equity_curve"],
+            "guide": __import__(
+                "paper_trading.guidance", fromlist=["build_guide"]
+            ).build_guide(_DB),
             "risk": {
                 "gross_exposure_limit_pct": "80",
                 "cash_buffer_pct": "10",
                 "daily_buy_limit_pct": "20",
                 "single_instrument_limit_pct": "10",
-                "reserved_cash_fen": int(reserves[0]),
-                "reserved_sell_qty": int(reserves[1]),
+                "reserved_cash_fen": extras["reserved_cash_fen"],
+                "reserved_sell_qty": extras["reserved_sell_qty"],
             },
-            "unresolved_reconciliation_count": int(unresolved),
+            "unresolved_reconciliation_count": extras["unresolved_reconciliation_count"],
             "paper_notice": "纸面仿真，不会向券商下单",
         }
     except DomainError as e:
         if e.code == ERR_UNKNOWN_ACCOUNT:
-            return {"account": None, "equity": None,
+            from paper_trading.guidance import build_guide
+            return {"account": None, "equity": None, "guide": build_guide(_DB),
                     "paper_notice": "纸面仿真，不会向券商下单"}
         _paper_err(e)
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
+
+
+def _resolve_import_path(raw: str | None) -> str:
+    """纸面导入路径白名单（2026-08-16 整改：修复任意文件读取）。
+
+    仅允许 runtime/portfolio.json；拒绝绝对路径、.. 穿越与其它文件名。
+    """
+    if not raw:
+        return str(_PARENT / "runtime" / "portfolio.json")
+    try:
+        resolved = Path(raw).resolve()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="path 无效") from exc
+    runtime_dir = (_PARENT / "runtime").resolve()
+    if not resolved.is_relative_to(runtime_dir) or resolved.name != "portfolio.json":
+        raise HTTPException(
+            status_code=400,
+            detail="仅允许导入 runtime/portfolio.json",
+        )
+    return str(resolved)
 
 
 @app.post("/api/paper/import/preview")
@@ -1056,7 +1315,7 @@ def paper_import_preview(
     from paper_trading.account import preview_import
 
     try:
-        path = body.get("path") or str(_PARENT / "runtime" / "portfolio.json")
+        path = _resolve_import_path(body.get("path"))
         return _paper_write(
             idempotency_key, "paper.import.preview", body,
             lambda: preview_import(_DB, path),
@@ -1074,7 +1333,7 @@ def paper_import_commit(
     from paper_trading.account import commit_import
 
     try:
-        path = body.get("path") or str(_PARENT / "runtime" / "portfolio.json")
+        path = _resolve_import_path(body.get("path"))
         return _paper_write(
             idempotency_key, "paper.import.commit", body,
             lambda: commit_import(_DB, path, as_of_date=body.get("as_of_date")),
@@ -1107,22 +1366,17 @@ def paper_gates_status():
 
 
 def _latest_gate_status() -> dict:
-    import json
-    import sqlite3
+    from ab_screener.data.paper_query import latest_gate_status
 
-    try:
-        with sqlite3.connect(str(_DB)) as conn:
-            row = conn.execute(
-                "SELECT passed, data_version, issues_json, generated_at, report_sha256 "
-                "FROM pt_gate_report ORDER BY report_id DESC LIMIT 1"
-            ).fetchone()
-        if not row:
-            return {"status": "NOT_RUN", "note": "尚无真实数据门禁报告"}
-        return {"status": "PASS" if row[0] else "FAIL", "data_version": row[1],
-                "issues": json.loads(row[2]), "generated_at": row[3],
-                "report_sha256": row[4]}
-    except Exception as exc:  # noqa: BLE001
-        return {"status": "ERROR", "note": str(exc)[:160]}
+    return latest_gate_status(_DB)
+
+
+@app.get("/api/release/readiness")
+def release_readiness():
+    """当前代码、配置、数据库与 24 小时真实门禁的联合发布判定。"""
+    from ab_screener.application.release_evidence import build_release_evidence
+
+    return build_release_evidence(_BASE, _DB)
 
 
 @app.get("/api/paper/orders")
@@ -1136,17 +1390,61 @@ def paper_orders(state: str | None = None, ts_code: str | None = None, limit: in
         _paper_err(e)
 
 
+@app.get("/api/paper/trading-calendar")
+def paper_trading_calendar(start: str, end: str):
+    """本地交易日历与账本允许日期边界。"""
+    from paper_trading.guidance import trading_calendar
+
+    try:
+        return trading_calendar(_DB, start=start, end=end)
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
+@app.post("/api/paper/orders/review")
+def paper_review_order(body: dict):
+    """只读订单预览；不需要幂等键且不会创建业务记录。"""
+    from paper_trading.guidance import review_order
+
+    try:
+        return review_order(
+            _DB,
+            scope=body.get("scope") or "ACCOUNT",
+            side=body.get("side") or "BUY",
+            mode=body.get("mode") or "MANUAL_HISTORY",
+            ts_code=body.get("ts_code") or "",
+            qty=int(body.get("qty") or 0),
+            execution_trade_date=body.get("execution_trade_date") or "",
+        )
+    except Exception as e:  # noqa: BLE001
+        _paper_err(e)
+
+
 @app.post("/api/paper/orders/drafts")
 def paper_create_draft(
     body: dict,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     """创建草稿：{side:'BUY', ts_code, trade_date, suggested_pos_pct?, qty?} 或 {side:'SELL', ts_code, qty}。"""
-    from paper_trading.orders import create_buy_draft, create_sell_draft
+    from paper_trading.orders import (
+        create_buy_draft,
+        create_historical_buy_draft,
+        create_sell_draft,
+    )
 
     try:
         side = (body.get("side") or "BUY").upper()
         if side == "BUY":
+            if str(body.get("mode") or "").upper() == "MANUAL_HISTORY":
+                return _paper_write(
+                    idempotency_key, "paper.order.draft.buy.historical", body,
+                    lambda: create_historical_buy_draft(
+                        _DB,
+                        ts_code=body["ts_code"],
+                        execution_trade_date=body["execution_trade_date"],
+                        qty=int(body["qty"]),
+                    ),
+                )
             return _paper_write(
                 idempotency_key, "paper.order.draft.buy", body,
                 lambda: create_buy_draft(
@@ -1231,21 +1529,10 @@ def paper_run_cycle(
 @app.get("/api/paper/cycles/{trade_date}")
 def paper_cycle_status(trade_date: str):
     """查看日结状态。"""
-    import sqlite3
+    from ab_screener.data.paper_query import cycle_status
 
     try:
-        conn = sqlite3.connect(str(_DB))
-        row = conn.execute(
-            "SELECT cycle_id, run_date, phase, retry_count, data_version,"
-            " blocked_reason, started_at, finished_at FROM pt_cycle WHERE run_date=?",
-            (trade_date,),
-        ).fetchone()
-        conn.close()
-        if not row:
-            return {"trade_date": trade_date, "phase": None, "blocked_reason": "未运行"}
-        return {"trade_date": trade_date, "phase": row[2], "cycle_id": row[0],
-                "retry_count": row[3], "data_version": row[4], "blocked_reason": row[5],
-                "started_at": row[6], "finished_at": row[7]}
+        return cycle_status(_DB, trade_date)
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -1288,53 +1575,20 @@ def paper_apply_corporate_action(
 @app.get("/api/paper/reconciliation")
 def paper_reconciliation(trade_date: str | None = None):
     """查询对账记录及差异。"""
-    import sqlite3
+    from ab_screener.data.paper_query import list_reconciliations
 
     try:
-        conn = sqlite3.connect(str(_DB))
-        if trade_date:
-            rows = conn.execute(
-                "SELECT rec_id, run_date, result, diff_json, severity, status, checked_at"
-                " FROM pt_reconciliation WHERE run_date=? ORDER BY rec_id DESC LIMIT 20",
-                (trade_date,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT rec_id, run_date, result, diff_json, severity, status, checked_at"
-                " FROM pt_reconciliation ORDER BY rec_id DESC LIMIT 20"
-            ).fetchall()
-        conn.close()
-        return {"items": [
-            {"rec_id": r[0], "run_date": r[1], "result": r[2], "diff_json": r[3],
-             "severity": r[4], "status": r[5], "checked_at": r[6]}
-            for r in rows
-        ]}
+        return {"items": list_reconciliations(_DB, trade_date)}
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
 
 @app.get("/api/paper/corporate-actions")
 def paper_corporate_actions(status: str | None = None, limit: int = 50):
-    import sqlite3
+    from ab_screener.data.paper_query import list_corporate_actions
 
     try:
-        sql = ("SELECT action_id, ts_code, ex_date, kind, amount_fen, ratio, note, status,"
-               " applied_at, adjustment_ref FROM pt_corporate_action WHERE 1=1")
-        params: list = []
-        if status:
-            sql += " AND status=?"
-            params.append(status.upper())
-        sql += " ORDER BY ex_date DESC, action_id DESC LIMIT ?"
-        params.append(max(1, min(limit, 500)))
-        with sqlite3.connect(str(_DB)) as conn:
-            rows = conn.execute(sql, params).fetchall()
-        return {"items": [
-            {"action_id": row[0], "ts_code": row[1], "ex_date": row[2],
-             "kind": row[3], "amount_fen": row[4], "ratio": row[5],
-             "note": row[6], "status": row[7], "applied_at": row[8],
-             "adjustment_ref": row[9]}
-            for row in rows
-        ]}
+        return {"items": list_corporate_actions(_DB, status=status, limit=limit)}
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -1342,23 +1596,10 @@ def paper_corporate_actions(status: str | None = None, limit: int = 50):
 @app.get("/api/paper/fills")
 def paper_fills(limit: int = 50):
     """查询成交记录。"""
-    import sqlite3
+    from ab_screener.data.paper_query import list_fills
 
     try:
-        conn = sqlite3.connect(str(_DB))
-        rows = conn.execute(
-            "SELECT fill_id, order_id, ref_open_price_micro, fill_price_micro, qty,"
-            " commission_fen, tax_fen, fill_model_version, quote_revision, filled_at"
-            " FROM pt_fill ORDER BY filled_at DESC LIMIT ?", (limit,),
-        ).fetchall()
-        conn.close()
-        return {"fills": [
-            {"fill_id": r[0], "order_id": r[1], "ref_open_price_micro": r[2],
-             "fill_price_micro": r[3], "qty": r[4], "commission_fen": r[5],
-             "tax_fen": r[6], "fill_model_version": r[7], "quote_revision": r[8],
-             "filled_at": r[9]}
-            for r in rows
-        ]}
+        return {"fills": list_fills(_DB, limit=limit)}
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 
@@ -1474,7 +1715,7 @@ def sector_flow(days: int = 10):
 
 
 @app.get("/api/money-heatmap")
-def money_heatmap(top: int = 24):
+def money_heatmap(top: int = 0):
     """最新交易日资金热力图（treemap 数据）。
 
     按行业聚合最新交易日 net_mf_amount（万元），返回：
@@ -1490,16 +1731,17 @@ def money_heatmap(top: int = 24):
     if not dates:
         raise HTTPException(status_code=404, detail="无资金流数据")
     trade_date = dates[-1]
-    row = pivot.iloc[-1].sort_values(ascending=False)
-    top = row.head(top)
+    row = pd.to_numeric(pd.Series(pivot.iloc[-1]), errors="coerce").dropna()
+    nonzero = row[row != 0]
+    ordered = nonzero.reindex(nonzero.abs().sort_values(ascending=False).index)
+    selected = ordered if top <= 0 else ordered.head(top)
     items = [
         {
             "name": str(k),
             "value": int(abs(round(float(v), 0))),   # treemap 面积用绝对值
             "net_wan": int(round(float(v), 0)),      # 保留正负号
         }
-        for k, v in top.items()
-        if v != 0
+        for k, v in selected.items()
     ]
     total_wan = int(round(float(row.sum())))
     return {"trade_date": trade_date, "total_wan": total_wan, "items": items}
@@ -1608,7 +1850,7 @@ def setup_status():
         "has_market_data": bool(latest_daily),
         "scan_result_rows": scan_n,
         "ui_mode": "single_port" if _HAS_DIST else "dev_split",
-        "open_url": "http://127.0.0.1:8000/" if _HAS_DIST else "http://127.0.0.1:3001/",
+        "open_url": f"http://127.0.0.1:{_backend_port()}/" if _HAS_DIST else "http://127.0.0.1:3001/",
         "tips": [
             "没有 Token：编辑项目根目录 .env 填入 TUSHARE_TOKEN",
             "没有行情：双击「一键启动.bat」会自动同步，或点界面「扫描」",
@@ -1621,6 +1863,27 @@ def setup_status():
 _LAB_TASKS: dict[str, dict] = {}
 _LAB_LOCK = threading.Lock()
 _LAB_TASKS_MAX = 10
+
+_LAB_STORE = ResearchRunStore(_store.db_path)
+
+
+def _recover_orphaned_lab_runs(process_name: str | None = None) -> int:
+    """Recover only in the web process, never in spawned optimizer workers.
+
+    On Windows a ProcessPool worker imports this module again.  Running recovery
+    there would quarantine the parent web process's active Lab row and make the
+    parent mistake that interruption for a user cancellation.
+    """
+    if process_name is None:
+        from multiprocessing import current_process
+
+        process_name = current_process().name
+    if process_name != "MainProcess":
+        return 0
+    return _LAB_STORE.mark_orphaned_interrupted()
+
+
+_recover_orphaned_lab_runs()
 
 
 class LabOptimizeRequest(BaseModel):
@@ -1641,13 +1904,48 @@ class LabOptimizeRequest(BaseModel):
     strong_reset: int | None = None
     exit_window: int | None = None
     stop_pct: float | None = None
+    force: bool = False
 
 
 def _lab_running() -> str | None:
-    for tid, t in _LAB_TASKS.items():
-        if t.get("status") in ("running", "pending", "cancelling"):
-            return tid
-    return None
+    active = _LAB_STORE.latest_active()
+    return str(active["research_run_id"]) if active is not None else None
+
+
+def _select_lab_task(tasks: dict[str, dict]) -> tuple[str, dict] | None:
+    """Select the task a returning Lab page should restore.
+
+    An active task always wins over a newer terminal task.  This keeps a route
+    remount from hiding work that is still in progress.
+    """
+    if not tasks:
+        return None
+    active_states = {"pending", "running", "cancelling"}
+    active = [(task_id, task) for task_id, task in tasks.items()
+              if task.get("status") in active_states]
+    candidates = active or list(tasks.items())
+    return max(candidates, key=lambda item: item[1].get("started_at") or "")
+
+
+def _lab_public_record(record: dict) -> dict:
+    raw_request = record.get("request")
+    request_data: dict = raw_request if isinstance(raw_request, dict) else {}
+    return {
+        "task_id": record.get("research_run_id"),
+        "research_run_id": record.get("research_run_id"),
+        "status": record.get("status") or "idle",
+        "phase": record.get("phase"),
+        "progress": int(record.get("progress") or 0),
+        "message": record.get("message"),
+        "error": record.get("message") if record.get("status") == "error" else None,
+        "result": record.get("result"),
+        "strategy": record.get("strategy"),
+        "windows": request_data.get("_windows"),
+        "verdict": record.get("verdict"),
+        "candidate_eligible": bool(record.get("candidate_eligible")),
+        "started_at": record.get("started_at"),
+        "finished_at": record.get("finished_at"),
+    }
 
 
 def _resolve_lab_windows(req: LabOptimizeRequest) -> dict:
@@ -1664,9 +1962,12 @@ def _resolve_lab_windows(req: LabOptimizeRequest) -> dict:
             "oos_end": plan.oos_end,
             "mode": plan.mode,
             "can_claim_edge": plan.can_claim_edge,
+            "data_ready_for_edge_validation": plan.data_ready_for_edge_validation,
             "label": plan.label,
             "notes": plan.notes,
             "n_dates": plan.n_dates,
+            "wf_windows": plan.to_dict().get("wf_windows", []),
+            "automatic_window": True,
         }
     return {
         "is_start": req.is_start,
@@ -1678,126 +1979,120 @@ def _resolve_lab_windows(req: LabOptimizeRequest) -> dict:
         "label": "手动窗口",
         "notes": ["手动指定窗口，请自行确认无未来函数与覆盖充足"],
         "n_dates": plan.n_dates,
+        "wf_windows": [],
+        "automatic_window": False,
     }
 
 
 def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> None:
-    from scan_runtime import clamp_progress, force_terminal, is_terminal
-    from walkforward import run_is_oos  # 延迟导入避免启动耦合
+    from ab_screener.research.trusted_run import execute_trusted_research
+    from optimizer import ResearchCancelled
 
-    def prog(msg: str, pct: int) -> None:
-        t = _LAB_TASKS.get(task_id)
-        if not t:
-            return
-        if t.get("status") == "cancelled" or t.get("cancel_requested"):
-            raise RuntimeError("用户取消")
-        t["progress"] = clamp_progress(pct)
-        t["message"] = msg
+    stored = _LAB_STORE.get(task_id) or {}
+    request_data = dict(stored.get("request") or {})
+    request_data.pop("_windows", None)
+    request_data.pop("force", None)
+    checkpoint = stored.get("checkpoint") or {}
+
+    def phase(phase_name: str, pct: int, message: str, state: dict) -> None:
+        if _LAB_STORE.is_cancel_requested(task_id):
+            raise ResearchCancelled("用户取消")
+        task = _LAB_TASKS.get(task_id)
+        if task is None:
+            raise RuntimeError("任务状态丢失")
+        task.update({"status": "running", "phase": phase_name, "progress": pct, "message": message})
+        _LAB_STORE.update(
+            task_id, status="running", phase=phase_name, progress=pct,
+            message=message, checkpoint=state,
+        )
 
     try:
-        t = _LAB_TASKS.get(task_id)
-        if t:
-            if t.get("status") == "cancelled" or t.get("cancel_requested"):
-                return
-            t["status"] = "running"
-            t["windows"] = windows
-        if windows.get("mode") == "insufficient":
-            raise RuntimeError(
-                "日线覆盖不足，无法优化。请更新 TUSHARE_TOKEN 后执行 python sync_history.py"
-            )
-        # 采样上限硬封顶，防 OOM
-        max_codes = max(20, min(int(req.max_codes or 200), 4500))
-        step = max(1, min(int(req.step or 10), 60))
-        single = None
-        grid = req.grid
-        if (req.mode or "grid").lower() == "single":
-            if None in (req.vol_ratio_min, req.strong_reset, req.exit_window, req.stop_pct):
-                raise RuntimeError("单组试跑需要填写：量比 / 清零 / 出场窗 / 止损")
-            v_ratio = req.vol_ratio_min
-            s_reset = req.strong_reset
-            e_window = req.exit_window
-            s_pct = req.stop_pct
-            if v_ratio is None or s_reset is None or e_window is None or s_pct is None:
-                raise RuntimeError("单组试跑参数不完整")
-            single = {
-                "vol_ratio_min": float(v_ratio),
-                "strong_reset": int(s_reset),
-                "exit_window": int(e_window),
-                "stop_pct": float(s_pct),
-            }
-            grid = None
-        elif grid:
-            allowed = ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
-            clean = {}
-            for k in allowed:
-                vals = grid.get(k) if isinstance(grid, dict) else None
-                if isinstance(vals, list) and vals:
-                    # 每档最多 8 个值，防组合爆炸
-                    clean[k] = list(vals)[:8]
-            grid = clean or None
-            if grid:
-                n = 1
-                for v in grid.values():
-                    n *= max(1, len(v))
-                if n > 120:
-                    raise RuntimeError(f"网格组合过多({n}>120)，请减少勾选档位")
-
-        r = run_is_oos(
-            strategy=req.strategy,
-            step=step,
-            max_codes=max_codes,
-            top_n=3,
-            progress_cb=prog,
-            is_start=windows["is_start"],
-            is_end=windows["is_end"],
-            oos_start=windows["oos_start"],
-            oos_end=windows["oos_end"],
-            grid=grid,
-            single=single,
+        task = _LAB_TASKS.get(task_id)
+        if task is None:
+            return
+        task.update({"status": "running", "windows": windows})
+        _LAB_STORE.update(task_id, status="running", phase=stored.get("phase") or "IS", progress=int(stored.get("progress") or 0))
+        result = execute_trusted_research(
+            research_run_id=task_id,
+            request=request_data,
+            windows=windows,
+            db_path=_store.db_path,
+            code_version=str(stored.get("code_version") or _BUILD_VERSION),
+            dataset_version=str(stored.get("dataset_version") or "unknown"),
+            phase_cb=phase,
+            checkpoint=checkpoint,
+            cancel_check=lambda: _LAB_STORE.is_cancel_requested(task_id),
         )
-        t = _LAB_TASKS.get(task_id)
-        if t and (t.get("status") == "cancelled" or t.get("cancel_requested")):
-            return
-        if t:
-            is_all = r["is"].to_dict("records") if not r["is"].empty else []
-            t["status"] = "done"
-            t["progress"] = 100
-            t["result"] = {
-                "is_top": is_all[:12],
-                "is_all": is_all[:40],
-                "oos": r["oos"].to_dict("records") if not r["oos"].empty else [],
-                "msg": r.get("msg"),
-                "run_mode": r.get("mode") or req.mode,
-                "research_mode": windows.get("mode"),
-                "can_claim_edge": windows.get("can_claim_edge"),
-                "params_used": single or grid,
-                "windows": {
-                    k: windows[k]
-                    for k in ("is_start", "is_end", "oos_start", "oos_end", "mode", "label")
+        state = result.pop("checkpoint")
+        report = result.get("trusted_report") or {}
+        frozen = result.get("frozen_candidate") or {}
+        primary = frozen.get("is") or {}
+        if report.get("candidate_eligible") and primary.get("param_id"):
+            _LAB_STORE.add_candidate(
+                task_id,
+                strategy=str(primary.get("strategy") or req.strategy),
+                param_id=str(primary["param_id"]),
+                params={
+                    key: primary.get(key)
+                    for key in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
                 },
-            }
-            t["finished_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    except RuntimeError as e:
-        t = _LAB_TASKS.get(task_id)
-        if t and ("取消" in str(e) or t.get("cancel_requested")):
-            force_terminal(t, "cancelled", stage="已取消", msg=str(e)[:120])
-            return
-        if t:
-            force_terminal(t, "error", stage="失败", error=str(e)[:500], msg=str(e)[:120])
-    except Exception as e:  # noqa: BLE001
-        t = _LAB_TASKS.get(task_id)
-        if t:
-            if t.get("cancel_requested"):
-                force_terminal(t, "cancelled", stage="已取消", msg=str(e)[:120])
-            else:
-                force_terminal(t, "error", stage="失败", error=str(e)[:500], msg=str(e)[:120])
-    finally:
-        t = _LAB_TASKS.get(task_id)
-        if t is not None and not is_terminal(t.get("status")):
-            if t.get("cancel_requested"):
-                force_terminal(t, "cancelled", stage="已取消", msg="lab finally 收口")
-            else:
-                force_terminal(t, "error", stage="异常退出", error="lab worker non-terminal", msg="lab finally")
+                metrics={
+                    **(frozen.get("oos") or {}),
+                    "anti_overfit_version": (report.get("anti_overfit") or {}).get("version"),
+                    "gate_verdict": report.get("verdict"),
+                    "report_sha256": hashlib.sha256(
+                        str(report.get("markdown") or "").encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+        task.update({
+            "status": "done", "phase": "CANDIDATE", "progress": 100,
+            "message": report.get("summary") or "可信报告已生成", "result": result,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        _LAB_STORE.update(
+            task_id,
+            status="done",
+            phase="CANDIDATE",
+            progress=100,
+            message=str(task["message"]),
+            checkpoint=state,
+            result=result,
+            is_rows=result.get("is_all") or [],
+            oos_rows=result.get("oos") or [],
+            baselines=result.get("baselines") or {},
+            promotion=result.get("promotion_checks") or {},
+            verdict=report.get("verdict"),
+            candidate_eligible=bool(report.get("candidate_eligible")),
+            can_claim_edge=bool(report.get("candidate_eligible")),
+            report_markdown=report.get("markdown") or "",
+        )
+    except Exception as exc:
+        task = _LAB_TASKS.get(task_id)
+        persisted_before = _LAB_STORE.get(task_id)
+        persisted_cancel = bool(
+            persisted_before
+            and (
+                persisted_before.get("cancel_requested")
+                or persisted_before.get("status") == "cancelling"
+            )
+        )
+        runtime_cancel = bool(task and task.get("cancel_requested"))
+        cancelled = persisted_cancel or runtime_cancel
+        status = "cancelled" if cancelled else "error"
+        if cancelled:
+            message = "已取消"
+        elif isinstance(exc, ResearchCancelled):
+            message = f"研究任务意外停止：未收到取消请求；{exc}"[:200]
+            _LOGGER.exception("Lab worker stopped without a cancellation request task_id=%s", task_id)
+        else:
+            message = str(exc)[:200]
+        if task is not None:
+            task.update({"status": status, "message": message, "error": None if cancelled else str(exc)[:500]})
+        try:
+            _LAB_STORE.update(task_id, status=status, message=message)
+        except Exception:
+            _LOGGER.exception("failed to persist Lab terminal state task_id=%s", task_id)
 
 
 @app.get("/api/lab/research-status")
@@ -1930,44 +2225,161 @@ def lab_catalog():
             "max_hold_days": BENCH_MAX_HOLD_DAYS,
         },
         "pipeline": [
-            {"id": "is", "name": "样本内 IS", "desc": "只在 IS 窗网格/试跑，按 PF 排序"},
-            {"id": "filter", "name": "过滤", "desc": "胜率≥30% 且 最大回撤≤25%（网格模式）"},
-            {"id": "oos", "name": "样本外 OOS", "desc": "Top 组合到 OOS 窗一次性验证，不再调参"},
-            {"id": "arena", "name": "擂台", "desc": "CLI pipeline_seed 写入 active/candidate"},
+            {"id": "is", "name": "净成本 IS", "desc": "冻结 IS 第一名，禁止按 OOS 换人"},
+            {"id": "oos", "name": "净成本 OOS", "desc": "主候选一次性样本外验证"},
+            {"id": "wf", "name": "三窗 WF", "desc": "完整性、交易数、回撤和稳定性"},
+            {"id": "base", "name": "双基线", "desc": "固定种子随机与 MA20/60"},
+            {"id": "report", "name": "可信报告", "desc": "PASS/FAIL/证据不足；仅隔离候选"},
         ],
-        "disclaimer": "研究辅助，不是投资建议。可调参数只影响历史回放统计，不直接下单。",
+        "disclaimer": "研究辅助，不是投资建议。PASS 只登记隔离候选，不会进入 A 池或直接下单。",
     }
 
 
 @app.post("/api/lab/optimize")
 def lab_optimize(req: LabOptimizeRequest):
-    """触发异步 IS/OOS 优化，立即返回 task_id。与扫描共享互斥（都是重计算）。"""
+    """Start, resume or reuse a persistent trusted Lab validation run."""
     running = _running_task_id()
     if running:
         raise HTTPException(status_code=409, detail=f"已有扫描进行中（{running}），优化任务排队等扫描完成")
     lab_run = _lab_running()
     if lab_run:
-        raise HTTPException(status_code=409, detail=f"已有优化任务进行中（{lab_run}）")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "LAB_TASK_ALREADY_RUNNING",
+                "message": "已有优化任务进行中",
+                "active_task_id": lab_run,
+                "retryable": True,
+            },
+        )
     windows = _resolve_lab_windows(req)
     if windows.get("mode") == "insufficient":
         raise HTTPException(
             status_code=400,
             detail="日线覆盖不足，无法启动优化。请更新 Token 后 python sync_history.py",
         )
+    request_data = req.model_dump() if hasattr(req, "model_dump") else req.dict()
+    force = bool(request_data.pop("force", False))
+    mode = str(request_data.get("mode") or "grid").lower()
+    request_data["mode"] = mode
+    if mode == "single":
+        required = ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
+        if any(request_data.get(key) is None for key in required):
+            raise HTTPException(status_code=422, detail="单组试跑参数不完整")
+        request_data["grid"] = None
+    else:
+        grid = request_data.get("grid")
+        if isinstance(grid, dict):
+            clean_grid = {
+                key: list(values)[:8]
+                for key, values in grid.items()
+                if key in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
+                and isinstance(values, list) and values
+            }
+            combinations = 1
+            for values in clean_grid.values():
+                combinations *= len(values)
+            if combinations > 120:
+                raise HTTPException(status_code=422, detail=f"网格组合过多({combinations}>120)")
+            request_data["grid"] = clean_grid or None
+
+    from ab_screener.research.trusted_run import (
+        COST_VERSION,
+        dataset_fingerprint,
+        input_fingerprint,
+    )
+    from optimizer import research_universe
+
+    universe = research_universe(max(20, min(int(request_data.get("max_codes") or 200), 4500)), include_delisted=True)
+    starts = [str(windows["is_start"]), str(windows["oos_start"])]
+    starts.extend(
+        str(row.get("train_start"))
+        for row in windows.get("wf_windows") or []
+        if isinstance(row, dict) and row.get("train_start")
+    )
+    dataset_version = dataset_fingerprint(
+        _store.db_path, start=min(starts), end=str(windows["oos_end"]), codes=universe
+    )
+    persisted_request = {**request_data, "_windows": windows}
+    input_hash = input_fingerprint(
+        request_data, windows, dataset_version=dataset_version,
+        code_version=_BUILD_VERSION, cost_version=COST_VERSION,
+    )
+    if not force:
+        cached = _LAB_STORE.completed_by_input_hash(input_hash)
+        if cached is not None:
+            return {
+                "status": "cached", "task_id": cached["research_run_id"],
+                "strategy": req.strategy, "research_mode": windows.get("mode"),
+                "can_claim_edge": cached.get("candidate_eligible", False), "windows": windows,
+            }
+        resumable = _LAB_STORE.resumable_by_input_hash(input_hash)
+        if resumable is not None:
+            task_id = str(resumable["research_run_id"])
+            with _LAB_LOCK:
+                claimed = _LAB_STORE.resume_run(task_id)
+                if not claimed:
+                    active = _LAB_STORE.latest_active()
+                    active_id = active.get("research_run_id") if active else task_id
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": "LAB_TASK_ALREADY_RUNNING",
+                            "message": "该实验已由另一个请求恢复",
+                            "active_task_id": active_id,
+                            "retryable": True,
+                        },
+                    )
+                _LAB_TASKS[task_id] = {
+                    "status": "pending", "phase": resumable.get("phase") or "IS",
+                    "progress": int(resumable.get("progress") or 0), "message": "从持久化检查点恢复",
+                    "started_at": resumable.get("started_at"), "strategy": req.strategy, "windows": windows,
+                }
+            threading.Thread(target=_run_lab_worker, args=(task_id, req, windows), daemon=True).start()
+            return {
+                "status": "resumed", "task_id": task_id, "strategy": req.strategy,
+                "research_mode": windows.get("mode"), "can_claim_edge": False, "windows": windows,
+            }
     if len(_LAB_TASKS) > _LAB_TASKS_MAX:
         for tid in [k for k, v in _LAB_TASKS.items() if v.get("status") in ("done", "error", "cancelled")]:
             _LAB_TASKS.pop(tid, None)
             if len(_LAB_TASKS) <= _LAB_TASKS_MAX:
                 break
     task_id = uuid.uuid4().hex[:12]
-    _LAB_TASKS[task_id] = {
-        "status": "pending",
-        "progress": 0,
-        "message": f"排队中 · {windows.get('label', '')}",
-        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "strategy": req.strategy,
-        "windows": windows,
-    }
+    from ab_screener.research.store import ActiveResearchRunError
+
+    with _LAB_LOCK:
+        try:
+            _LAB_STORE.create_run(
+                task_id,
+                strategy=req.strategy,
+                research_mode=str(windows.get("mode") or "manual"),
+                request=persisted_request,
+                input_hash=input_hash,
+                dataset_version=dataset_version,
+                code_version=_BUILD_VERSION,
+                cost_version=COST_VERSION,
+                config_hash=input_hash,
+            )
+        except ActiveResearchRunError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "LAB_TASK_ALREADY_RUNNING",
+                    "message": "已有优化任务进行中",
+                    "active_task_id": exc.active_run_id,
+                    "retryable": True,
+                },
+            ) from exc
+        _LAB_TASKS[task_id] = {
+            "status": "pending",
+            "phase": "IS",
+            "progress": 0,
+            "message": f"排队中 · {windows.get('label', '')}",
+            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "strategy": req.strategy,
+            "windows": windows,
+        }
     threading.Thread(target=_run_lab_worker, args=(task_id, req, windows), daemon=True).start()
     return {
         "status": "started",
@@ -1982,59 +2394,135 @@ def lab_optimize(req: LabOptimizeRequest):
 @app.get("/api/lab/status")
 def lab_status(task_id: str | None = None):
     if task_id:
-        t = _LAB_TASKS.get(task_id)
-        if not t:
-            raise HTTPException(status_code=404, detail="任务不存在")
-        return {"task_id": task_id, **t}
-    if not _LAB_TASKS:
-        return {"task_id": None, "status": "idle"}
-    latest = max(_LAB_TASKS.values(), key=lambda t: t.get("started_at") or "")
-    return {"task_id": next(k for k, v in _LAB_TASKS.items() if v is latest), **latest}
+        persisted = _LAB_STORE.get(task_id)
+        if persisted is not None:
+            return _lab_public_record(persisted)
+        runtime = _LAB_TASKS.get(task_id)
+        if runtime is not None:
+            return {"task_id": task_id, **runtime}
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    persisted_active = _LAB_STORE.latest_active()
+    if persisted_active is not None:
+        return _lab_public_record(persisted_active)
+    persisted_latest = _LAB_STORE.latest()
+    if persisted_latest is not None:
+        return _lab_public_record(persisted_latest)
+
+    selected = _select_lab_task(_LAB_TASKS)
+    if selected is not None:
+        selected_id, selected_task = selected
+        return {"task_id": selected_id, **selected_task}
+    return {"task_id": None, "status": "idle"}
+
+
+def _report_payload(record: dict) -> dict:
+    result = record.get("result") if isinstance(record.get("result"), dict) else {}
+    report = result.get("trusted_report") if isinstance(result, dict) else None
+    return {
+        "research_run_id": record.get("research_run_id"),
+        "status": record.get("status"),
+        "strategy": record.get("strategy"),
+        "research_mode": record.get("research_mode"),
+        "verdict": record.get("verdict"),
+        "candidate_eligible": bool(record.get("candidate_eligible")),
+        "created_at": record.get("created_at"),
+        "finished_at": record.get("finished_at"),
+        "report_sha256": record.get("report_sha256"),
+        "report": report,
+    }
+
+
+@app.get("/api/lab/reports/latest")
+def lab_latest_report():
+    reports = _LAB_STORE.list_reports(limit=1)
+    if not reports:
+        raise HTTPException(status_code=404, detail="暂无可信研究报告")
+    return _report_payload(reports[0])
+
+
+@app.get("/api/lab/reports")
+def lab_reports(limit: int = 20):
+    return {
+        "items": [
+            {key: value for key, value in _report_payload(record).items() if key != "report"}
+            for record in _LAB_STORE.list_reports(limit=limit)
+        ]
+    }
+
+
+@app.get("/api/lab/reports/{research_run_id}")
+def lab_report(research_run_id: str):
+    record = _LAB_STORE.get(research_run_id)
+    if record is None or not record.get("report_markdown"):
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return _report_payload(record)
+
+
+@app.get("/api/lab/reports/{research_run_id}/download")
+def lab_report_download(research_run_id: str, format: str = "markdown"):
+    record = _LAB_STORE.get(research_run_id)
+    if record is None or not record.get("report_markdown"):
+        raise HTTPException(status_code=404, detail="报告不存在")
+    if format.lower() == "json":
+        body = json.dumps(_report_payload(record), ensure_ascii=False, indent=2, default=str)
+        media_type = "application/json"
+        filename = f"lab-report-{research_run_id}.json"
+    elif format.lower() in ("markdown", "md"):
+        body = str(record["report_markdown"])
+        media_type = "text/markdown; charset=utf-8"
+        filename = f"lab-report-{research_run_id}.md"
+    else:
+        raise HTTPException(status_code=422, detail="format 仅支持 markdown 或 json")
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/lab/{task_id}/cancel")
 def lab_cancel(task_id: str):
     """取消正在运行的优化任务。"""
-    from scan_runtime import is_terminal, start_cancel_watchdog
+    from scan_runtime import is_terminal
 
     with _LAB_LOCK:
-        t = _LAB_TASKS.get(task_id)
-        if not t:
+        persisted = _LAB_STORE.get(task_id)
+        if persisted is None:
             raise HTTPException(status_code=404, detail="任务不存在")
-        if is_terminal(t.get("status")):
-            return {"status": t["status"], "msg": "任务已结束，无需取消", "task_id": task_id}
-        t["cancel_requested"] = True
-        t["status"] = "cancelling"
-        t["message"] = "取消中…"
-    # lab 靠 prog 检查 cancel_requested；卡死时看门狗强制 cancelled
-    start_cancel_watchdog(
-        task_id=task_id,
-        get_task=lambda: _LAB_TASKS.get(task_id),
-        lock=_LAB_LOCK,
-        timeout_sec=15.0,
-        prune=None,
-        log_fn=lambda task, msg: task.__setitem__("message", (msg or "")[:200]),
-    )
-    return {"status": "cancelling", "task_id": task_id, "msg": "取消请求已发送"}
+        if is_terminal(persisted.get("status")) or persisted.get("status") == "interrupted":
+            return {
+                "status": persisted["status"],
+                "msg": "任务已结束，无需取消",
+                "task_id": task_id,
+            }
+        persisted = _LAB_STORE.request_cancel(task_id)
+        t = _LAB_TASKS.get(task_id)
+        if t is not None:
+            t["cancel_requested"] = True
+            t["status"] = "cancelling"
+            t["message"] = "取消中…正在停止工作进程"
+    return {
+        "status": persisted["status"],
+        "task_id": task_id,
+        "msg": "取消请求已持久化，正在停止工作进程",
+    }
 
 
 @app.get("/api/lab/leaderboard")
 def lab_leaderboard(kind: str = "IS", strategy: str = "A", limit: int = 20):
-    """参数排行榜（param_eval 表或最近一次优化结果）。"""
-    from local_store import LocalStore
-
-    st = LocalStore()
-    ev = st.load_param_eval(eval_kind=kind)
-    if ev.empty:
-        # 回退：返回最近一次 lab 优化结果
-        done = [t for t in _LAB_TASKS.values() if t.get("status") == "done" and t.get("result")]
-        if done:
-            latest = max(done, key=lambda t: t.get("finished_at") or "")
-            rows = latest["result"].get("is_top" if kind == "IS" else "oos") or []
-            return {"rows": rows[:limit], "source": "last_run"}
+    """Net-cost leaderboard from the latest persistent Lab result."""
+    done = [t for t in _LAB_TASKS.values() if t.get("status") == "done" and t.get("result")]
+    in_memory = max(done, key=lambda t: t.get("finished_at") or "") if done else None
+    persisted = _LAB_STORE.latest()
+    result = in_memory.get("result") if in_memory else None
+    if persisted and persisted.get("status") == "done" and persisted.get("result"):
+        result = persisted["result"]
+    if not isinstance(result, dict):
         return {"rows": [], "source": "empty"}
-    ev = ev[ev["eval_kind"] == kind].sort_values("profit_factor", ascending=False).head(limit)
-    return {"rows": ev.to_dict("records"), "source": "param_eval"}
+    rows = result.get("is_top" if kind.upper() == "IS" else "oos") or []
+    filtered = [row for row in rows if not strategy or row.get("strategy") == strategy]
+    return {"rows": filtered[: max(1, min(limit, 100))], "source": "persistent_trusted_run"}
 
 
 @app.get("/api/lab/compare")
@@ -2080,6 +2568,36 @@ def lab_arena():
     return {"rows": df.to_dict("records"), "weights": weights}
 
 
+@app.get("/api/manifests")
+def daily_manifests(limit: int = 30):
+    """List immutable cross-domain daily run evidence."""
+    from ab_screener.application.daily_manifest import list_daily_manifests
+
+    return {"items": list_daily_manifests(_DB, limit=limit)}
+
+
+@app.get("/api/today")
+def today_guide(at: str | None = None):
+    """Return exactly one plain-language action for the current workflow state."""
+    from ab_screener.application.today_guide import build_today_guide
+
+    try:
+        now = datetime.fromisoformat(at) if at else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="at 必须是 ISO 8601 时间") from exc
+    return build_today_guide(_DB, now=now)
+
+
+@app.get("/api/manifests/{trade_date}")
+def daily_manifest_detail(trade_date: str):
+    from ab_screener.application.daily_manifest import get_daily_manifest
+
+    manifest = get_daily_manifest(_DB, trade_date)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="该交易日尚无运行清单")
+    return manifest
+
+
 if _HAS_DIST:
     assets_dir = _DIST / "assets"
     if assets_dir.is_dir():
@@ -2089,24 +2607,340 @@ if _HAS_DIST:
     def _spa_index():
         return FileResponse(_DIST / "index.html")
 
-    @app.get("/{full_path:path}")
-    def _spa_fallback(full_path: str):
-        # API 已由上方路由处理；其余走静态或 SPA
-        if full_path.startswith("api/") or full_path == "api":
-            raise HTTPException(status_code=404, detail="Not Found")
-        # 防路径穿越：显式拒绝 .. 与编码变体；解析后必须仍位于 dist 目录内
-        if ".." in full_path:
-            raise HTTPException(status_code=404, detail="Not Found")
-        candidate = _DIST / full_path
+# ═══════════════════════════════════════════════════════════
+# 数据同步 API（手动更新行情，2026-08-16 新增）
+# ═══════════════════════════════════════════════════════════
+_SYNC_LOCK = threading.Lock()
+_SYNC_STATE: dict = {
+    "status": "idle",  # idle | running | done | error
+    "message": "",
+    "started_at": None,
+    "finished_at": None,
+    "latest_daily": None,
+    "latest_moneyflow": None,
+    "failed_dates": [],
+}
+
+
+@app.post("/api/sync")
+def sync_start():
+    """触发增量行情同步（后台执行；已有同步进行中返回 409）。"""
+    global _SYNC_STATE
+    with _SYNC_LOCK:
+        if _SYNC_STATE.get("status") == "running":
+            raise HTTPException(status_code=409, detail="行情同步已在进行中")
+        _SYNC_STATE = {
+            "status": "running",
+            "message": "开始同步行情…",
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "finished_at": None,
+            "latest_daily": None,
+            "latest_moneyflow": None,
+            "failed_dates": [],
+        }
+
+    def _run() -> None:
+        from tushare_init import sanitize_error
+
         try:
-            resolved = candidate.resolve()
-            if not resolved.is_relative_to(_DIST.resolve()):
-                raise HTTPException(status_code=404, detail="Not Found")
-        except (OSError, ValueError):
+            from local_store import sync_from_tushare
+
+            res = sync_from_tushare(days_back=30, verbose=False)
+            failed = (res.get("failed_daily_dates") or []) + (res.get("failed_moneyflow_dates") or [])
+            with _SYNC_LOCK:
+                _SYNC_STATE.update(
+                    status="done" if not failed else "error",
+                    message=(
+                        f"同步完成：daily 新增 {len(res.get('daily_dates') or [])} 个交易日、"
+                        f"moneyflow 新增 {len(res.get('moneyflow_dates') or [])} 个交易日"
+                        + (f"；{len(failed)} 个日期失败（可重试）" if failed else "")
+                    ),
+                    finished_at=datetime.now().isoformat(timespec="seconds"),
+                    latest_daily=res.get("latest_daily"),
+                    latest_moneyflow=res.get("latest_moneyflow"),
+                    failed_dates=failed[:20],
+                )
+        except Exception as exc:  # noqa: BLE001
+            with _SYNC_LOCK:
+                _SYNC_STATE.update(
+                    status="error",
+                    message=f"同步失败：{sanitize_error(exc)[:200]}",
+                    finished_at=datetime.now().isoformat(timespec="seconds"),
+                )
+
+    threading.Thread(target=_run, daemon=True, name="data-sync").start()
+    return {"status": "running", "message": "同步已开始"}
+
+
+@app.get("/api/sync/status")
+def sync_status():
+    with _SYNC_LOCK:
+        return dict(_SYNC_STATE)
+
+
+# ═══════════════════════════════════════════════════════════
+# 回测工作台 API（2026-08-16 新增：单组参数 → IS/OOS 逐笔明细）
+# ═══════════════════════════════════════════════════════════
+_BT_LOCK = threading.Lock()
+_BT_TASKS: dict[str, dict] = {}
+_BT_TASKS_MAX = 20
+
+
+def _bt_prune() -> None:
+    if len(_BT_TASKS) > _BT_TASKS_MAX:
+        for key in list(_BT_TASKS)[:-_BT_TASKS_MAX]:
+            _BT_TASKS.pop(key, None)
+
+
+@app.post("/api/backtest/run")
+def backtest_run(body: dict):
+    """启动一次工作台回测（后台执行）。请求体见前端 BacktestStudio。"""
+    from ab_screener.research.backtest_engine import run_single_backtest
+    from optimizer import ResearchCancelled
+    from research_windows import recommend_research_plan
+    from walkforward import wf_recheck
+
+    strategy = str(body.get("strategy") or "A")
+    exit_p = {
+        key: body[key]
+        for key in ("vol_ratio_min", "stop_pct", "exit_window", "strong_reset")
+        if body.get(key) is not None
+    }
+    signal_kwargs = {k: v for k, v in (body.get("signal") or {}).items() if v is not None}
+    costs = body.get("costs") or None
+    max_codes = max(20, min(int(body.get("max_codes") or 600), 4500))
+    step = max(1, min(int(body.get("step") or 10), 60))
+    include_wf = bool(body.get("include_wf", True))
+    include_baselines = bool(body.get("include_baselines", True))
+
+    # 窗口：auto 用研究窗推荐；manual 用显式 IS/OOS
+    win = body.get("windows") or {}
+    if str(win.get("mode") or "auto") == "manual":
+        is_start = str(win.get("is_start") or "")
+        is_end = str(win.get("is_end") or "")
+        oos_start = str(win.get("oos_start") or "")
+        oos_end = str(win.get("oos_end") or "")
+        if not (len(is_start) == 8 and len(is_end) == 8 and len(oos_start) == 8 and len(oos_end) == 8):
+            raise HTTPException(status_code=422, detail="手动窗口需提供 is_start/is_end/oos_start/oos_end（YYYYMMDD）")
+        mode_label = "manual"
+        wf_windows = []
+    else:
+        plan = recommend_research_plan()
+        if plan.mode == "insufficient":
+            raise HTTPException(status_code=400, detail="日线覆盖不足，无法回测")
+        is_start, is_end = plan.is_start, plan.is_end
+        oos_start, oos_end = plan.oos_start, plan.oos_end
+        mode_label = plan.mode
+        wf_windows = plan.wf_windows or []
+
+    task_id = uuid.uuid4().hex[:12]
+    with _BT_LOCK:
+        _bt_prune()
+        _BT_TASKS[task_id] = {
+            "status": "running",
+            "stage": "准备回测…",
+            "progress": 0,
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "cancel_requested": False,
+            "result": None,
+            "error": None,
+        }
+
+    def _cancel_flag() -> bool:
+        with _BT_LOCK:
+            return bool(_BT_TASKS.get(task_id, {}).get("cancel_requested"))
+
+    def _progress(msg: str, pct: int) -> None:
+        with _BT_LOCK:
+            task = _BT_TASKS.get(task_id)
+            if task:
+                task["stage"] = msg
+                task["progress"] = max(0, min(100, int(pct)))
+
+    def _run() -> None:
+        from tushare_init import sanitize_error
+
+        try:
+            _progress("IS 样本内回放…", 3)
+            is_r = run_single_backtest(
+                strategy=strategy, exit_params=exit_p, signal_kwargs=signal_kwargs,
+                costs=costs, start=is_start, end=is_end, step=step, max_codes=max_codes,
+                progress_cb=lambda m, p: _progress(f"IS · {m}", 3 + int(34 * p / 100)),
+                cancel_check=_cancel_flag,
+            )
+            if is_r.get("error"):
+                raise RuntimeError(is_r["error"])
+            _progress("OOS 样本外回放…", 40)
+            oos_r = run_single_backtest(
+                strategy=strategy, exit_params=exit_p, signal_kwargs=signal_kwargs,
+                costs=costs, start=oos_start, end=oos_end, step=step, max_codes=max_codes,
+                progress_cb=lambda m, p: _progress(f"OOS · {m}", 40 + int(30 * p / 100)),
+                cancel_check=_cancel_flag,
+            )
+            if oos_r.get("error"):
+                raise RuntimeError(oos_r["error"])
+
+            wf: dict | None = None
+            if include_wf and wf_windows:
+                _progress("Walk-forward 三窗复核…", 72)
+                combo = {"strategy": strategy, 
+                    "vol_ratio_min": exit_p.get("vol_ratio_min", 1.5),
+                    "stop_pct": exit_p.get("stop_pct", 0.07),
+                    "exit_window": exit_p.get("exit_window", 10),
+                    "strong_reset": exit_p.get("strong_reset", 3)
+                }
+                wf_df = wf_recheck(
+                    [combo], step=step, max_codes=max_codes, windows=wf_windows,
+                    progress_cb=lambda m, p: _progress(f"WF · {m}", 72 + int(18 * p / 100)),
+                    signal_kwargs=signal_kwargs, costs=costs,
+                    cancel_check=_cancel_flag,
+                )
+                if not wf_df.empty:
+                    wf = wf_df.iloc[0].to_dict()
+                    wf = {k: v.item() if hasattr(v, "item") else v for k, v in wf.items()}
+                _progress("Walk-forward 完成", 90)
+
+            baselines: dict | None = None
+            if include_baselines:
+                from ab_screener.research.baselines import ma_cross_baseline, random_baseline_trades
+                from local_store import LocalStore
+
+                oos_metrics = oos_r.get("metrics") or {}
+                requested = max(20, int(oos_metrics.get("net_n_trades") or 40))
+                hold_days = int(exit_p.get("exit_window") or 10)
+                load_start = (pd.to_datetime(oos_start) - pd.Timedelta(days=365)).strftime("%Y%m%d")
+                daily = LocalStore().load_daily(
+                    ts_codes=None, start=load_start, end=oos_end
+                )
+                from optimizer import research_universe
+
+                universe = research_universe(max_codes, include_delisted=True)
+                baselines = {
+                    "random": random_baseline_trades(
+                        daily, n_trades=requested, hold_days=hold_days,
+                        entry_start=oos_start, entry_end=oos_end, codes=universe,
+                    ),
+                    "ma20_60": ma_cross_baseline(
+                        daily, hold_days=hold_days, max_trades=requested,
+                        entry_start=oos_start, entry_end=oos_end, codes=universe,
+                    ),
+                }
+                _progress("基线对比完成", 94)
+
+            is_metrics = is_r.get("metrics") or {}
+            oos_metrics = oos_r.get("metrics") or {}
+            is_pf = is_metrics.get("net_profit_factor")
+            oos_pf = oos_metrics.get("net_profit_factor")
+            result = {
+                "task_id": task_id,
+                "params": {
+                    "strategy": strategy,
+                    "exit": exit_p,
+                    "signal": signal_kwargs or None,
+                    "costs": costs,
+                    "max_codes": max_codes,
+                    "step": step,
+                },
+                "windows": {
+                    "mode": mode_label,
+                    "is": [is_start, is_end],
+                    "oos": [oos_start, oos_end],
+                },
+                "is": is_r,
+                "oos": oos_r,
+                "hold_ratio": {
+                    "pf": round(oos_pf / is_pf, 3) if is_pf and oos_pf is not None else None,
+                },
+                "wf": wf,
+                "baselines": baselines,
+                "disclaimer": "研究辅助，不是投资建议；宇宙包含上市+退市全历史（已消除幸存者偏差），历史回测结果更保守可信。",
+            }
+            with _BT_LOCK:
+                task = _BT_TASKS.get(task_id, {})
+                task.update(status="done", progress=100, stage="回测完成", result=result)
+        except ResearchCancelled:
+            with _BT_LOCK:
+                _BT_TASKS[task_id].update(status="cancelled", stage="已取消")
+        except Exception as exc:  # noqa: BLE001
+            with _BT_LOCK:
+                _BT_TASKS[task_id].update(
+                    status="error", stage="回测失败", error=sanitize_error(exc)[:300],
+                )
+
+    threading.Thread(target=_run, daemon=True, name=f"bt-{task_id[:6]}").start()
+    return {"task_id": task_id}
+
+
+@app.get("/api/backtest/status/{task_id}")
+def backtest_status(task_id: str):
+    with _BT_LOCK:
+        task = _BT_TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return dict(task)
+
+
+@app.post("/api/backtest/{task_id}/cancel")
+def backtest_cancel(task_id: str):
+    with _BT_LOCK:
+        task = _BT_TASKS.get(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        task["cancel_requested"] = True
+        if task.get("status") == "running":
+            task["stage"] = "取消中…"
+        return {"ok": True}
+
+
+@app.get("/api/kline/{ts_code}")
+def kline_range(ts_code: str, start: str | None = None, end: str | None = None, limit: int = 180):
+    """通用 K 线查询（回测工作台交易 K 线展示用）。
+
+    start/end: YYYYMMDD；不传 end 时取最新 limit 根。返回升序 kline。
+    """
+    from local_store import LocalStore
+
+    code = ts_code.upper()
+    if not code.endswith((".SH", ".SZ", ".BJ")):
+        raise HTTPException(status_code=422, detail="ts_code 需为 000001.SZ 形式")
+    limit = max(20, min(int(limit), 400))
+    try:
+        df = LocalStore().load_daily(ts_codes=[code], start=start, end=end)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"K线查询失败: {exc}") from exc
+    if df is None or df.empty:
+        return {"ts_code": code, "kline": []}
+    df = df.sort_values("trade_date").tail(limit)
+    kline = []
+    for row in df.itertuples(index=False):
+        kline.append({
+            "trade_date": str(row.trade_date),
+            "open": float(row.open) if row.open is not None else None,
+            "high": float(row.high) if row.high is not None else None,
+            "low": float(row.low) if row.low is not None else None,
+            "close": float(row.close) if row.close is not None else None,
+            "vol": float(row.vol) if row.vol is not None else None,
+        })
+    return {"ts_code": code, "kline": kline}
+
+@app.get("/{full_path:path}")
+def _spa_fallback(full_path: str):
+    # API 已由上方路由处理；其余走静态或 SPA
+    if full_path.startswith("api/") or full_path == "api":
+        raise HTTPException(status_code=404, detail="Not Found")
+    # 防路径穿越：显式拒绝 .. 与编码变体；解析后必须仍位于 dist 目录内
+    if ".." in full_path:
+        raise HTTPException(status_code=404, detail="Not Found")
+    candidate = _DIST / full_path
+    try:
+        resolved = candidate.resolve()
+        if not resolved.is_relative_to(_DIST.resolve()):
             raise HTTPException(status_code=404, detail="Not Found")
-        if candidate.is_file():
-            return FileResponse(candidate)
-        return FileResponse(_DIST / "index.html")
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if candidate.is_file():
+        return FileResponse(candidate)
+    return FileResponse(_DIST / "index.html")
 
 
 # ── 自动日终调度器（阶段5）：交易日 16:15 后轮询，每账户/交易日最多成功一次 ──
@@ -2131,14 +2965,9 @@ def _auto_settle_loop() -> None:
                 try:
                     target = latest_local
                     if _cal_is_open(_DB, target):
-                        import sqlite3 as _sq
-                        conn = _sq.connect(str(_DB))
-                        row = conn.execute(
-                            "SELECT run_date FROM pt_cycle WHERE phase='DONE'"
-                            " ORDER BY run_date DESC LIMIT 1"
-                        ).fetchone()
-                        conn.close()
-                        last_done = row[0] if row else None
+                        from ab_screener.data.paper_query import last_done_cycle_date
+
+                        last_done = last_done_cycle_date(_DB)
                         if last_done and last_done >= target:
                             pass  # 已日结，跳过
                         else:
@@ -2161,7 +2990,25 @@ if _paper_enabled():
     threading.Thread(target=_auto_settle_loop, daemon=True, name="paper-auto-settle").start()
 
 
+def _backend_port() -> int:
+    raw = os.environ.get("AB_BACKEND_PORT", "8001").strip()
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise ValueError("AB_BACKEND_PORT must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("AB_BACKEND_PORT must be between 1 and 65535")
+    return port
+
+
+
+
 if __name__ == "__main__":
     import uvicorn
-    print(f"UI: http://127.0.0.1:8000/  (dist={'yes' if _HAS_DIST else 'no-use :3001'})")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+    _port = _backend_port()
+    print(
+        f"UI: http://127.0.0.1:{_port}/  "
+        f"(dist={'yes' if _HAS_DIST else 'no-use :3001'})"
+    )
+    uvicorn.run(app, host="127.0.0.1", port=_backend_port())

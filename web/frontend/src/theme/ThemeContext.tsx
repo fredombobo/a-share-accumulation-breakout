@@ -46,29 +46,29 @@ export function useChartColors(): ChartColors {
   return React.useMemo(() => {
     if (theme === 'dark') {
       return {
-        text: '#e6edf6',
-        subtext: '#8a98ad',
-        axis: '#2a3650',
-        split: '#1b2536',
-        up: '#ff4d4f',
-        down: '#1bbf83',
-        accent: '#3b82f6',
-        accent2: '#22d3ee',
-        warn: '#f59e0b',
-        palette: ['#3b82f6', '#22d3ee', '#a78bfa', '#f59e0b', '#34d399', '#f472b6', '#60a5fa', '#fb923c', '#c084fc'],
+        text: '#e9eef7',
+        subtext: '#93a1b8',
+        axis: '#243048',
+        split: '#1b2434',
+        up: '#ff5a5f',
+        down: '#2ebd85',
+        accent: '#3e9dff',
+        accent2: '#2ad4c3',
+        warn: '#f5a623',
+        palette: ['#3e9dff', '#2ad4c3', '#a78bfa', '#f5a623', '#34d399', '#f472b6', '#60a5fa', '#fb923c', '#c084fc'],
       }
     }
     return {
-      text: '#0f172a',
-      subtext: '#64748b',
+      text: '#101828',
+      subtext: '#4a586e',
       axis: '#cbd5e1',
-      split: '#e2e8f0',
-      up: '#e23b3b',
-      down: '#16a34a',
-      accent: '#2563eb',
-      accent2: '#0891b2',
-      warn: '#d97706',
-      palette: ['#2563eb', '#0891b2', '#7c3aed', '#d97706', '#059669', '#db2777', '#4f46e5', '#ea580c', '#9333ea'],
+      split: '#e6ebf2',
+      up: '#e0453f',
+      down: '#0a8f5c',
+      accent: '#2f6bff',
+      accent2: '#0e9384',
+      warn: '#c77d0b',
+      palette: ['#2f6bff', '#0e9384', '#7c3aed', '#c77d0b', '#0a8f5c', '#db2777', '#4f46e5', '#ea580c', '#9333ea'],
     }
   }, [theme])
 }

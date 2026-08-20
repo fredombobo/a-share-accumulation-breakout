@@ -8,26 +8,28 @@ accumulation_breakout/
 ├── run_screener.py        # CLI 全市场扫描 → out/ (xlsx+md+charts)
 ├── make_report.py         # Markdown 报告
 └── web/
-    ├── backend_app.py     # FastAPI 后端（端口 8000）
-    └── frontend/          # React 19 + Vite + ECharts（端口 3001）
+    ├── backend_app.py     # FastAPI 后端（单端口 8001，托管 frontend/dist）
+    └── frontend/          # React 19 + Vite + ECharts
         ├── src/theme/     # 深浅主题（ThemeContext + useChartColors）
         ├── src/pages/     # Overview（总览网格）/ StockDetail（个股详情）
-        └── vite.config.ts # /api 代理 → 8000
+        └── vite.config.ts # dev 模式 /api 代理 → 8001（默认不必要）
 ```
 
 ## 启动
 
-```bash
-# 1) 后端（8000）
-cd E:\CODEX\Stock_selection\accumulation_breakout\web
-C:\Python314\python.exe backend_app.py
+```powershell
+# 唯一入口（单端口 8001，后端自带前端，小白无需 Node）
+cd E:\CODEX\Stock_selection\accumulation_breakout
+python bootstrap.py --yes        # 或双击 一键启动.bat / python easy_start.py
 
-# 2) 前端（3001，需先 npm install 一次）
+# 开发前端热更新（可选，需先 npm install 一次；:3001 代理到 :8001）
 cd E:\CODEX\Stock_selection\accumulation_breakout\web\frontend
 npm run dev
 ```
 
-浏览器打开 http://localhost:3001
+浏览器打开 http://127.0.0.1:8001/ （dev 模式为 http://localhost:3001）
+
+> 端口 8000 固定留给其它应用（AETF Alpha），请勿在本项目使用。
 
 ## 功能
 
@@ -39,6 +41,8 @@ npm run dev
   - 信号解读：箱体天数/振幅/区间/突破日/量比/涨幅/缩量系数/MA
   - 资金流：近5日主力净流入/占比/强度分（后端实时补拉）
   - 财务摘要：PE/PB/市值/换手率/量比
+- **策略实验室** `/lab`：参数研究（IS/OOS/WF/双基线/反过拟合门禁），非下单入口
+- **纸面交易** `/paper`：订单风控/仿真撮合/日结对账（LIVE_TRADING 恒关闭）
 - **主题**：右上角 ☀/◐ 切换深/浅色，localStorage 记忆
 
 ## 后端 API
@@ -47,7 +51,8 @@ npm run dev
 - GET /api/stock/{ts_code}   → 个股详情（K线/信号/资金流/基本面）
 - POST /api/scan             → 触发重新扫描 {top, days, force}
 - GET /api/health
+- 安全（2026-08-16）：CORS 白名单化 + Host/Origin 本机校验；纸面导入路径限定 runtime/portfolio.json
 
 ## 数据源
 
-Tushare HTTP 直连 http://a.sszhixia.cn/（curl_cffi，见上级目录 `tushare_http.py`；Token 用 `TUSHARE_TOKEN` / `.env`）
+Tushare 直连（统一经 `tushare_init.py` 初始化，curl_cffi 抗 TLS 指纹；Token 用 `TUSHARE_TOKEN` / `.env`，勿提交）
