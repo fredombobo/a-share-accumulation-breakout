@@ -16,21 +16,34 @@ import pandas as pd
 from signals import detect_accumulation_breakout, score_breakout_strength
 
 
-def make_synthetic(seed: int = 42, flat_days: int = 80) -> pd.DataFrame:
-    """构造合成数据：有支撑/压力往返的吸筹箱体 → 末日放量突破。
+def make_synthetic(seed: int = 42, flat_days: int = 80, pre_days: int = 70) -> pd.DataFrame:
+    """构造合成数据：箱前中位平台 → 有支撑/压力往返的吸筹箱体 → 末日放量突破。
 
-    比纯高斯噪声更接近真实平台：在 [9.7, 10.3] 内来回触及上下沿。
+    v2 起需要箱体前历史（位置护栏/大趋势基于完整窗口），故增加 pre_days 前段。
     """
     rng = np.random.default_rng(seed)
-    n = flat_days + 1
+    n_pre = pre_days
+    n = n_pre + flat_days + 1
     dates = pd.bdate_range("2025-10-01", periods=n)
     support, resistance = 9.70, 10.30
     mid = (support + resistance) / 2.0
     closes, highs, lows, vols, opens = [], [], [], [], []
-    # 相位：正弦 + 噪声，保证多次触及上下沿
-    for i in range(n):
+    # 前段：箱体之前的中位平台（高点略高于箱体上沿，保证位置护栏通过）
+    for i in range(n_pre):
+        c = mid + 0.08 + 0.14 * np.sin(i / 8.0) + rng.normal(0, 0.04)
+        h = c + abs(rng.normal(0.08, 0.02))
+        l = c - abs(rng.normal(0.08, 0.02))
+        o = c + rng.normal(0, 0.03)
+        v = 2000 + rng.normal(0, 100)
+        closes.append(float(c))
+        highs.append(float(max(h, c, o)))
+        lows.append(float(min(l, c, o)))
+        opens.append(float(o))
+        vols.append(float(max(v, 50)))
+    # 箱体 + 突破日（沿用原构造）
+    for i in range(n_pre, n):
         if i < n - 1:
-            phase = 2 * np.pi * i / 14.0  # ~14 日一个来回
+            phase = 2 * np.pi * (i - n_pre) / 14.0  # ~14 日一个来回
             c = mid + 0.28 * np.sin(phase) + rng.normal(0, 0.03)
             c = float(np.clip(c, support + 0.02, resistance - 0.02))
             # 周期性把 low/high 顶到边界，形成触及
@@ -45,7 +58,7 @@ def make_synthetic(seed: int = 42, flat_days: int = 80) -> pd.DataFrame:
             else:
                 h = c + abs(rng.normal(0.03, 0.02))
                 l = c - abs(rng.normal(0.03, 0.02))
-            v = 2000 * (1 - i / max(n, 2) * 0.55) + rng.normal(0, 80)
+            v = 2000 * (1 - (i - n_pre) / max(flat_days, 2) * 0.55) + rng.normal(0, 80)
             o = c + rng.normal(0, 0.02)
         else:
             # 放量突破阻力

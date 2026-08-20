@@ -18,7 +18,7 @@ from paper_trading.cal import (
 )
 from paper_trading.errors import DomainError
 from paper_trading.migrations import run_migrations
-from paper_trading.rules import default_rule, get_rule
+from paper_trading.rules import default_rule, get_rule, require_rule
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -132,3 +132,16 @@ def test_get_rule_auto_creates_default():
     conn.close()
     assert n == 1
     print("[PASS] get_rule 自动落库默认规则")
+
+
+def test_require_rule_fail_closed_without_fallback():
+    """require_rule（v2 严格路径）：无规则行 → 显式失败，禁止默认兜底。"""
+    db = _db()
+    with pytest.raises(DomainError) as ei:
+        require_rule(db, "000001.SZ")
+    assert ei.value.code == "UNKNOWN_INSTRUMENT_RULE"
+    # 先落库默认再要求 → 通过
+    get_rule(db, "000001.SZ")
+    rule = require_rule(db, "000001.SZ")
+    assert rule.inst_type == "STOCK"
+    print("[PASS] require_rule 缺规则失败，有规则通过")

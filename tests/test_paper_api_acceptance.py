@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -82,9 +83,142 @@ def test_openapi_contains_corporate_action_apply_endpoint() -> None:
     backend = _load_backend_without_scheduler()
     paths = backend.app.openapi()["paths"]
     assert "/api/paper/corporate-actions/{action_id}/apply" in paths
+    assert "/api/paper/trading-calendar" in paths
+    assert "/api/paper/orders/review" in paths
 
 
 def test_scheduler_cycle_query_uses_real_schema_column() -> None:
     source = Path("web/backend_app.py").read_text(encoding="utf-8")
     assert "SELECT run_date FROM pt_cycle" in source
     assert "SELECT trade_date FROM pt_cycle" not in source
+
+
+def test_health_exposes_guided_ui_feature_flag() -> None:
+    backend = _load_backend_without_scheduler()
+    client = TestClient(backend.app)
+    previous = os.environ.get("GUIDED_UI_ENABLED")
+    os.environ["GUIDED_UI_ENABLED"] = "false"
+    try:
+        response = client.get("/api/health")
+    finally:
+        if previous is None:
+            os.environ.pop("GUIDED_UI_ENABLED", None)
+        else:
+            os.environ["GUIDED_UI_ENABLED"] = previous
+    assert response.status_code == 200
+    assert response.json()["guided_ui_enabled"] is False
+
+
+def test_historical_manual_draft_api_uses_selected_execution_date(tmp_path: Path) -> None:
+    backend = _load_backend_without_scheduler()
+    db = tmp_path / "historical-api.db"
+    backend._DB = db
+    backend._store = LocalStore(db_path=db)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO daily (ts_code, trade_date, open, high, low, close, vol, amount)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            [
+                ("000001.SZ", "20260805", 10, 10.2, 9.8, 10.1, 10000, 100000),
+                ("000001.SZ", "20260806", 10.2, 10.5, 10.1, 10.4, 10000, 100000),
+            ],
+        )
+        conn.executemany(
+            "INSERT OR REPLACE INTO trade_cal (cal_date,is_open,source,updated_at)"
+            " VALUES (?,?,'local_infer','t')",
+            [("20260805", 1), ("20260806", 1)],
+        )
+
+    client = TestClient(backend.app)
+    account = client.post(
+        "/api/paper/account",
+        json={"initial_cash_fen": "50000000"},
+        headers={"Idempotency-Key": "historical-account"},
+    )
+    assert account.status_code == 200
+    draft = client.post(
+        "/api/paper/orders/drafts",
+        json={
+            "side": "BUY",
+            "mode": "MANUAL_HISTORY",
+            "ts_code": "000001",
+            "execution_trade_date": "20260806",
+            "qty": 100,
+        },
+        headers={"Idempotency-Key": "historical-draft"},
+    )
+    assert draft.status_code == 200, draft.text
+    payload = draft.json()
+    assert payload["source"] == "MANUAL_HISTORY"
+    assert payload["ts_code"] == "000001.SZ"
+    assert payload["eligible_trade_date"] == "20260806"
+
+
+def test_dashboard_hides_snapshots_invalidated_by_historical_replay(tmp_path: Path) -> None:
+    backend = _load_backend_without_scheduler()
+    db = tmp_path / "dashboard-replay.db"
+    backend._DB = db
+    backend._store = LocalStore(db_path=db)
+    client = TestClient(backend.app)
+    created = client.post(
+        "/api/paper/account",
+        json={"initial_cash_fen": "50000000"},
+        headers={"Idempotency-Key": "dashboard-account"},
+    )
+    assert created.status_code == 200
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO pt_cycle (cycle_id,run_date,phase,started_at,finished_at)"
+            " VALUES (?,?,?,'2026-08-08T00:00:00+08:00','2026-08-08T00:01:00+08:00')",
+            [
+                ("CY-20260805", "20260805", "DONE"),
+                ("CY-20260806", "20260806", "PRE_OPEN"),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO pt_daily_snapshot (account_id,trade_date,cash_fen,market_value_fen,"
+            " total_asset_fen,positions_json) VALUES (1,?,?,?,?, '[]')",
+            [
+                ("20260805", 50_000_000, 0, 50_000_000),
+                ("20260806", 49_000_000, 1_000_000, 50_000_000),
+            ],
+        )
+    dashboard = client.get("/api/paper/dashboard")
+    assert dashboard.status_code == 200
+    assert [row["trade_date"] for row in dashboard.json()["equity_curve"]] == ["20260805"]
+
+
+def test_tutorial_review_api_needs_no_idempotency_and_changes_no_ledger(tmp_path: Path) -> None:
+    backend = _load_backend_without_scheduler()
+    db = tmp_path / "tutorial-review-api.db"
+    backend._DB = db
+    backend._store = LocalStore(db_path=db)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO daily (ts_code,trade_date,open,high,low,close,vol,amount)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            [
+                ("000001.SZ", "20260805", 10.0, 10.2, 9.9, 10.1, 10_000, 101_000),
+                ("000001.SZ", "20260806", 10.2, 10.5, 10.1, 10.4, 10_000, 104_000),
+            ],
+        )
+        conn.executemany(
+            "INSERT OR REPLACE INTO trade_cal (cal_date,is_open,source,updated_at)"
+            " VALUES (?,?, 'tushare','t')",
+            [("20260805", 1), ("20260806", 1)],
+        )
+        before = conn.execute("SELECT COUNT(*) FROM pt_audit_event").fetchone()[0]
+
+    client = TestClient(backend.app)
+    response = client.post(
+        "/api/paper/orders/review",
+        json={
+            "scope": "TUTORIAL", "side": "BUY", "mode": "MANUAL_HISTORY",
+            "ts_code": "000001", "execution_trade_date": "20260806", "qty": 100,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["persisted"] is False
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM pt_audit_event").fetchone()[0] == before

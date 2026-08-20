@@ -1,4 +1,4 @@
-"""阶段1 验收：迁移机制（空库 / 副本升级 / 重复执行幂等）"""
+﻿"""阶段1 验收：迁移机制（空库 / 副本升级 / 重复执行幂等）"""
 from __future__ import annotations
 
 import os
@@ -132,7 +132,7 @@ def test_v7_migration_preserves_lots_and_allows_zero_balance():
     conn.commit()
     conn.close()
 
-    assert run_migrations(db) == [7, 8]
+    assert run_migrations(db) == [7, 8, 9]
     conn = sqlite3.connect(db)
     before = conn.execute(
         "SELECT lot_id, remaining_qty, cost_price_micro FROM pt_position_lot"
@@ -197,7 +197,7 @@ def test_v8_migration_backfills_effective_at_for_recent_rows():
     conn.commit()
     conn.close()
 
-    assert run_migrations(db) == [8]
+    assert run_migrations(db) == [8, 9]
     conn = sqlite3.connect(db)
     effective_at = conn.execute("SELECT effective_at FROM daily").fetchone()[0]
     conn.close()

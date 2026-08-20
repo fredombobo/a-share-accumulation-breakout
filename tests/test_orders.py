@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 
+from paper_trading import orders as orders_module
 from paper_trading.account import commit_import, create_account
 from paper_trading.errors import DomainError
 from paper_trading.orders import (
@@ -22,6 +23,7 @@ from paper_trading.orders import (
     get_order,
     sellable_qty,
 )
+from tests.paper_market_fixture import seed_fresh_neutral_benchmark
 
 _TMP_DIRS: list[tempfile.TemporaryDirectory] = []
 
@@ -43,6 +45,7 @@ def _setup() -> str:
             ("000002.SZ", "20260806", 20.0, 20.5, 19.8, 20.2, 500.0, 10000.0),
         ],
     )
+    seed_fresh_neutral_benchmark(conn)
     # 交易日历（8/6 周四开市, 8/7 周五开市）
     conn.executemany(
         "INSERT OR REPLACE INTO trade_cal (cal_date, is_open, source, updated_at)"
@@ -116,6 +119,69 @@ def test_buy_draft_no_signal_rejected():
         create_buy_draft(db, ts_code="999999.SZ", trade_date="20260806")
     assert ei.value.code == "SIGNAL_NOT_TRADEABLE"
     print("[PASS] 无信号买入拒绝")
+
+
+def test_historical_manual_buy_targets_selected_open_without_signal():
+    """历史手工演练不冒充 A 池信号，并固定到用户选择的下一开盘日。"""
+    db = _setup()
+    order = orders_module.create_historical_buy_draft(
+        db,
+        ts_code="000001",
+        execution_trade_date="20260806",
+        qty=100,
+    )
+    assert order["source"] == "MANUAL_HISTORY"
+    assert order["ts_code"] == "000001.SZ"
+    assert order["signal_trade_date"] == "20260805"
+    assert order["eligible_trade_date"] == "20260806"
+    listed = orders_module.list_orders(db)
+    assert listed[0]["source"] == "MANUAL_HISTORY"
+    assert listed[0]["eligible_trade_date"] == "20260806"
+
+    confirmed = confirm_order(db, order["order_id"])
+    assert confirmed["state"] == "CONFIRMED"
+    assert confirmed["confirmed_at"].startswith("2026-08-05")
+    assert confirmed["eligible_trade_date"] == "20260806"
+
+
+def test_historical_manual_buy_rejects_closed_or_missing_market_day():
+    """历史演练只接受真实开市且标的有当日行情的日期。"""
+    db = _setup()
+    with pytest.raises(DomainError) as closed:
+        orders_module.create_historical_buy_draft(
+            db, ts_code="000001", execution_trade_date="20260808", qty=100,
+        )
+    assert closed.value.code == "NOT_TRADING_DAY"
+
+    with pytest.raises(DomainError) as missing:
+        orders_module.create_historical_buy_draft(
+            db, ts_code="000002", execution_trade_date="20260805", qty=100,
+        )
+    assert missing.value.code == "NO_QUOTE_FOR_EXECUTION_DATE"
+
+
+def test_historical_manual_buy_can_rewind_empty_derived_cycles():
+    """没有历史成交时，后续空日结不得阻止从更早开盘日开始演练。"""
+    db = _setup()
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO pt_cycle (cycle_id,run_date,phase,started_at,finished_at)"
+            " VALUES (?,?, 'DONE','2026-08-08T00:00:00+08:00','2026-08-08T00:01:00+08:00')",
+            [("CY-20260806", "20260806"), ("CY-20260807", "20260807")],
+        )
+
+    order = orders_module.create_historical_buy_draft(
+        db, ts_code="000001", execution_trade_date="20260806", qty=100,
+    )
+    confirm_order(db, order["order_id"])
+    with sqlite3.connect(db) as conn:
+        phases = conn.execute(
+            "SELECT run_date,phase,blocked_reason FROM pt_cycle ORDER BY run_date",
+        ).fetchall()
+    assert phases == [
+        ("20260806", "PRE_OPEN", f"HISTORICAL_REPLAY:{order['order_id']}"),
+        ("20260807", "PRE_OPEN", f"HISTORICAL_REPLAY:{order['order_id']}"),
+    ]
 
 
 def test_confirm_buy_reserves_cash():

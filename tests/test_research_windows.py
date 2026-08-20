@@ -45,7 +45,8 @@ class TestResearchWindows(unittest.TestCase):
             dates.append(last.strftime("%Y%m%d"))
         p = recommend_research_plan(dates)
         self.assertEqual(p.mode, "full")
-        self.assertTrue(p.can_claim_edge)
+        self.assertTrue(p.data_ready_for_edge_validation)
+        self.assertFalse(p.can_claim_edge)  # 仍需净成本 OOS/WF/基线门禁
         self.assertLessEqual(p.is_start, "20230801")
         self.assertGreaterEqual(p.oos_end, "20260731")
 
