@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import local_store as local_store_mod
+import ab_screener.local_store as local_store_mod
 from ab_screener.data.instrument_repository import InstrumentRegistryError, upsert_instrument
 from ab_screener.data.migration_registry import apply_pending
 from ab_screener.domain.instrument import Instrument
