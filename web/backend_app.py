@@ -144,8 +144,7 @@ def _mount_logic_router() -> None:
 _mount_logic_router()
 
 
-def _paper_enabled() -> bool:
-    return os.environ.get("PAPER_TRADING_ENABLED", "true").lower() == "true"
+from ab_screener.api.legacy_state import _paper_enabled
 
 
 @app.middleware("http")
