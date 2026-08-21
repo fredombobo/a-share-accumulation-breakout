@@ -32,7 +32,7 @@ def test_progress_write_waits_for_a_windows_reader_to_release(tmp_path: Path) ->
 
 def test_subprocess_error_is_persisted_as_a_terminal_scan_job(tmp_path: Path) -> None:
     """A failed child process must not leave scan_jobs stuck at RUNNING."""
-    from web.backend_app import _finish_persisted_scan_failure
+    from ab_screener.api.routers.legacy_scan import _finish_persisted_scan_failure
 
     db_path = tmp_path / "scan.db"
     LocalStore(db_path)
