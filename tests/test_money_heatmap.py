@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from web.backend_app import money_heatmap
+from ab_screener.api.routers.legacy_market import money_heatmap
 
 
 def test_money_heatmap_returns_every_nonzero_inflow_and_outflow() -> None:
@@ -21,7 +21,7 @@ def test_money_heatmap_returns_every_nonzero_inflow_and_outflow() -> None:
         ]
     )
     with patch(
-        "web.backend_app._load_sector_flow",
+        "ab_screener.api.routers.legacy_market._load_sector_flow",
         return_value=(["20260807"], pivot),
     ):
         result = money_heatmap(top=0)
