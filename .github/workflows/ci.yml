@@ -33,7 +33,7 @@ jobs:
             paper_trading/rules.py paper_trading/engine.py backtest_custom.py
 
       - name: Architecture boundaries
-        run: python scripts/check_architecture.py
+        run: python scripts/check_architecture.py --strict
 
       - name: Pytest (offline suite)
         run: pytest tests/ -q -k "not browser"

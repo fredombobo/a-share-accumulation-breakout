@@ -42,19 +42,38 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from ab_screener.research.store import ResearchRunStore
-from build_version import build_version as _compute_build_version
-from local_store import LocalStore
 from scoring import (
     calc_fund_flow_strength,
 )
 from signals import detect_accumulation_breakout
 
-# 后端构建版本与启动时间：启动器据此检测「源码或前端产物更新」并自动重启
-_BUILD_VERSION = _compute_build_version()
-_STARTED_AT = datetime.now().isoformat(timespec="seconds")
-_INSTANCE_ID = uuid.uuid4().hex[:12]
-_LOGGER = logging.getLogger(__name__)
+from ab_screener.api.legacy_state import (
+    _DB,
+    _BUILD_VERSION,
+    _STARTED_AT,
+    _INSTANCE_ID,
+    _LOGGER,
+    _store,
+    _SECTOR_FLOW_CACHE,
+    _SIG_CACHE,
+    _OVERVIEW_CACHE,
+    _SCAN_RESULT_CACHE,
+    _DATES_CACHE,
+    _SCAN_TASKS,
+    _SCAN_CANCEL_EVENTS,
+    _SCAN_LOCK,
+    _SCAN_TASKS_MAX,
+    _SECTOR_FLOW_CACHE_MAX,
+    _LAB_TASKS,
+    _LAB_LOCK,
+    _LAB_TASKS_MAX,
+    _LAB_STORE,
+    _SYNC_LOCK,
+    _SYNC_STATE,
+    _BT_LOCK,
+    _BT_TASKS,
+    _BT_TASKS_MAX,
+)
 
 if os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true":
     raise RuntimeError("LIVE_TRADING_ENABLED 必须保持 false；本项目不包含真实下单能力")
@@ -161,22 +180,6 @@ async def local_only_guard(request: Request, call_next):
 
 
 # ── 模块级单例（schema 初始化只做一次） ──
-_store = LocalStore()
-_SECTOR_FLOW_CACHE: dict = {}  # {(days, data_version): (dates, pivot_df)}
-_SIG_CACHE: dict = {}          # {(ts_code, as_of): sig} 个股信号缓存，避免每次 overview 重算
-
-# 阶段0：overview 轻量列表缓存（按数据日期失效），避免每次请求重复全表查询
-_OVERVIEW_CACHE: dict = {"key": None, "payload": None}   # key=(as_of, pool)
-_SCAN_RESULT_CACHE: dict = {"key": None, "df": None}     # key=max(trade_date)
-_DATES_CACHE: dict = {"key": None, "dates": None}        # key=max(trade_date) 全量日期
-
-# ── 异步扫描任务管理 ──
-_SCAN_TASKS: dict[str, dict] = {}
-_SCAN_CANCEL_EVENTS: dict[str, threading.Event] = {}
-_SCAN_LOCK = threading.Lock()
-_SCAN_TASKS_MAX = 20          # 历史任务保留上限，防止字典无限增长
-_SECTOR_FLOW_CACHE_MAX = 6    # 板块资金流缓存条目上限
-
 
 def _new_task(top: int, days: int) -> str:
     task_id = uuid.uuid4().hex[:12]
@@ -1194,8 +1197,6 @@ def post_portfolio(body: dict):
 
 # ── 纸面交易 API（paper_trading 领域模块）──
 
-_DB = _PARENT / "runtime" / "stock_data.db"
-
 
 def _paper_err(e: Exception) -> None:
     """DomainError → 结构化错误响应 {code, message, details, retryable}（raise）。"""
@@ -1860,13 +1861,6 @@ def setup_status():
 
 
 # ── 策略实验室（P6：闭环优化 → 验证 → 擂台赛） ──
-_LAB_TASKS: dict[str, dict] = {}
-_LAB_LOCK = threading.Lock()
-_LAB_TASKS_MAX = 10
-
-_LAB_STORE = ResearchRunStore(_store.db_path)
-
-
 def _recover_orphaned_lab_runs(process_name: str | None = None) -> int:
     """Recover only in the web process, never in spawned optimizer workers.
 
@@ -2610,16 +2604,6 @@ if _HAS_DIST:
 # ═══════════════════════════════════════════════════════════
 # 数据同步 API（手动更新行情，2026-08-16 新增）
 # ═══════════════════════════════════════════════════════════
-_SYNC_LOCK = threading.Lock()
-_SYNC_STATE: dict = {
-    "status": "idle",  # idle | running | done | error
-    "message": "",
-    "started_at": None,
-    "finished_at": None,
-    "latest_daily": None,
-    "latest_moneyflow": None,
-    "failed_dates": [],
-}
 
 
 @app.post("/api/sync")
@@ -2681,9 +2665,6 @@ def sync_status():
 # ═══════════════════════════════════════════════════════════
 # 回测工作台 API（2026-08-16 新增：单组参数 → IS/OOS 逐笔明细）
 # ═══════════════════════════════════════════════════════════
-_BT_LOCK = threading.Lock()
-_BT_TASKS: dict[str, dict] = {}
-_BT_TASKS_MAX = 20
 
 
 def _bt_prune() -> None:
