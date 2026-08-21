@@ -12,13 +12,14 @@ def _read(relative_path: str) -> str:
 def test_ab_development_ports_are_isolated_from_aetf() -> None:
     vite_config = _read("web/frontend/vite.config.ts")
     backend = _read("web/backend_app.py")
+    legacy_misc = _read("ab_screener/api/routers/legacy_misc.py")
     starter = _read("start_ui.ps1")
 
     assert "http://127.0.0.1:8001" in vite_config
     assert "AB_BACKEND_URL" in vite_config
     assert "AB_BACKEND_PORT" in backend
     assert "port=_backend_port()" in backend
-    assert 'f"http://127.0.0.1:{_backend_port()}/"' in backend
+    assert 'f"http://127.0.0.1:{_backend_port()}/"' in legacy_misc
     assert "$BackendPort = 8001" in starter
     assert "Stop-PortListeners" not in starter
 

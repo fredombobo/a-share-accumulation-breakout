@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import uuid
 from datetime import datetime
@@ -59,3 +60,7 @@ _SYNC_STATE: dict = {
 _BT_LOCK = threading.Lock()
 _BT_TASKS: dict[str, dict] = {}
 _BT_TASKS_MAX = 20
+
+
+def _paper_enabled() -> bool:
+    return os.environ.get("PAPER_TRADING_ENABLED", "true").lower() == "true"

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import ab_screener.api.routers.legacy_paper as legacy_paper
 from local_store import LocalStore
 
 
@@ -27,8 +28,8 @@ def _load_backend_without_scheduler():
 def test_paper_write_api_requires_and_replays_idempotency_key(tmp_path: Path) -> None:
     backend = _load_backend_without_scheduler()
     db = tmp_path / "api.db"
-    backend._DB = db
-    backend._store = LocalStore(db_path=db)
+    backend._DB = legacy_paper._DB = db
+    backend._store = legacy_paper._store = LocalStore(db_path=db)
     client = TestClient(backend.app)
 
     missing = client.post("/api/paper/account", json={"initial_cash_fen": "10000"})
@@ -55,8 +56,8 @@ def test_paper_write_api_requires_and_replays_idempotency_key(tmp_path: Path) ->
 def test_feature_flag_and_legacy_portfolio_write_are_blocked(tmp_path: Path) -> None:
     backend = _load_backend_without_scheduler()
     db = tmp_path / "api.db"
-    backend._DB = db
-    backend._store = LocalStore(db_path=db)
+    backend._DB = legacy_paper._DB = db
+    backend._store = legacy_paper._store = LocalStore(db_path=db)
     client = TestClient(backend.app)
 
     legacy = client.post("/api/portfolio", json={"action": "remove", "ts_code": "000001.SZ"})
@@ -88,7 +89,7 @@ def test_openapi_contains_corporate_action_apply_endpoint() -> None:
 
 
 def test_scheduler_cycle_query_uses_real_schema_column() -> None:
-    source = Path("web/backend_app.py").read_text(encoding="utf-8")
+    source = Path("ab_screener/data/paper_query.py").read_text(encoding="utf-8")
     assert "SELECT run_date FROM pt_cycle" in source
     assert "SELECT trade_date FROM pt_cycle" not in source
 
@@ -112,8 +113,8 @@ def test_health_exposes_guided_ui_feature_flag() -> None:
 def test_historical_manual_draft_api_uses_selected_execution_date(tmp_path: Path) -> None:
     backend = _load_backend_without_scheduler()
     db = tmp_path / "historical-api.db"
-    backend._DB = db
-    backend._store = LocalStore(db_path=db)
+    backend._DB = legacy_paper._DB = db
+    backend._store = legacy_paper._store = LocalStore(db_path=db)
     with sqlite3.connect(db) as conn:
         conn.executemany(
             "INSERT INTO daily (ts_code, trade_date, open, high, low, close, vol, amount)"
@@ -157,8 +158,8 @@ def test_historical_manual_draft_api_uses_selected_execution_date(tmp_path: Path
 def test_dashboard_hides_snapshots_invalidated_by_historical_replay(tmp_path: Path) -> None:
     backend = _load_backend_without_scheduler()
     db = tmp_path / "dashboard-replay.db"
-    backend._DB = db
-    backend._store = LocalStore(db_path=db)
+    backend._DB = legacy_paper._DB = db
+    backend._store = legacy_paper._store = LocalStore(db_path=db)
     client = TestClient(backend.app)
     created = client.post(
         "/api/paper/account",
@@ -191,8 +192,8 @@ def test_dashboard_hides_snapshots_invalidated_by_historical_replay(tmp_path: Pa
 def test_tutorial_review_api_needs_no_idempotency_and_changes_no_ledger(tmp_path: Path) -> None:
     backend = _load_backend_without_scheduler()
     db = tmp_path / "tutorial-review-api.db"
-    backend._DB = db
-    backend._store = LocalStore(db_path=db)
+    backend._DB = legacy_paper._DB = db
+    backend._store = legacy_paper._store = LocalStore(db_path=db)
     with sqlite3.connect(db) as conn:
         conn.executemany(
             "INSERT INTO daily (ts_code,trade_date,open,high,low,close,vol,amount)"
