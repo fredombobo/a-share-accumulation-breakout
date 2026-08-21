@@ -17,6 +17,8 @@ from pydantic import BaseModel, Field
 
 from ab_screener.api.legacy_state import (
     _PARENT,
+    _BUILD_VERSION,
+    _OVERVIEW_CACHE,
     _SCAN_CANCEL_EVENTS,
     _SCAN_LOCK,
     _SCAN_TASKS,
@@ -25,6 +27,13 @@ from ab_screener.api.legacy_state import (
 )
 
 router = APIRouter(tags=["legacy"])
+
+
+def _clear_overview_cache() -> None:
+    """新扫描完成时清空总览轻量缓存，避免前端读到旧扫描结果。"""
+    _OVERVIEW_CACHE["key"] = None
+    _OVERVIEW_CACHE["payload"] = None
+
 
 def _new_task(top: int, days: int) -> str:
     task_id = uuid.uuid4().hex[:12]
@@ -343,8 +352,7 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
                 "elapsed_sec": result.get("elapsed_sec"),
             }
             # 新扫描完成：清除 overview 轻量缓存，避免展示旧数据
-            _OVERVIEW_CACHE["key"] = None
-            _OVERVIEW_CACHE["payload"] = None
+            _clear_overview_cache()
         report(
             "完成",
             100,

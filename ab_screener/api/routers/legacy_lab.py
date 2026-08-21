@@ -9,6 +9,7 @@ status / reports / cancel / leaderboard / compare / arena 路由。
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import uuid
 from datetime import datetime

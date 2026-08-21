@@ -15,13 +15,9 @@
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import logging
 import os
 import sys
 import threading
-import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -35,44 +31,15 @@ for _p in (str(_BASE), str(_PARENT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import pandas as pd
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-
-from scoring import (
-    calc_fund_flow_strength,
-)
-from signals import detect_accumulation_breakout
 
 from ab_screener.api.legacy_state import (
     _DB,
-    _BUILD_VERSION,
-    _STARTED_AT,
-    _INSTANCE_ID,
     _LOGGER,
     _store,
-    _SECTOR_FLOW_CACHE,
-    _SIG_CACHE,
-    _OVERVIEW_CACHE,
-    _SCAN_RESULT_CACHE,
-    _DATES_CACHE,
-    _SCAN_TASKS,
-    _SCAN_CANCEL_EVENTS,
-    _SCAN_LOCK,
-    _SCAN_TASKS_MAX,
-    _SECTOR_FLOW_CACHE_MAX,
-    _LAB_TASKS,
-    _LAB_LOCK,
-    _LAB_TASKS_MAX,
-    _LAB_STORE,
-    _SYNC_LOCK,
-    _SYNC_STATE,
-    _BT_LOCK,
-    _BT_TASKS,
-    _BT_TASKS_MAX,
 )
 
 if os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true":
