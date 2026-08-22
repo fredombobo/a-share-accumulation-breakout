@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import local_store as local_store_mod
+import ab_screener.local_store as local_store_mod
 from ab_screener.application.data_quality import (
     check_coverage,
     check_duplicate_keys,

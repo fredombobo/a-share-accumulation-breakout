@@ -12,6 +12,7 @@ from local_store import LocalStore
 from paper_trading.account import create_account
 from paper_trading.migrations import run_migrations
 from web import backend_app as backend
+import ab_screener.api.routers.legacy_misc as legacy_misc
 
 
 def _setup(db: Path, *, include_scan: bool = True) -> None:
@@ -102,6 +103,7 @@ def test_manifest_api_is_read_only_and_returns_latest(monkeypatch, tmp_path: Pat
     _setup(db)
     manifest = create_daily_manifest(db, "20260807")
     monkeypatch.setattr(backend, "_DB", db)
+    monkeypatch.setattr(legacy_misc, "_DB", db)
     client = TestClient(backend.app)
 
     listing = client.get("/api/manifests")

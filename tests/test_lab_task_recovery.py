@@ -4,7 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-import web.backend_app as backend
+import ab_screener.api.routers.legacy_lab as backend
 from ab_screener.research.store import ResearchRunStore
 from local_store import LocalStore
 
