@@ -220,11 +220,12 @@ E:\CODEX\Stock_selection\accumulation_breakout\.venv312\Scripts\python.exe -m py
 
 ## 9. 管理者区（实现 Agent 不填）
 
-- 范围审查：
-- 代码审查：
-- 定向复验：
-- 交叉域复验：
-- 运行态复验：
-- 判定：ACCEPTED / REWORK_REQUIRED / REJECTED
-- 缺陷编号：
-- 允许进入的下一任务：
+- 范围审查：PASS；改动位于数据域 owned paths，生产 DB 未写，真实 gate 诚实为 FAIL。
+- 代码审查：FAIL；shadow parity 没有最小样本硬门；公司行为权限检查存在 0 代码跳过路径。
+- 定向复验：23 passed；Ruff 0；Mypy 0；当前 head 在副本正常样本为 100 pairs/600 fields/0 diff。
+- 交叉域复验：管理者用空迁移库复现 `PASS + samples_checked=0 + pairs_compared=0`。
+- 运行态复验：副本报告可读，但既有产物 code_sha 为 base 而非交付 head，需修复后重生。
+- 判定：REWORK_REQUIRED
+- 缺陷编号：V2R-D-RW-001（空/不足样本假 PASS）；V2R-D-RW-002（报告身份不匹配）；V2R-D-RW-003（公司行为权限 0 代码跳过）。
+- 允许进入的下一任务：否；V2R-S/V2R-N 继续 blocked。
+- 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-d`。
