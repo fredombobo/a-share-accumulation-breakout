@@ -42,19 +42,27 @@ export default function Monitor() {
           <dl className="mt-4 grid grid-cols-2 gap-4 text-sm">
             <div>
               <dt className="text-slate-400">DB 大小</dt>
-              <dd className="font-mono">{health.db_size_mb != null ? `${health.db_size_mb} MB` : '—'}</dd>
+              <dd className="font-mono">
+                {health.database?.size_bytes != null
+                  ? `${(health.database.size_bytes / 1e6).toFixed(1)} MB`
+                  : '—'}
+              </dd>
             </div>
             <div>
               <dt className="text-slate-400">磁盘剩余</dt>
-              <dd className="font-mono">{health.disk_free_gb != null ? `${health.disk_free_gb} GB` : '—'}</dd>
+              <dd className="font-mono">{health.disk?.free_gb != null ? `${health.disk.free_gb} GB` : '—'}</dd>
             </div>
             <div>
               <dt className="text-slate-400">WAL</dt>
-              <dd className="font-mono">{health.wal_size_mb != null ? `${health.wal_size_mb} MB` : '—'}</dd>
+              <dd className="font-mono">
+                {health.database?.wal_bytes != null
+                  ? `${(health.database.wal_bytes / 1e6).toFixed(1)} MB`
+                  : '—'}
+              </dd>
             </div>
             <div>
               <dt className="text-slate-400">错误</dt>
-              <dd className="font-mono">{health.errors?.length ? health.errors.join('; ') : '无'}</dd>
+              <dd className="font-mono">{health.issues?.length ? health.issues.join('; ') : '无'}</dd>
             </div>
           </dl>
         </div>

@@ -62,9 +62,9 @@ export default function Compare() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && submit()}
-          placeholder={`输入 ${MIN_CODES}-${MAX_CODES} 个代码，如 000001.SZ 600000.SH`}
+          placeholder="输入 2-6 个代码，用空格分隔"
           aria-label="对比标的"
-          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          className="min-w-0 flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
         />
         <button
           onClick={submit}

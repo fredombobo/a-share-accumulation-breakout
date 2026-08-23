@@ -42,19 +42,27 @@ export default function System() {
           <dl className="mt-4 grid grid-cols-2 gap-4 text-sm">
             <div>
               <dt className="text-slate-400">构建</dt>
-              <dd className="font-mono">{health.build || '—'}</dd>
+              <dd className="font-mono">{health.build_version || '—'}</dd>
             </div>
             <div>
               <dt className="text-slate-400">DB 大小</dt>
-              <dd className="font-mono">{health.db_size_mb != null ? `${health.db_size_mb} MB` : '—'}</dd>
+              <dd className="font-mono">
+                {health.database?.size_bytes != null
+                  ? `${(health.database.size_bytes / 1e6).toFixed(1)} MB`
+                  : '—'}
+              </dd>
             </div>
             <div>
               <dt className="text-slate-400">WAL</dt>
-              <dd className="font-mono">{health.wal_size_mb != null ? `${health.wal_size_mb} MB` : '—'}</dd>
+              <dd className="font-mono">
+                {health.database?.wal_bytes != null
+                  ? `${(health.database.wal_bytes / 1e6).toFixed(1)} MB`
+                  : '—'}
+              </dd>
             </div>
             <div>
               <dt className="text-slate-400">磁盘剩余</dt>
-              <dd className="font-mono">{health.disk_free_gb != null ? `${health.disk_free_gb} GB` : '—'}</dd>
+              <dd className="font-mono">{health.disk?.free_gb != null ? `${health.disk.free_gb} GB` : '—'}</dd>
             </div>
           </dl>
         )}
@@ -65,10 +73,22 @@ export default function System() {
         <p className="mt-2 text-sm text-slate-500">
           深度完整性检查由离线脚本执行（PRAGMA integrity_check），快速健康仅读取最近一次证书。
         </p>
-        {health?.errors?.length ? (
-          <p className="mt-2 text-sm text-red-600">{health.errors.join('; ')}</p>
+        {health?.database?.deep_check ? (
+          <p
+            className={
+              health.database.deep_check.status === 'PASS'
+                ? 'mt-2 text-sm text-emerald-600'
+                : 'mt-2 text-sm text-amber-600'
+            }
+          >
+            {health.database.deep_check.status}
+            {health.database.deep_check.finished_at
+              ? ` · ${health.database.deep_check.finished_at}`
+              : ''}
+            {health.database.deep_check.reason ? ` · ${health.database.deep_check.reason}` : ''}
+          </p>
         ) : (
-          <p className="mt-2 text-sm text-slate-400">暂无深度检查异常记录</p>
+          <p className="mt-2 text-sm text-slate-400">暂无深度检查证书</p>
         )}
       </section>
 
