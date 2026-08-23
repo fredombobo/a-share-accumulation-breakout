@@ -9,10 +9,14 @@ wave_1_reviewed_at: "2026-08-23T14:52:00+08:00"
 wave_1_verdict: REWORK_REQUIRED
 wave_1_rechecked_at: "2026-08-23T15:45:00+08:00"
 wave_1_recheck_verdict: REWORK_REQUIRED
+wave_1_finalized_at: "2026-08-23T21:20:00+08:00"
+wave_1_final_verdict: ACCEPTED
+wave_1_integration_code_commit: "5cf7088"
 wave_1_summary:
-  accepted: [V2R-Q1, V2R-A]
-  rework_required: [V2R-D, V2R-X, V2R-F, V2R-O1]
-  released_wave_2_tasks: []
+  accepted: [V2R-Q1, V2R-A, V2R-D, V2R-X, V2R-F, V2R-O1]
+  rework_required: []
+  released_wave_2_tasks: [V2R-S, V2R-R, V2R-N]
+  dependency_blocked_wave_2_tasks: [V2R-O2]
 manager_role: "Codex primary agent: dispatch, scope review, independent verification, rejection/rework, P8 verdict"
 
 authority:
@@ -107,13 +111,13 @@ tasks:
 
   V2R-D:
     title: "PIT、公司行为与当前身份数据门禁"
-    status: rework_required
-    reviewed_commit: "57c5a8b764cbcc3535e04908359955598f832d25"
-    manager_review_commit: "f83dc31"
+    status: accepted
+    accepted_commit: "cab2afe"
+    manager_review_commit: "1294a28"
     defect_ids: [V2R-D-RW-001, V2R-D-RW-002, V2R-D-RW-003]
-    resolved_defect_ids: []
-    remaining_defect_ids: [V2R-D-RW-001, V2R-D-RW-002, V2R-D-RW-003]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-d"
+    resolved_defect_ids: [V2R-D-RW-001, V2R-D-RW-002, V2R-D-RW-003]
+    remaining_defect_ids: []
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-FINAL-2026-08-23.md#v2r-d"
     wave: 1
     agent_role: data-gate-agent
     dependencies: []
@@ -134,13 +138,13 @@ tasks:
 
   V2R-X:
     title: "统一执行核心、账本 parity 与风险接线"
-    status: rework_required
-    reviewed_commit: "d7551bc310a3a3581b303e631d89d29cb95b84ab"
-    manager_review_commit: "dd4e932"
+    status: accepted
+    accepted_commit: "57ddea4"
+    manager_review_commit: "532b03b"
     defect_ids: [V2R-X-RW-001, V2R-X-RW-002]
-    resolved_defect_ids: [V2R-X-RW-001]
-    remaining_defect_ids: [V2R-X-RW-002]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-x"
+    resolved_defect_ids: [V2R-X-RW-001, V2R-X-RW-002]
+    remaining_defect_ids: []
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-FINAL-2026-08-23.md#v2r-x"
     wave: 1
     agent_role: execution-risk-agent
     dependencies: []
@@ -164,13 +168,13 @@ tasks:
 
   V2R-F:
     title: "v2 控制台缺页、前端测试和无障碍 E2E"
-    status: rework_required
-    reviewed_commit: "f5bfff4fd9f9d6a5830e88476032746c1582865b"
-    manager_review_commit: "f4295bd"
+    status: accepted
+    accepted_commit: "17cb5a3"
+    manager_review_commit: "bcbe7ed"
     defect_ids: [V2R-F-RW-001, V2R-F-RW-002, V2R-F-RW-003, V2R-F-RW-004]
-    resolved_defect_ids: [V2R-F-RW-003]
-    remaining_defect_ids: [V2R-F-RW-001, V2R-F-RW-002, V2R-F-RW-004]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-f"
+    resolved_defect_ids: [V2R-F-RW-001, V2R-F-RW-002, V2R-F-RW-003, V2R-F-RW-004]
+    remaining_defect_ids: []
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-FINAL-2026-08-23.md#v2r-f"
     wave: 1
     agent_role: frontend-e2e-agent
     dependencies: []
@@ -189,13 +193,13 @@ tasks:
 
   V2R-O1:
     title: "快速健康检查、备份接线与严格恢复演练"
-    status: rework_required
-    reviewed_commit: "b02ed05d5a24e361ece4a1a0b617f390cf6636e9"
-    manager_review_commit: "0b20b0a"
+    status: accepted
+    accepted_commit: "b953773"
+    manager_review_commit: "bdc4ef4"
     defect_ids: [V2R-O1-RW-001, V2R-O1-RW-002, V2R-O1-RW-003]
-    resolved_defect_ids: [V2R-O1-RW-002]
-    remaining_defect_ids: [V2R-O1-RW-001, V2R-O1-RW-003]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-o1"
+    resolved_defect_ids: [V2R-O1-RW-001, V2R-O1-RW-002, V2R-O1-RW-003]
+    remaining_defect_ids: []
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-FINAL-2026-08-23.md#v2r-o1"
     wave: 1
     agent_role: operations-recovery-agent
     dependencies: []
@@ -216,7 +220,7 @@ tasks:
 
   V2R-S:
     title: "六形态扫描、不可变信号、成交/outcome 生产接线"
-    status: blocked
+    status: ready
     wave: 2
     agent_role: signal-lifecycle-agent
     dependencies: [V2R-Q1, V2R-A, V2R-D, V2R-X]
@@ -259,7 +263,7 @@ tasks:
 
   V2R-R:
     title: "600 股、步长 5 的净成本 IS/OOS/WF 与反过拟合证据"
-    status: blocked
+    status: ready
     wave: 2
     agent_role: research-evidence-agent
     dependencies: [V2R-Q1, V2R-D, V2R-X]
@@ -276,7 +280,7 @@ tasks:
 
   V2R-N:
     title: "国家队/机构资金等信息增强只读覆盖层"
-    status: blocked
+    status: ready
     wave: 2
     agent_role: information-overlay-agent
     dependencies: [V2R-D]
