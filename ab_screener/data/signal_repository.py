@@ -34,14 +34,14 @@ def _require(conn: sqlite3.Connection, table: str) -> None:
         )
 
 
-def save_observation(conn: sqlite3.Connection, obs: SignalObservation) -> str:
-    """落库不可变观察（幂等：同 observation_id 返回既有）。"""
+def insert_observation(conn: sqlite3.Connection, obs: SignalObservation) -> bool:
+    """幂等落库观察；返回是否真正插入（False = 重放跳过，不产生新行）。"""
     _require(conn, "signal_observations")
     existing = conn.execute(
         "SELECT 1 FROM signal_observations WHERE observation_id=?", (obs.observation_id,)
     ).fetchone()
     if existing:
-        return obs.observation_id
+        return False
     now = _now()
     conn.execute(
         "INSERT INTO signal_observations (observation_id, strategy_definition_id,"
@@ -59,6 +59,12 @@ def save_observation(conn: sqlite3.Connection, obs: SignalObservation) -> str:
         (obs.observation_id, now),
     )
     conn.commit()
+    return True
+
+
+def save_observation(conn: sqlite3.Connection, obs: SignalObservation) -> str:
+    """落库不可变观察（幂等：同 observation_id 返回既有）。"""
+    insert_observation(conn, obs)
     return obs.observation_id
 
 

@@ -5,6 +5,9 @@
 - 无法在有效期成交 → UNFILLABLE/EXPIRED，收益 NULL（不填 0）。
 - 只能在持有期结束、收盘和复权/公司行为数据 available 后回填（调用方保证，本函数校验）。
 - 理论 outcome 与纸面 fill 分开统计（独立表/独立查询）。
+
+V2R-S outcome 时点门：ret_5/10/20 只在对应交易日完成且行情
+`available_at <= calculation_at` 后回填；否则保持 NULL（UNFILLABLE 不写 0）。
 """
 from __future__ import annotations
 
@@ -12,6 +15,8 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
+
+from ab_screener.domain.data_point import normalize_ts
 
 _TZ = ZoneInfo("Asia/Shanghai")
 HORIZONS = (5, 10, 20)
@@ -107,3 +112,109 @@ def outcomes_for_observation(
         }
         for r in rows
     ]
+
+
+def compute_horizon_result(
+    *,
+    horizon_days: int,
+    entry_price_micro: int | None,
+    cost_rate: float,
+    exit_price_micro: int | None,
+    benchmark_excess: float | None,
+    maturity_trade_date: str,
+    last_completed_trade_date: str,
+    data_available_at: str | None,
+    calculation_at: str,
+) -> dict[str, Any]:
+    """outcome 时点门：交易日完成 + available_at <= calculation_at 才回填。
+
+    - 入场未成交（entry_price_micro 为 None）→ UNFILLABLE，收益 NULL（不填 0）。
+    - 对应交易日未完成或行情未 available（越界）→ PENDING，收益 NULL。
+    - 条件齐备 → MATURED，返回净收益与基准超额。
+    """
+    if horizon_days not in HORIZONS:
+        raise OutcomeError(f"horizon_days 必须为 {HORIZONS} 之一: {horizon_days}")
+    if entry_price_micro is None or entry_price_micro <= 0:
+        return {
+            "status": "UNFILLABLE", "entry_price_micro": None,
+            "exit_price_micro": None, "net_return": None,
+            "benchmark_excess": None,
+        }
+    day_complete = str(maturity_trade_date) <= str(last_completed_trade_date)
+    pit_ok = (
+        data_available_at is not None
+        and normalize_ts(data_available_at) <= normalize_ts(calculation_at)
+    )
+    if not (day_complete and pit_ok) or exit_price_micro is None:
+        return {
+            "status": "PENDING", "entry_price_micro": entry_price_micro,
+            "exit_price_micro": None, "net_return": None,
+            "benchmark_excess": None,
+        }
+    computed = compute_outcome(
+        entry_price_micro=entry_price_micro,
+        exit_price_micro=exit_price_micro,
+        cost_rate=cost_rate,
+        benchmark_excess=benchmark_excess,
+    )
+    return {
+        "status": "MATURED", "entry_price_micro": entry_price_micro,
+        "exit_price_micro": exit_price_micro,
+        "net_return": computed["net_return"],
+        "benchmark_excess": computed["benchmark_excess"],
+    }
+
+
+def backfill_horizon_outcome(
+    conn: sqlite3.Connection,
+    *,
+    observation_id: str,
+    horizon_days: int,
+    entry_price_micro: int | None,
+    cost_rate: float,
+    maturity_trade_date: str,
+    last_completed_trade_date: str,
+    calculation_at: str,
+    exit_price_micro: int | None = None,
+    data_available_at: str | None = None,
+    benchmark_excess: float | None = None,
+) -> dict[str, Any]:
+    """生产接线：compute_horizon_result → record_outcome（修订追加、重放幂等）。
+
+    同 (observation, horizon) 最新行状态与数值完全一致时跳过写入（不覆盖历史行）。
+    """
+    result = compute_horizon_result(
+        horizon_days=horizon_days,
+        entry_price_micro=entry_price_micro,
+        cost_rate=cost_rate,
+        exit_price_micro=exit_price_micro,
+        benchmark_excess=benchmark_excess,
+        maturity_trade_date=maturity_trade_date,
+        last_completed_trade_date=last_completed_trade_date,
+        data_available_at=data_available_at,
+        calculation_at=calculation_at,
+    )
+    rows = [
+        r for r in outcomes_for_observation(conn, observation_id)
+        if r["horizon_days"] == horizon_days
+    ]
+    latest = rows[-1] if rows else None
+    if latest is not None and (
+        latest["status"] == result["status"]
+        and latest["entry_price_micro"] == result["entry_price_micro"]
+        and latest["exit_price_micro"] == result["exit_price_micro"]
+        and latest["net_return"] == result["net_return"]
+    ):
+        return {"outcome_id": latest["outcome_id"], "idempotent": True, **result}
+    outcome_id = record_outcome(
+        conn,
+        observation_id=observation_id,
+        horizon_days=horizon_days,
+        status=result["status"],
+        entry_price_micro=result["entry_price_micro"],
+        exit_price_micro=result["exit_price_micro"],
+        net_return=result["net_return"],
+        benchmark_excess=result["benchmark_excess"],
+        available_at=data_available_at or _now(),
+    )
+    return {"outcome_id": outcome_id, "idempotent": False, **result}

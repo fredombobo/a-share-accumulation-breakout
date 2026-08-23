@@ -55,3 +55,13 @@ def entered_requires_fill(from_state: str, event: str) -> None:
         return
     if event == "ENTERED":
         raise SignalLifecycleError("ENTERED 只能由实际 fill 触发")
+
+
+def fill_qualifies_for_entered(*, filled: bool, qty: int) -> bool:
+    """ENTERED 资格：只有实际正数量 fill 才算成交。
+
+    - `filled=True` 且 `qty > 0` → 可进入 ENTERED。
+    - 零成交（filled=False）、正数量但未成交、数量为 0 一律不进入。
+    订单确认（CONFIRMED/QUEUED）、拒绝、过期都不是 fill，不满足本规则。
+    """
+    return bool(filled) and isinstance(qty, int) and int(qty) > 0
