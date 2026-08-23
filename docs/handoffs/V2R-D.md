@@ -239,3 +239,19 @@ E:\CODEX\Stock_selection\accumulation_breakout\.venv312\Scripts\python.exe -m py
 - V2R-D-RW-002（报告身份）：real_data_gate 的 shadow parity 非 PASS 一律计入 issues（385-401 行既有逻辑覆盖
   INSUFFICIENT）；绑定新 SHA 的副本门禁报告需在可写环境对 `E:\ab-maintenance\v2r-d\stock_data_copy.db`
   重跑 `real_data_gate` 生成（本环境 DB 大文件写入受限）。
+
+## 10. 二验返工修复（RECHECK 2026-08-23，追加 commit）
+
+- 追加 commit：`cab2afe` fix(v2r-d): unconditional parity sample floor and derivable corporate-action probe
+- **V2R-D-RW-001**：样本硬门改为无条件（不再区分默认/显式传入）——少于 20 标的 × 5 日期一律
+  `result=INSUFFICIENT / pass=False`。旧 3×1 显式成功测试重写为足量 fixture
+  （`_seed_full_parity`：20 标的 × 5 日期 = 100 样本 × 6 字段 = 600 比较，断言 samples_checked=100、
+  pairs_compared=600）；新增 `test_shadow_parity_explicit_small_sample_insufficient`
+  （显式 2×1 → INSUFFICIENT，修改前该输入得 PASS/FAIL、修改后不得 PASS）。
+- **V2R-D-RW-002**：在修复后 head `cab2afeade05` 上对副本重生成不可变报告
+  `E:/ab-maintenance/v2r-d/reports/shadow_parity.json`：result=PASS / 100 样本 / 600 比较 / 0 diffs /
+  `code_sha=cab2afeade05` == HEAD / config_hash=745a7010eae38014 / db_fingerprint 存在 /
+  报告 SHA-256 前缀 f253178bb4fa6450。
+- **V2R-D-RW-003**：新增 `_corporate_probe_codes`（持仓 → 抽样标的 → 当日有效行情 open>0 三级推导），
+  三级均空时 gate 记 issue「探测标的选择失败（codes_checked=0，不允许静默跳过）」；
+  新增 3 个测试（持仓优先 / 抽样→行情回退 / 空库返回 []）。tests 20 passed；ruff 0；mypy 0。
