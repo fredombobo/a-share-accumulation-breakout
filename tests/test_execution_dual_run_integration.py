@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from ab_screener.domain.execution.dual_run import FrozenOrder, compare_round_trip
 from paper_trading.rules import InstrumentRule
 
