@@ -64,8 +64,16 @@ def ensure_table(conn: sqlite3.Connection) -> None:
     )
 
 
-def applied_migrations(conn: sqlite3.Connection) -> dict[str, MigrationRecord]:
-    ensure_table(conn)
+def applied_migrations(
+    conn: sqlite3.Connection, *, create_table: bool = True
+) -> dict[str, MigrationRecord]:
+    if create_table:
+        ensure_table(conn)
+    elif conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='schema_migrations_v2'"
+    ).fetchone() is None:
+        return {}
     rows = conn.execute("SELECT migration_id, checksum, applied_at, duration_ms FROM schema_migrations_v2").fetchall()
     return {r[0]: MigrationRecord(r[0], r[1], r[2], r[3]) for r in rows}
 
@@ -142,8 +150,9 @@ def schema_compatible(db_path: str | Path) -> tuple[bool, list[str]]:
         return False, ["DB_MISSING"]
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
     try:
-        pending = pending_migrations(conn)
-        applied = applied_migrations(conn)
+        _ensure_intents()
+        applied = applied_migrations(conn, create_table=False)
+        pending = [mid for mid in registered_ids() if mid not in applied]
         drift = []
         for mid, rec in applied.items():
             if rec.checksum != migration_checksum(mid):

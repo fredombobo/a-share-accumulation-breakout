@@ -67,6 +67,24 @@ def test_schema_compatible_missing_db(tmp_path):
     assert ok is False and issues == ["DB_MISSING"]
 
 
+def test_schema_compatible_unmigrated_db_is_read_only_and_reports_pending(tmp_path):
+    db_path = tmp_path / "unmigrated.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE seed (id INTEGER PRIMARY KEY)")
+
+    before = db_path.read_bytes()
+    ok, issues = mr.schema_compatible(db_path)
+
+    assert ok is False
+    assert issues
+    assert all(issue.startswith("MIGRATION_PENDING:") for issue in issues)
+    assert db_path.read_bytes() == before
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations_v2'"
+        ).fetchone() is None
+
+
 def test_dry_run_does_not_apply(tmp_path):
     conn = _fresh_db(tmp_path)
     try:
