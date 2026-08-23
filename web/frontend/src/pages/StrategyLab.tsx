@@ -375,7 +375,7 @@ export default function StrategyLab() {
     await launch({
       strategy,
       max_codes: 600,
-      step: 10,
+      step: 5,
       mode: 'grid',
       grid: { ...catalog.grid_default },
     })

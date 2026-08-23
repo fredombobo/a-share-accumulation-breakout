@@ -1,13 +1,37 @@
+export interface DeepCheckStatus {
+  status: 'PASS' | 'STALE' | 'MISSING' | 'FAIL'
+  reason?: string
+  finished_at?: string
+  duration_sec?: number
+  tables?: number
+}
+
+export interface DatabaseHealth {
+  ok: boolean
+  reason?: string
+  size_bytes?: number
+  wal_bytes?: number
+  fingerprint?: string
+  schema_version?: string | null
+  latest_date?: string | null
+  deep_check?: DeepCheckStatus
+}
+
+export interface DiskStatus {
+  free_gb?: number
+  ok?: boolean
+}
+
 export interface SystemHealth {
-  build?: string
-  db_path?: string
-  db_size_mb?: number
-  wal_size_mb?: number
-  disk_free_gb?: number
-  dag?: Record<string, unknown>
+  status: 'PASS' | 'FAIL'
+  issues?: string[]
+  build_version?: string
+  config_hash?: string
+  port?: number
+  database?: DatabaseHealth
+  disk?: DiskStatus
   backup?: Record<string, unknown>
-  ports?: Record<string, unknown>
-  errors?: string[]
+  checked_at?: string
 }
 
 export interface BackupInfo {

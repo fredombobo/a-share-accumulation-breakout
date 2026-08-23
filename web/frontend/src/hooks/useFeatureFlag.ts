@@ -1,19 +1,17 @@
 import { useCallback, useState } from 'react'
 
-/** 特性开关：与后端平台配置 V2_* flags 对应；前端本地默认可经 URL ?flag=1 覆盖。 */
-const FLAG_WHITELIST = [
-  'V2_PIT_READ_ENABLED',
-  'V2_EXECUTION_DUAL_RUN_ENABLED',
-  'V2_EXECUTION_WRITE_ENABLED',
-  'V2_STRATEGY_REGISTRY_ENABLED',
-  'V2_RISK_ENFORCEMENT_ENABLED',
-  'DAILY_SCHEDULER_ENABLED',
-  'INSTITUTIONAL_CONSOLE_V2_ENABLED',
-] as const
+/**
+ * 本地 UI 偏好（非业务旗标）。
+ *
+ * 安全约束：业务旗标（执行写、风险 enforce、调度、PIT 读、控制台等）必须由服务端
+ * `/api/v2/platform/status` 下发，前端不得经 query string 或 localStorage 打开
+ * 服务端已关闭的能力。本地只允许保存纯展示偏好（引导/专业视图）。
+ */
+const UI_PREF_KEYS = ['GUIDED_MODE', 'PRO_VIEW'] as const
 
-export type FeatureFlag = (typeof FLAG_WHITELIST)[number]
+export type UiPreference = (typeof UI_PREF_KEYS)[number]
 
-const LOCAL_KEY = 'ab_feature_flags'
+const LOCAL_KEY = 'ab_ui_preferences'
 
 function readLocal(): Record<string, boolean> {
   try {
@@ -26,18 +24,12 @@ function readLocal(): Record<string, boolean> {
 export function useFeatureFlag() {
   const [overrides, setOverrides] = useState<Record<string, boolean>>(readLocal)
 
-  const enabled = useCallback(
-    (flag: FeatureFlag): boolean => {
-      if (flag in overrides) return overrides[flag]
-      // 支持 URL ?flag=1 调试覆盖
-      const urlFlag = new URLSearchParams(window.location.search).get(flag)
-      if (urlFlag != null) return urlFlag === '1' || urlFlag === 'true'
-      return false
-    },
-    [overrides],
-  )
+  const enabled = useCallback((flag: UiPreference): boolean => {
+    if (flag in overrides) return overrides[flag]
+    return false
+  }, [overrides])
 
-  const setFlag = useCallback((flag: FeatureFlag, value: boolean) => {
+  const setFlag = useCallback((flag: UiPreference, value: boolean) => {
     setOverrides((prev) => {
       const next = { ...prev, [flag]: value }
       localStorage.setItem(LOCAL_KEY, JSON.stringify(next))
