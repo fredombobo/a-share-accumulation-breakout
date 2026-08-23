@@ -40,3 +40,15 @@
 
 ## 8. 声明
 - 未宣布 PERSONAL_INSTITUTIONAL_READY。结论 READY_FOR_REVIEW。
+
+## 9. 管理者区（2026-08-23）
+
+- 范围审查：PASS；改动位于执行/风险/纸面 owned paths，默认 flags 未开启。
+- 代码审查：FAIL；`_enforcement_enabled()` 未被使用，blocked/mode 仍硬编码默认 false；风险异常在 enforce 下也会被吞掉。
+- 定向复验：42 passed；Ruff 0；Mypy 0；dual-run 零分差正常路径通过。
+- 交叉域复验：管理者模拟 enforce + 8 条违规，仍得到 `blocked=false, mode=observe`。
+- 运行态复验：临时 DB，无生产账本写入。
+- 判定：REWORK_REQUIRED
+- 缺陷编号：V2R-X-RW-001（enforce 永远失效）；V2R-X-RW-002（enforce 风控异常 fail-open）。
+- 允许进入的下一任务：否；V2R-S/V2R-R 等依赖继续 blocked。
+- 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-x`。
