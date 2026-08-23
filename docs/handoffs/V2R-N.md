@@ -156,13 +156,17 @@ Success: no issues found in 3 source files
 ```text
 $ <PY> -m pytest tests/test_strategy_plugin_contract.py tests/test_desk_supplement.py tests/test_astock_client.py tests/test_openapi_contract_v2.py tests/test_architecture_boundaries.py -q
 27 passed in 7.61s
+
+# 扩展聚焦回归（intelligence / data adapter / api / architecture）
+$ <PY> -m pytest tests/test_intelligence_catalog.py tests/test_intelligence_supplement_api.py tests/test_event_timeline_pit.py tests/test_astock_client.py tests/test_desk_supplement.py tests/test_strategy_plugin_contract.py tests/test_openapi_contract_v2.py tests/test_architecture_boundaries.py -q
+39 passed in 98.99s
 ```
 
 （`test_strategy_plugin_contract.py` 仍断言 `len(regime_overlays())==1`：覆盖层未注册进开仓许可 registry。）
 
 ### 8.4 全量回归说明
 
-`pytest tests/ --continue-on-collection-errors --ignore=tests/browser` 存在**环境性**收集错误：`test_daily_run_manifest.py` 导入 `web.backend_app` 时 `assert_schema_compatible` 因 worktree 的 `runtime/stock_data.db` 尚未跑 `migrate_v2.py`（`MIGRATION_PENDING` 列表）而抛错——与本任务无关（本任务全部为新增文件，不触碰 DB / backend / schema_check）。
+`pytest tests/ --ignore=tests/browser` 在本 worktree 无法完整跑完，且存在**环境性**收集错误：`test_daily_run_manifest.py` 导入 `web.backend_app` 时 `assert_schema_compatible` 因 worktree 的 `runtime/stock_data.db` 尚未跑 `migrate_v2.py`（`MIGRATION_PENDING` 列表）而抛错——与本任务无关（本任务全部为新增文件，不触碰 DB / backend / schema_check）。全量执行 19 分钟后仍停留在 DB 密集用例，未产出结论，已停止；不影响上述定向验收命令结果。
 
 ## 9. 提交与回滚
 
