@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -22,11 +21,6 @@ from ab_screener.application.evaluate_overlays import (
     OverlayEvaluationResult,
     annotate_decision,
     evaluate_overlays,
-)
-from ab_screener.data.adapters.ntm_client import (
-    NationalTeamObservation,
-    OverlayInsufficient,
-    parse_ntm_snapshot,
 )
 from ab_screener.domain.data_point import canonical_json
 from ab_screener.intelligence.national_team_overlay_v1 import NATIONAL_TEAM_OVERLAY_ID
@@ -223,12 +217,16 @@ def test_overlay_on_off_parity_eligibility_position_orders(frozen_parity_case):
     assert overlay_result.status == "PASS"
 
     annotated = annotate_decision(decision_off, overlay_result)
-    decision_on = annotated["decision"]
+    decision_on = {key: annotated[key] for key in decision_off}
 
     # A/B 资格、目标仓位、订单逐字段一致
     _parity_assertions(decision_off, decision_on)
     # 只新增注释键
-    assert set(annotated.keys()) == {"decision", "annotations", "disclaimer"}
+    assert set(annotated.keys()) == {
+        *decision_off.keys(),
+        "annotations",
+        "disclaimer",
+    }
     assert annotated["annotations"][0]["verdict"] == "机会共振"
     assert "不进入 A/B 池" in annotated["disclaimer"]
 
@@ -247,7 +245,32 @@ def test_vendor_unavailable_does_not_break_scan_loop(frozen_parity_case):
     # 注释不携带任何伪造的观测
     annotated = annotate_decision(decision_off, overlay_result)
     assert annotated["annotations"] == []
-    _parity_assertions(decision_off, annotated["decision"])
+    decision_on = {key: annotated[key] for key in decision_off}
+    _parity_assertions(decision_off, decision_on)
+
+
+def test_unknown_overlay_id_is_structured_insufficient():
+    """未知覆盖层不能被静默忽略。"""
+    result = evaluate_overlays(
+        FROZEN_RAW,
+        decision_at=DECISION_AT,
+        overlays=("unknown_overlay",),
+    )
+    assert result.status == "INSUFFICIENT"
+    assert result.observations == ()
+    assert len(result.insufficiencies) == 1
+    assert result.insufficiencies[0].reason == "unknown_overlay"
+
+
+def test_partial_overlay_failure_cannot_report_pass():
+    result = evaluate_overlays(
+        FROZEN_RAW,
+        decision_at=DECISION_AT,
+        overlays=(NATIONAL_TEAM_OVERLAY_ID, "unknown_overlay"),
+    )
+    assert len(result.observations) == 1
+    assert len(result.insufficiencies) == 1
+    assert result.status == "INSUFFICIENT"
 
 
 def test_frozen_parity_case_hashes_match_recorded(frozen_parity_case):

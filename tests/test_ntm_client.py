@@ -53,12 +53,15 @@ def _raw(**overrides: object) -> dict:
 
 def test_parse_frozen_raw_extracts_all_contract_fields():
     """固定原始响应 → 解析出领域记录的 8 个契约字段。"""
-    obs = parse_ntm_snapshot(FROZEN_RAW)
+    obs = parse_ntm_snapshot(
+        FROZEN_RAW,
+        ingested_at="2026-08-21T19:05:00+08:00",
+    )
     assert isinstance(obs, NationalTeamObservation)
     assert obs.observation_at == "2026-08-21T18:30:00+08:00"
     assert obs.effective_at == "2026-08-21T00:00:00+08:00"
     assert obs.available_at == "2026-08-21T18:30:00+08:00"
-    assert obs.ingested_at == "2026-08-21T18:30:00+08:00"
+    assert obs.ingested_at == "2026-08-21T19:05:00+08:00"
     assert obs.source == SOURCE_NTM
     assert obs.revision == "schema_v1_20260821T183000+0800"
     assert obs.confidence in CONFIDENCE_LEVELS
@@ -123,6 +126,15 @@ def test_parse_permission_scope_missing_resonance_is_insufficient():
     assert result.reason == "insufficient_permission"
 
 
+def test_parse_missing_permission_is_insufficient():
+    """没有权限声明不等于已授权，必须 fail-closed。"""
+    raw = _raw()
+    del raw["permission"]
+    result = parse_ntm_snapshot(raw)
+    assert isinstance(result, OverlayInsufficient)
+    assert result.reason == "insufficient_permission"
+
+
 def test_parse_missing_required_fields_is_insufficient():
     for missing in ("as_of", "generated_at", "confidence", "schema_version"):
         raw = _raw()
@@ -171,11 +183,23 @@ def test_parse_ingested_at_naive_is_rejected():
     assert result.reason == "invalid_timestamp"
 
 
-def test_parse_evidence_refs_default_empty():
+def test_parse_missing_evidence_refs_is_insufficient():
     raw = _raw(); del raw["evidence_refs"]
-    obs = parse_ntm_snapshot(raw)
+    result = parse_ntm_snapshot(raw)
+    assert isinstance(result, OverlayInsufficient)
+    assert result.reason == "missing_fields"
+    assert "evidence_refs" in result.detail
+
+
+def test_default_ingested_at_uses_actual_collection_time(monkeypatch):
+    """不得把供应商生成时点伪装成本地入库时点。"""
+    from ab_screener.data.adapters import ntm_client
+
+    monkeypatch.setattr(ntm_client, "_now", lambda: "2026-08-21T19:05:00+08:00")
+    obs = ntm_client.parse_ntm_snapshot(FROZEN_RAW)
     assert isinstance(obs, NationalTeamObservation)
-    assert obs.evidence_refs == ()
+    assert obs.available_at == "2026-08-21T18:30:00+08:00"
+    assert obs.ingested_at == "2026-08-21T19:05:00+08:00"
 
 
 def test_parse_degraded_caps_confidence_to_low():

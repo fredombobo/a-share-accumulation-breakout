@@ -99,7 +99,15 @@ def evaluate_overlays(
             )
             observations.extend(obs)
             insufficiencies.extend(ins)
-    status = "PASS" if observations else "INSUFFICIENT"
+        else:
+            insufficiencies.append(
+                OverlayInsufficient(
+                    reason="unknown_overlay",
+                    detail=f"未知覆盖层: {overlay_id}",
+                    decision_at=decision_at,
+                )
+            )
+    status = "PASS" if observations and not insufficiencies else "INSUFFICIENT"
     summary = (
         f"{len(observations)} 条可读观测；{len(insufficiencies)} 条 INSUFFICIENT"
         "（覆盖层只注释，不改变资格/仓位/订单）"
@@ -123,8 +131,9 @@ def annotate_decision(
     - 原决策字段不做任何修改（副本逐字节一致）。
     - 只新增 `annotations`（观测 dict 列表）与 `disclaimer` 两个注释键。
     """
-    return {
-        "decision": dict(decision),
-        "annotations": [o.to_dict() for o in overlay_result.observations],
-        "disclaimer": overlay_result.disclaimer,
-    }
+    annotated = dict(decision)
+    annotated["annotations"] = [
+        observation.to_dict() for observation in overlay_result.observations
+    ]
+    annotated["disclaimer"] = overlay_result.disclaimer
+    return annotated
