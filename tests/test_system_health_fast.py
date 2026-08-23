@@ -4,8 +4,6 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 
 def _make_tiny_db(path: Path) -> None:
     conn = sqlite3.connect(path)

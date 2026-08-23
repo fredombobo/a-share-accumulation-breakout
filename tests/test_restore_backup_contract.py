@@ -17,7 +17,7 @@ def test_restore_backup_dryrun_exits_zero(tmp_path: Path) -> None:
     r = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1),
          "-BackupRoot", str(backup_root), "-RestoreTo", str(tmp_path / "restore.db"), "-DryRun"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, check=False,
     )
     out = (r.stdout or "") + (r.stderr or "")
     assert r.returncode == 0, out
@@ -36,7 +36,7 @@ def test_restore_backup_dryrun_without_restoreto_exits_zero(tmp_path: Path) -> N
     r = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps1),
          "-BackupRoot", str(backup_root), "-DryRun"],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=60, check=False,
     )
     out = (r.stdout or "") + (r.stderr or "")
     assert r.returncode == 0, out
