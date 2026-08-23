@@ -43,3 +43,15 @@
 
 ## 8. 声明
 - 未宣布 PERSONAL_INSTITUTIONAL_READY。结论 READY_FOR_REVIEW（代码完成，测试运行受环境阻塞，需管理者在可写环境复跑）。
+
+## 9. 管理者区（2026-08-23）
+
+- 范围审查：PASS；提交未包含 dist，改动位于 frontend owned paths。
+- 代码审查：FAIL；lockfile 未同步、可信预设仍 step=10、SystemHealth 类型与后端 nested 契约不一致。
+- 定向复验：build 通过；Vitest 0 tests/缺依赖失败；Playwright 3 passed、1 failed。
+- 交叉域复验：Playwright 未启动当前分支服务而命中既有 3001；不能作为分支 E2E 证据。
+- 运行态复验：未写纸面账户；管理者 build 产生的本地 dist/test-results 不属于交付，返工不得提交。
+- 判定：REWORK_REQUIRED
+- 缺陷编号：V2R-F-RW-001（lock/Vitest）；V2R-F-RW-002（E2E 不自包含且失败）；V2R-F-RW-003（step=10）；V2R-F-RW-004（API 类型/页面状态）。
+- 允许进入的下一任务：否。
+- 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-f`。
