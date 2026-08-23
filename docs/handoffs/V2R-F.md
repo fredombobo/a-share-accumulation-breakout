@@ -84,3 +84,20 @@
   node_modules 均静默残缺（http-proxy-agent 等 dist 缺失）；尝试外置 cache / 逐包补装共 4 种方式
   均被同样机制破坏（逐包补装还会触发 `removed 19 packages` 破坏树一致性）。需在无沙箱环境
   `npm ci && npm run test` 复跑。
+
+## 11. 管理者直接收口（2026-08-23）
+
+- 追加 commit：`17cb5a3` fix(v2r-f): make frontend gates executable on Windows。
+- 根因 1：旧 `node_modules` 是半安装状态；`npm ls` 可列出 `http-proxy-agent@7.0.2`，但
+  `dist/index.js` 不存在。使用已同步的 lockfile 执行真实 `npm ci` 后，172 个包完整安装，
+  `require('http-proxy-agent')` 成功。
+- 根因 2：Vite 在当前 Windows 上将 `localhost:4173` 仅绑定到 `::1`，Playwright 以
+  `127.0.0.1:4173` 探测，导致 webServer 等待 120 秒超时。webServer 命令显式增加
+  `--host 127.0.0.1`。
+- 根因 3：E2E 的 `**/api/**` 同时匹配 Vite 源码 `/src/api/*.ts`，把 JS 模块返回成 JSON，
+  React 根节点为空；旧用例只检查 URL/scrollWidth，空白页也能通过。mock 改为仅拦截
+  `url.pathname.startsWith('/api/')`，并增加真实 heading/input 可见断言。
+- 组件测试的模糊 `getByText` 改为 heading/button role；System fixture 改用后端真实 nested
+  `SystemHealth` 契约并断言 build 与 DB 大小，避免破折号假通过。
+- 新鲜复验：`npm ci` exit 0；Vitest `6 passed`；Vite build exit 0；Playwright `4 passed`。
+- 未提交 `web/frontend/dist` 或 `test-results`；这些仅为本地验收产物。
