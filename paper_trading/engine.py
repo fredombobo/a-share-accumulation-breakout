@@ -37,17 +37,59 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+def _record_dual_run_evidence(
+    conn: sqlite3.Connection,
+    order_id: str,
+    ts_code: str,
+    side: str,
+    qty: int,
+    bar: dict[str, Any] | None,
+    rule: InstrumentRule,
+    trade_date: str,
+    occurred_at: str,
+) -> None:
+    """dual-run：同一订单分别交给 legacy 与 v2 核心，只记录比较证据。
+
+    契约（Task 3 Step 3）：不写第二笔成交/现金/持仓；写路径始终为 legacy
+    （V2_EXECUTION_WRITE_ENABLED 默认 false）。差异进入审计供管理者评估。
+    """
+    from ab_screener.domain.execution.dual_run import (
+        FrozenOrder,
+        dual_run_compare,
+        write_path_enabled,
+    )
+
+    try:
+        frozen = FrozenOrder(
+            bar=bar, side=side, qty=qty, rule=rule, ts_code=ts_code,
+            trade_date=trade_date, input_hash=f"{order_id}:{ts_code}:{trade_date}",
+        )
+        evidence: dict[str, Any] = dual_run_compare(frozen)
+        evidence["order_id"] = order_id
+        evidence["write_path"] = "legacy"
+        evidence["v2_write_enabled"] = write_path_enabled()
+    except Exception as exc:  # noqa: BLE001
+        evidence = {"order_id": order_id, "error": str(exc)[:200]}
+    conn.execute(
+        "INSERT INTO pt_audit_event (actor, action, entity_type, entity_id,"
+        " before_json, after_json, occurred_at)"
+        " VALUES ('system','DUAL_RUN_COMPARE','order',?,NULL,?,?)",
+        (order_id, json.dumps(evidence, ensure_ascii=False, default=str), occurred_at),
+    )
+
+
 def _day_bar(db_path: Path, ts_code: str, trade_date: str) -> dict[str, Any] | None:
-    """当日日线（开高低收量）。无 → None。"""
+    """当日日线（开高低收量额前收）。无 → None。"""
     with tx(db_path, immediate=False) as conn:
         row = conn.execute(
-            "SELECT open, high, low, close, vol, amount FROM daily"
+            "SELECT open, high, low, close, vol, amount, pre_close FROM daily"
             " WHERE ts_code=? AND trade_date=?", (ts_code, trade_date)
         ).fetchone()
     if not row:
         return None
     return {"open": float(row[0]), "high": float(row[1]), "low": float(row[2]),
-            "close": float(row[3]), "vol": float(row[4]), "amount": float(row[5])}
+            "close": float(row[3]), "vol": float(row[4]), "amount": float(row[5]),
+            "pre_close": float(row[6]) if row[6] is not None else None}
 
 
 def _prev_close(db_path: Path, ts_code: str, trade_date: str) -> float | None:
@@ -96,11 +138,11 @@ def estimate_fill(bar: dict[str, Any], side: str, qty: int,
     notional_fen = int(round(fill_px * fill_qty * 100))
     commission_fen = max(
         rule.min_commission_fen,
-        int(round(notional_fen * rule.commission_bps / 10_000)),
+        (notional_fen * rule.commission_bps + 5_000) // 10_000,
     )
-    tax_fen = int(round(notional_fen * rule.sell_tax_bps / 10_000)) \
+    tax_fen = (notional_fen * rule.sell_tax_bps + 5_000) // 10_000 \
         if side == "SELL" else 0
-    other_fee_fen = int(round(notional_fen * rule.other_fee_bps / 10_000))
+    other_fee_fen = (notional_fen * rule.other_fee_bps + 5_000) // 10_000
     return {
         "reason": None,
         "reference_open": ref_open,
@@ -147,10 +189,17 @@ def execute_fills(
     expired: list[dict[str, Any]] = []
     zero_fill: list[dict[str, Any]] = []
 
+    from ab_screener.domain.execution.dual_run import dual_run_enabled
+
+    dual_run = dual_run_enabled()
+    now = _now()
     with tx(db_path, immediate=True) as conn:
         for order_id, ts_code, side, qty, state, reserve_fen in orders:
             rule = get_rule(db_path, ts_code)
             bar = _day_bar(db_path, ts_code, trade_date)
+            if dual_run:
+                _record_dual_run_evidence(conn, order_id, ts_code, side, qty,
+                                          bar, rule, trade_date, now)
             if bar is None:
                 # 停牌/缺行情：零成交，订单保留（顺延下一交易日）
                 zero_fill.append({"order_id": order_id, "ts_code": ts_code,

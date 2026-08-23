@@ -33,6 +33,7 @@ class FillRequest:
     lot_size: int = 100
     cash_available_fen: int | None = None   # 买入约束（None=不检查）
     position_qty: int | None = None         # 卖出约束（None=不检查）
+    requested_qty: int | None = None        # 订单请求数量（None=按参与率上限全额撮合）
     fees: FeeParams = field(default_factory=FeeParams)
 
     def __post_init__(self) -> None:
@@ -40,6 +41,10 @@ class FillRequest:
             raise MoneyError("撮合请求必须携带 input_hash（防重复成交）")
         if self.cash_available_fen is not None:
             require_int_fen(self.cash_available_fen, name="cash_available_fen")
+        if self.requested_qty is not None and (
+            not isinstance(self.requested_qty, int) or self.requested_qty < 0
+        ):
+            raise MoneyError(f"requested_qty 必须为非负整数: {self.requested_qty!r}")
         if self.participation_bps < 0 or self.participation_bps > 10_000:
             raise MoneyError(f"参与率非法: {self.participation_bps} bps")
 
@@ -63,6 +68,12 @@ def compute_fill(quote: Quote, request: FillRequest) -> FillV2:
     )
     max_qty = participation_max_qty(quote.vol, request.participation_bps)
     max_qty = floor_to_lot(max_qty, request.lot_size)
+    if request.requested_qty is not None:
+        requested = floor_to_lot(request.requested_qty, request.lot_size)
+        if requested <= 0:
+            return zero("INVALID_QTY")
+        max_qty = min(max_qty, requested)
+    liquidity_exhausted = max_qty <= 0
 
     if request.side == "BUY":
         if request.cash_available_fen is not None:
@@ -72,6 +83,8 @@ def compute_fill(quote: Quote, request: FillRequest) -> FillV2:
             max_qty = min(max_qty, max_by_cash)
         qty = max_qty
         if qty <= 0:
+            if liquidity_exhausted:
+                return zero("INSUFFICIENT_LIQUIDITY")
             return zero("INSUFFICIENT_CASH")
         notional_fen = _notional_fen(px_micro, qty)
         fees = compute_fees(notional_fen, "BUY", request.fees,
@@ -95,6 +108,8 @@ def compute_fill(quote: Quote, request: FillRequest) -> FillV2:
             max_qty = min(max_qty, available_sell_qty(request.position_qty, request.lot_size))
         qty = max_qty
         if qty <= 0:
+            if liquidity_exhausted:
+                return zero("INSUFFICIENT_LIQUIDITY")
             return zero("NO_POSITION")
         notional_fen = _notional_fen(px_micro, qty)
         fees = compute_fees(notional_fen, "SELL", request.fees,

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from paper_trading import risk_adapter
 from paper_trading.account import create_account
 from paper_trading.risk_adapter import evaluate_order_risk
 
@@ -62,3 +63,53 @@ def test_sell_risk_no_buy_concentration_blocks(db: str):
     buy_codes = {"RISK_SINGLE_NAME_LIMIT", "RISK_MIN_CASH", "RISK_DAILY_ADDITION_LIMIT"}
     codes = {v["code"] for v in result["violations"]}
     assert not (buy_codes & codes)
+
+
+def test_enforce_mode_blocks_when_flagged(db: str, monkeypatch) -> None:
+    """V2_RISK_ENFORCEMENT_ENABLED=true 时：有违规 → blocked=True（enforce）。"""
+    monkeypatch.setattr(risk_adapter, "_enforcement_enabled", lambda: True)
+    result = evaluate_order_risk(
+        db, ts_code="000001.SZ", side="BUY", qty=4_000_000,
+        price_micro=10_000_000, today="20260810",
+    )
+    assert result["mode"] == "enforce"
+    assert "RISK_CASH_INSUFFICIENT" in {v["code"] for v in result["violations"]}
+    assert result["blocked"] is True
+
+
+def test_enforce_mode_fail_closed_on_risk_error(db: str, monkeypatch) -> None:
+    """enforce 模式下风控评估异常 → fail-closed（blocked=True，不静默放行）。"""
+    monkeypatch.setattr(risk_adapter, "_enforcement_enabled", lambda: True)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("portfolio state unavailable")
+
+    monkeypatch.setattr(risk_adapter, "build_portfolio_state", _boom)
+    result = evaluate_order_risk(
+        db, ts_code="000001.SZ", side="BUY", qty=100,
+        price_micro=10_000_000, today="20260810",
+    )
+    assert result["mode"] == "enforce"
+    assert result["blocked"] is True
+    assert result["violations"][0]["code"] == "RISK_UNAVAILABLE"
+
+
+def test_observe_mode_returns_structured_degradation_not_raise(db: str, monkeypatch) -> None:
+    """observe 模式评估异常 → 结构化降级（degraded=True/blocked=False），不抛出。"""
+    monkeypatch.setattr(risk_adapter, "_enforcement_enabled", lambda: False)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("risk backend down")
+
+    monkeypatch.setattr(risk_adapter, "build_portfolio_state", _boom)
+    result = evaluate_order_risk(
+        db, ts_code="000001.SZ", side="BUY", qty=100,
+        price_micro=10_000_000, today="20260810",
+    )
+    assert result["mode"] == "observe"
+    assert result["degraded"] is True
+    assert result["blocked"] is False
+    assert result["violations"][0]["code"] == "RISK_UNAVAILABLE"
+    # 结构化四键始终存在
+    for key in ("blocked", "mode", "violations", "degraded"):
+        assert key in result

@@ -1,7 +1,7 @@
 """纸面风险适配（P5.1/P5.2）：pt DB → 约束评估 + 组合风险报告。
 
 - Review 与 confirm 共用 `evaluate_order_risk`（observe 模式：返回违规，是否阻断由
-  RISK_ENFORCE 决定——P5 回滚规定风险 V2 可先 observe 后 enforce）。
+  V2_RISK_ENFORCEMENT_ENABLED 决定——默认 false，先 observe 后 enforce）。
 - 硬约束（现金/份额/不做空/T+1）永不可关闭，由 legacy confirm 强制。
 """
 from __future__ import annotations
@@ -18,7 +18,18 @@ from ab_screener.domain.risk.models import (
     RiskConfig,
 )
 
-RISK_ENFORCE_DEFAULT = False  # observe 模式（先观察后强制）
+RISK_ENFORCE_DEFAULT = False  # observe 模式（先观察后强制；配置旗标覆盖）
+
+
+def _enforcement_enabled() -> bool:
+    """读取 resolved config 的 V2_RISK_ENFORCEMENT_ENABLED（默认 false）。"""
+    try:
+        from ab_screener.application.platform_config import load_resolved_config
+
+        flags = load_resolved_config().get("flags") or {}
+        return bool(flags.get("V2_RISK_ENFORCEMENT_ENABLED", RISK_ENFORCE_DEFAULT))
+    except Exception:  # noqa: BLE001
+        return RISK_ENFORCE_DEFAULT
 
 
 def _risk_config() -> RiskConfig:
@@ -101,16 +112,33 @@ def evaluate_order_risk(
     today: str,
     participation_bps: int = 500,
 ) -> dict[str, Any]:
-    """订单风险评估（Review 与 confirm 共用；observe 模式返回违规清单）。"""
-    state = build_portfolio_state(db_path, today=today)
-    order = OrderIntent(
-        ts_code=ts_code, side=side, qty=qty, price_micro=price_micro,
-        participation_bps=participation_bps,
-    )
-    violations = evaluate_constraints(state, order, _risk_config())
-    return {
+    """订单风险评估（Review 与 confirm 共用的统一入口）。
+
+    始终返回结构化结果（不向调用方抛出内部异常）：
+    - blocked/mode/violations/degraded 四个键总是存在；
+    - enforce 模式评估异常 → fail-closed（blocked=True）；
+    - observe 模式评估异常 → 降级（blocked=False, degraded=True, RISK_UNAVAILABLE）。
+    """
+    enforce = _enforcement_enabled()
+    result: dict[str, Any] = {
         "ts_code": ts_code, "side": side, "today": today,
-        "violations": [v.to_dict() for v in violations],
-        "blocked": bool(violations) and RISK_ENFORCE_DEFAULT,
-        "mode": "observe" if not RISK_ENFORCE_DEFAULT else "enforce",
+        "violations": [], "blocked": False,
+        "mode": "enforce" if enforce else "observe",
+        "degraded": False,
     }
+    try:
+        state = build_portfolio_state(db_path, today=today)
+        order = OrderIntent(
+            ts_code=ts_code, side=side, qty=qty, price_micro=price_micro,
+            participation_bps=participation_bps,
+        )
+        violations = evaluate_constraints(state, order, _risk_config())
+    except Exception as exc:  # noqa: BLE001
+        result["violations"] = [{"code": "RISK_UNAVAILABLE", "message": str(exc)[:200]}]
+        result["degraded"] = True
+        # fail-closed：enforce 模式下风控不可用 → 拒绝；observe 仅降级记录
+        result["blocked"] = enforce
+        return result
+    result["violations"] = [v.to_dict() for v in violations]
+    result["blocked"] = bool(violations) and enforce
+    return result
