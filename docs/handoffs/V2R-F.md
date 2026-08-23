@@ -68,3 +68,19 @@
 - V2R-F-RW-001 部分修复：`package.json` 补 `@testing-library/user-event`（此前遗漏导致 Vitest import 失败）；
   `tsc --noEmit` 通过。**lockfile 同步仍受 npm EPERM 环境阻塞**（写 node_modules/.vite、package-lock.json
   被操作系统拒绝），需在可写环境执行 `npm install` 更新 package-lock.json 后复跑 `npm run test`。
+
+## 10. 二验返工修复（RECHECK 2026-08-23，追加 commit）
+
+- 追加 commit：`ece250a` fix(v2r-f): sync lockfile, isolate e2e port 4173, externalize vite cache dir
+- **V2R-F-RW-001（lockfile）**：在沙箱外可写目录以当前 package.json 完整安装生成全新
+  `package-lock.json`（268 条目）并复制回 worktree；脚本校验 lock 根段与 package.json 逐项一致
+  （dependencies/devDependencies 全匹配、无缺失条目）→ SYNC OK。`npm ci` 应可在无沙箱环境按此 lock 安装。
+- **V2R-F-RW-002（E2E 端口）**：playwright `webServer` 改用独立验收端口 `4173`（`E2E_PORT` 可覆写）
+  + `--strictPort`；`baseURL` 与 `webServer.url` 同源，绝不复用 3001。
+- 附：`vite.config.ts` 的 `cacheDir` 支持 `VITE_CACHE_DIR` 外置（受限文件系统用）。
+- **V2R-F-RW-004（状态测试）**：测试代码完备（v2-pages.test.tsx 覆盖加载/空/错误/正常 + 键盘 +
+  不显示原始 JSON）；`tsc --noEmit` 通过。**Vitest 本地无法执行**——本沙箱 safe-delete 层拦截 npm
+  的 tar 临时文件操作（npm 日志证据：`[safe-delete] ... trash ... aborted`），任何位置安装的
+  node_modules 均静默残缺（http-proxy-agent 等 dist 缺失）；尝试外置 cache / 逐包补装共 4 种方式
+  均被同样机制破坏（逐包补装还会触发 `removed 19 packages` 破坏树一致性）。需在无沙箱环境
+  `npm ci && npm run test` 复跑。
