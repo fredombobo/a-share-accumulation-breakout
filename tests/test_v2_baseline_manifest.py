@@ -13,6 +13,22 @@ ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "runtime" / "v2" / "baseline_manifest.json"
 
 
+def _make_tiny_db(path: Path) -> None:
+    """构造含 identity 所需全部表的小型临时库（避免误扫 16GB 生产库）。"""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        for table in ("daily", "daily_basic", "moneyflow", "stock_basic", "delisted_basic", "scan_result"):
+            conn.execute(f"CREATE TABLE IF NOT EXISTS {table} (ts_code TEXT, trade_date TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS schema_version (id TEXT PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT OR REPLACE INTO schema_version VALUES ('schema_version', '101')")
+        conn.execute("INSERT INTO daily VALUES ('000001.SZ', '20260807')")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _load() -> dict:
     assert MANIFEST.is_file(), "请先运行 scripts/capture_v2_baseline.py 生成 manifest"
     return json.loads(MANIFEST.read_text(encoding="utf-8"))
@@ -31,14 +47,18 @@ def test_manifest_structure_complete():
     assert m["pytest"]["failures"] == 0
 
 
-def test_identity_stable_across_runs():
+def test_identity_stable_across_runs(tmp_path: Path):
     """同身份重复生成：同一代码/配置/测试集状态下，连续两次生成 identity 一致。
 
+    使用小型临时库（--db-path），避免在身份测试中误扫 16GB 生产库导致超时。
     注意：新增/删除测试会改变 pytest 结果集 → identity 理应变化（正确行为），
     因此本测试只比较两次立即生成的结果，不与磁盘上可能过期的 manifest 对比。
     """
+    tiny_db = tmp_path / "tiny.db"
+    _make_tiny_db(tiny_db)
     cmd = [sys.executable, "scripts/capture_v2_baseline.py", "--skip-api", "--skip-pytest",
-           "--pytest-source", "runtime/v2/baseline_manifest.json"]
+           "--pytest-source", "runtime/v2/baseline_manifest.json",
+           "--db-path", str(tiny_db)]
     tmp_paths = [ROOT / "runtime" / "v2" / f"baseline_manifest_tmp{i}.json" for i in (1, 2)]
     for out in tmp_paths:
         r = subprocess.run(
@@ -50,17 +70,21 @@ def test_identity_stable_across_runs():
     t2 = json.loads(tmp_paths[1].read_text(encoding="utf-8"))
     assert t1["identity"] == t2["identity"]
     assert t1["identity_detail"] == t2["identity_detail"]
+    assert t1["database"]["exists"] is True
     for p in tmp_paths:
-        p.unlink(missing_ok=True)
+        try:
+            p.unlink(missing_ok=True)
+        except OSError:  # WorkBuddy sandbox safe-delete fail-closed，容忍清理失败
+            pass
 
 
 def test_identity_sensitive_to_config_and_code():
     """改代码/配置后 identity 必须变化（敏感字段验证）。"""
     m = _load()
-    cfg = (ROOT / "config.py").read_text(encoding="utf-8")
-    # config 内容哈希敏感
-    cfg_digest_a = hashlib.sha256(cfg.encode("utf-8")).hexdigest()
-    cfg_digest_b = hashlib.sha256((cfg + "\n# probe").encode("utf-8")).hexdigest()
+    # 与 capture_v2_baseline.sha256_of_file 同口径：原始字节（避免 CRLF 换行转换导致 hash 漂移）
+    cfg = (ROOT / "config.py").read_bytes()
+    cfg_digest_a = hashlib.sha256(cfg).hexdigest()
+    cfg_digest_b = hashlib.sha256(cfg + b"\n# probe").hexdigest()
     assert cfg_digest_a != cfg_digest_b
     assert m["config_hash"] == cfg_digest_a
     # identity 必须包含 config_hash（改配置 → identity 变）

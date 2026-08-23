@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from ab_screener.api.deps import get_db_path
 from ab_screener.application.today_guide import build_today_guide
 from ab_screener.data.migrations_v2 import run_v2_migrations
 from local_store import LocalStore
@@ -107,13 +108,15 @@ def test_open_reconciliation_blocks_other_daily_actions(tmp_path: Path) -> None:
     assert guide["next_action"] == "RESOLVE_RECONCILIATION"
 
 
-def test_today_api_returns_the_server_derived_action(monkeypatch, tmp_path: Path) -> None:
+def test_today_api_returns_the_server_derived_action(tmp_path: Path) -> None:
     db = tmp_path / "today-api.db"
     _setup(db)
-    monkeypatch.setattr(backend, "_DB", db)
-    client = TestClient(backend.app)
-
-    response = client.get("/api/today", params={"at": "2026-08-07T18:00:00+08:00"})
+    backend.app.dependency_overrides[get_db_path] = lambda: str(db)
+    try:
+        client = TestClient(backend.app)
+        response = client.get("/api/today", params={"at": "2026-08-07T18:00:00+08:00"})
+    finally:
+        backend.app.dependency_overrides.clear()
 
     assert response.status_code == 200
     assert response.json()["next_action"] == "RUN_SCAN"

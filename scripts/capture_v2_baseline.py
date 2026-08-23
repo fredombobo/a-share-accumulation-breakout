@@ -171,11 +171,13 @@ def main() -> int:
                         help="不重跑全量 pytest，从 --pytest-source 复用测试结果（身份稳定性验证用）")
     parser.add_argument("--pytest-source", default="runtime/v2/baseline_manifest.json",
                         help="--skip-pytest 时读取 pytest 结果的 manifest")
+    parser.add_argument("--db-path", default="runtime/stock_data.db",
+                        help="用于基线身份的 SQLite；默认生产库，测试必须传临时库")
     args = parser.parse_args()
 
     git = git_facts()
     cfg = config_hash()
-    db = db_facts(ROOT / "runtime" / "stock_data.db")
+    db = db_facts((ROOT / args.db_path).resolve())
     front = frontend_facts()
     deps = dependency_hash()
 
