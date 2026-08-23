@@ -9,7 +9,7 @@
 - 基线 commit：`b6772c3001e1fa37447fca813b7ad3512b54eb49`（任务板指定 base）
 - 分支：`agent/v2r-a`
 - worktree 绝对路径：`E:\CODEX\Stock_selection\worktrees\v2r-a`
-- 交付 commit：见第 7 节（回滚）
+- 交付 commit：`87a678be861dd891d575fddcf894440e1bf7846e`（refactor，含全部代码/测试；其上有 docs 补记 commit）
 - 开始/完成时间（Asia/Shanghai）：2026-08-23（同日完成）
 
 ## 2. 范围核对
@@ -140,7 +140,7 @@ E:\CODEX\Stock_selection\accumulation_breakout\.venv312\Scripts\python.exe -m py
 - 数据库路径：**非生产库副本**。本任务未触碰生产库（`E:\CODEX\Stock_selection\accumulation_breakout\runtime\stock_data.db`，约 16.3 GB）。worktree `runtime/stock_data.db` 为工作区建立时由迁移初始化（仅 schema，无行情），未被我修改。
 - 数据日期：冻结市场 as_of=20260807（合成数据）；不依赖真实行情。
 - 数据库 fingerprint（worktree 空 schema 库）：`sha256 561b5c2861c9cac3bea03872a87543818164b52db814c9f284ca58d652af2ec1`
-- 代码 SHA：base `b6772c3…`；head 见第 7 节。
+- 代码 SHA：base `b6772c3…`；head `87a678be861dd891d575fddcf894440e1bf7846e`（含全部代码/测试）。
 - config hash（config.py）：`af5559cdc41919bb`（未改动 config）
 - 产物路径：golden fixture 走 pytest tmp_path；无提交产物。
 - 产物 SHA-256：不适用（无产物文件提交）。
