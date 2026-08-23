@@ -196,6 +196,20 @@ def _detect_signals_for_code(
     dts = df["trade_date"].astype(str).tolist()
     dts_set = set(dts)
     signals: list[dict] = []
+    seen: set[tuple[str, float | None]] = set()
+    first_sample = min(sample_days) if sample_days else ""
+    last_sample = max(sample_days) if sample_days else ""
+
+    def causal_window(breakout_day: str) -> pd.DataFrame:
+        """只保留突破日当时可见的 K 线，禁止用后续站稳数据回填过去成交。"""
+        breakout_i = cal_index.get(breakout_day, -1)
+        if breakout_i < 0:
+            return df.iloc[0:0]
+        causal_start = cal[max(0, breakout_i - horizon)]
+        return df[
+            (df["trade_date"] >= causal_start)
+            & (df["trade_date"] <= breakout_day)
+        ]
 
     for day in sample_days:
         day_i = cal_index.get(day, -1)
@@ -212,7 +226,23 @@ def _detect_signals_for_code(
                 continue
             bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
             recent = {str(x) for x in cal[max(0, day_i - 5): day_i + 1]}
-            if not bd or bd not in recent or bd not in dts_set:
+            if (
+                not bd
+                or bd not in recent
+                or bd not in dts_set
+                or bd < first_sample
+                or bd > last_sample
+            ):
+                continue
+            causal = causal_window(bd)
+            causal_sig = detect_accumulation_breakout(causal, **skwargs)
+            causal_bd = "".join(
+                ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit()
+            )[:8]
+            if not causal_sig.get("is_breakout") or causal_bd != bd:
+                continue
+            key = (bd, None)
+            if key in seen:
                 continue
             entry_i = dts.index(bd)
             if entry_i + 1 >= len(df):
@@ -220,13 +250,15 @@ def _detect_signals_for_code(
             bo_vol = float(df.loc[df["trade_date"] == bd, "vol"].iloc[0])
             bench_vols = {}
             for vr in vr_levels:
-                seqs = find_build_seqs(win, vol_ratio_min=vr)
+                seqs = find_build_seqs(causal, vol_ratio_min=vr)
                 bench_vols[vr] = seqs[-1]["bench_vol"] if seqs else bo_vol
+            seen.add(key)
             signals.append({
-                "day": day, "entry_i": entry_i, "bench_vols": bench_vols,
+                "day": bd, "discovered_on": day,
+                "entry_i": entry_i, "bench_vols": bench_vols,
                 # 交易标注（回测工作台 K 线展示用）
-                "box_high": sig.get("box_high"),
-                "box_low": sig.get("box_low"),
+                "box_high": causal_sig.get("box_high"),
+                "box_low": causal_sig.get("box_low"),
                 "breakout_date": bd,
             })
 
@@ -236,16 +268,31 @@ def _detect_signals_for_code(
                 if not sig.get("is_breakout"):
                     continue
                 bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
-                if bd not in dts_set:
+                if (
+                    bd not in dts_set
+                    or bd < first_sample
+                    or bd > last_sample
+                ):
+                    continue
+                causal = causal_window(bd)
+                causal_sig = detect_plan_b(causal, vol_ratio_min=vr)
+                causal_bd = "".join(
+                    ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit()
+                )[:8]
+                if not causal_sig.get("is_breakout") or causal_bd != bd:
+                    continue
+                key = (bd, vr)
+                if key in seen:
                     continue
                 entry_i = dts.index(bd)
                 if entry_i + 1 >= len(df):
                     continue
+                seen.add(key)
                 signals.append({
-                    "day": day, "entry_i": entry_i,
-                    "bench_vols": {vr: sig["bench_vol"]}, "vr": vr,
-                    "box_high": sig.get("box_high"),
-                    "box_low": sig.get("box_low"),
+                    "day": bd, "discovered_on": day, "entry_i": entry_i,
+                    "bench_vols": {vr: causal_sig["bench_vol"]}, "vr": vr,
+                    "box_high": causal_sig.get("box_high"),
+                    "box_low": causal_sig.get("box_low"),
                     "breakout_date": bd,
                 })
     return signals
