@@ -4,21 +4,26 @@
 ScanRequest、scan_status / scan_cancel / scan_runs / scan_run_detail / start_scan。
 共享状态（扫描任务字典/取消事件/锁）从 ab_screener.api.legacy_state import；
 子进程 spawn 与持久化走 ab_screener.application（scan_spawn / scan_jobs）。
+
+V2R-S 生产接线：扫描完成后把六形态不可变观察落库（`persist_scan_signals`），
+受 `V2_STRATEGY_REGISTRY_ENABLED` 门控（默认 false → no-op）。
 """
 from __future__ import annotations
 
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ab_screener.api.legacy_state import (
-    _PARENT,
     _BUILD_VERSION,
     _OVERVIEW_CACHE,
+    _PARENT,
     _SCAN_CANCEL_EVENTS,
     _SCAN_LOCK,
     _SCAN_TASKS,
@@ -27,6 +32,147 @@ from ab_screener.api.legacy_state import (
 )
 
 router = APIRouter(tags=["legacy"])
+
+
+# ── V2R-S：扫描完成后信号观察持久化（门控默认关闭 → no-op） ──
+
+
+def _signal_persistence_enabled() -> bool:
+    """V2_STRATEGY_REGISTRY_ENABLED（默认 false）：六形态观察落库门控。
+
+    fail-closed：配置解析失败一律视为关闭，不读行情也不写库。
+    """
+    try:
+        from ab_screener.application.platform_config import (
+            flag_enabled,
+            load_resolved_config,
+        )
+
+        flags = load_resolved_config()["flags"]
+        return flag_enabled(flags, "V2_STRATEGY_REGISTRY_ENABLED")
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _candidate_codes_from_result(result: dict) -> list[str]:
+    """从扫描结果抽取候选代码（hits + pool_report），去重保序。"""
+    codes: list[str] = []
+    raw = result.get("hits")
+    if isinstance(raw, list):
+        codes.extend(str(c) for c in raw if str(c))
+    pool = result.get("pool_report") or {}
+    if isinstance(pool, dict):
+        for key in ("pool_a", "pool_b", "a_codes", "b_codes"):
+            val = pool.get(key)
+            if isinstance(val, list):
+                codes.extend(
+                    str(c.get("ts_code") if isinstance(c, dict) else c)
+                    for c in val if c
+                )
+    seen: set[str] = set()
+    out: list[str] = []
+    for code in codes:
+        if code and code not in seen:
+            seen.add(code)
+            out.append(code)
+    return out
+
+
+def _read_daily_bars(
+    db_path: str | Path, ts_code: str, *, as_of: str = ""
+) -> Any:
+    """从生产 daily 表读取某标的近期行情（门控开启后由 persist_scan_signals 使用）。
+
+    仅读操作数 daily 表（与 legacy 扫描同源），不读 PIT history、不写任何数据。
+    `as_of` 提供时按 `trade_date <= as_of` 截断（防未来函数：不用扫描日之后的 K 线）。
+    """
+    import pandas as pd
+
+    from ab_screener.data.db import connect
+
+    sql = (
+        "SELECT trade_date, open, high, low, close, vol, amount"
+        " FROM daily WHERE ts_code=?"
+    )
+    params: list[Any] = [ts_code]
+    if as_of:
+        sql += " AND trade_date <= ?"
+        params.append(str(as_of))
+    sql += " ORDER BY trade_date DESC LIMIT 250"
+    with connect(db_path, readonly=True) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return None
+    df = pd.DataFrame(
+        rows,
+        columns=["date", "open", "high", "low", "close", "vol", "amount"],
+    )
+    df["date"] = df["date"].astype(str)
+    return df.sort_values("date").reset_index(drop=True)
+
+
+def persist_scan_signals(
+    db_path: str | Path,
+    *,
+    scan_run_id: str,
+    candidate_codes: list[str],
+    strategy_version: str = "v1",
+    bars_reader: Callable[[str], Any] | None = None,
+    as_of: str = "",
+) -> dict[str, Any]:
+    """扫描完成后把六形态观察落库（scan_run_id 作 snapshot_id，重放幂等）。
+
+    - 受 V2_STRATEGY_REGISTRY_ENABLED 门控：默认 false → no-op（不读行情不写库）。
+    - 只写不可变 `signal_observations`；不改变 A/B 池、买入草稿或目标仓位。
+    - 同 scan_run_id + strategy_version + instrument 重放 → 不产生新 observation。
+    - 单标的异常被隔离，不影响其他标的。
+    """
+    if not _signal_persistence_enabled():
+        return {"enabled": False, "scan_run_id": scan_run_id, "persisted": 0}
+    if not candidate_codes:
+        return {"enabled": True, "scan_run_id": scan_run_id, "persisted": 0}
+    if bars_reader is None:
+        return {
+            "enabled": True,
+            "scan_run_id": scan_run_id,
+            "persisted": 0,
+            "error": "bars_reader 未提供",
+        }
+    import hashlib
+
+    from ab_screener.application.signal_pipeline import run_signal_pipeline
+    from ab_screener.data.db import connect
+
+    saved: list[str] = []
+    errors: dict[str, str] = {}
+    with connect(db_path) as conn:
+        for code in candidate_codes:
+            try:
+                bars = bars_reader(code)
+                if bars is None or len(bars) == 0:
+                    continue
+                input_hash = hashlib.sha256(
+                    f"{strategy_version}|{code}".encode()
+                ).hexdigest()[:16]
+                result = run_signal_pipeline(
+                    conn,
+                    bars=bars,
+                    ts_code=code,
+                    snapshot_id=scan_run_id,
+                    input_hash=input_hash,
+                )
+                saved.extend(result["saved_observation_ids"])
+                errors.update(result["errors"])
+            except Exception as exc:  # noqa: BLE001
+                errors[code] = f"{type(exc).__name__}: {exc}"
+    return {
+        "enabled": True,
+        "scan_run_id": scan_run_id,
+        "as_of": as_of,
+        "persisted": len(saved),
+        "saved_observation_ids": saved,
+        "errors": errors,
+    }
 
 
 def _clear_overview_cache() -> None:
@@ -353,6 +499,22 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             }
             # 新扫描完成：清除 overview 轻量缓存，避免展示旧数据
             _clear_overview_cache()
+        # V2R-S 生产接线：扫描完成后把六形态观察落库（门控默认关闭 → no-op）
+        try:
+            signal_hook = persist_scan_signals(
+                _store.db_path,
+                scan_run_id=task_id,
+                candidate_codes=_candidate_codes_from_result(result),
+                as_of=str(result.get("latest_date") or ""),
+                bars_reader=lambda code: _read_daily_bars(
+                    _store.db_path, code,
+                    as_of=str(result.get("latest_date") or ""),
+                ),
+            )
+            if signal_hook.get("persisted"):
+                _log(t, f"signal observations persisted: {signal_hook['persisted']}")
+        except Exception:  # noqa: BLE001
+            pass
         report(
             "完成",
             100,
