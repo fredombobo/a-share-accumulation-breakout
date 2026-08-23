@@ -50,3 +50,12 @@
 - 缺陷编号：V2R-O1-RW-001（DryRun 合同失败）；V2R-O1-RW-002（HTTP 可覆盖备份根）；V2R-O1-RW-003（健康 SQL 防回归测试不足）。
 - 允许进入的下一任务：否；V2R-O2 继续 blocked。
 - 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-o1`。
+
+## 9. 返工修复（Wave1 REWORK，追加 commit）
+
+- 追加 commit：`212a9ae` + `256cf86`
+- V2R-O1-RW-002 修复：删除 `/api/v2/system/health` 与 `/api/v2/system/backups` 的公开 `backup_root`
+  查询参数（HTTP 不得覆盖生产备份根，只读 `AB_BACKUP_ROOT`）。
+- V2R-O1-RW-001 修复：`restore_backup.ps1` 的 `RestoreTo` 改为可选——DryRun 不传 RestoreTo 也 exit 0
+  （目标显示 "(unspecified)"）；实际恢复仍要求绝对路径。
+- 新增测试 `test_restore_backup_dryrun_without_restoreto_exits_zero`（9 passed，ruff All checks passed）。
