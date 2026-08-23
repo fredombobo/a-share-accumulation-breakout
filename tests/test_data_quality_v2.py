@@ -13,6 +13,7 @@ from ab_screener.application.data_quality import (
     check_duplicate_keys,
     check_invalid_ohlc_and_negative,
     run_data_quality,
+    shadow_parity,
     source_parity,
 )
 from ab_screener.data.instrument_repository import upsert_instrument
@@ -161,3 +162,114 @@ def test_full_quality_pass_with_fake_source(db: str):
         seed_codes=["000001.SZ"],
     )
     assert report["result"] == "PASS"
+
+
+def _seed_full_parity(db: str, pit_skip_code: str | None = None) -> tuple[list[str], list[str]]:
+    """足量 parity fixture：20 标的 × 5 日期（=100 样本 × 6 字段 = 600 比较）。
+
+    legacy daily 与 PIT daily_history 同值写入；pit_skip_code 指定的标的跳过 PIT 写入。
+    """
+    from ab_screener.data.pit_writer import write_plain
+
+    dates = ["20260803", "20260804", "20260805", "20260806", "20260807"]
+    codes = [f"{i:06d}.SZ" for i in range(1, 21)]  # 000001.SZ .. 000020.SZ
+    daily_rows: list[tuple] = []
+    pit_by_date: dict[str, list[dict]] = {d: [] for d in dates}
+    for idx, code in enumerate(codes):
+        for di, d in enumerate(dates):
+            px = 10.0 + idx * 0.1 + di * 0.01
+            row = {
+                "ts_code": code, "trade_date": d,
+                "open": px, "high": px + 0.2, "low": px - 0.2, "close": px + 0.1,
+                "vol": 1000.0 + idx, "amount": 1e7,
+            }
+            daily_rows.append(
+                (code, d, row["open"], row["high"], row["low"], row["close"], row["vol"], row["amount"])
+            )
+            if code != pit_skip_code:
+                pit_by_date[d].append(row)
+    _seed_daily(db, daily_rows)
+    conn = sqlite3.connect(db)
+    try:
+        for d in dates:
+            if pit_by_date[d]:
+                write_plain(
+                    conn, "daily", pit_by_date[d], source="tushare",
+                    available_at=f"2026-08-{int(d[6:8]):02d}T16:00:00+08:00",
+                    partition_key=d,
+                )
+        conn.commit()
+    finally:
+        conn.close()
+    return codes, dates
+
+
+def test_shadow_parity_legacy_matches_pit(db: str):
+    """legacy daily 与 PIT as-of 读取零差异 → PASS（足量 20×5=600 字段比较）。"""
+    codes, dates = _seed_full_parity(db)
+    report = shadow_parity(
+        db, seed=7, codes=codes, dates=dates,
+        decision_at="2026-08-11T00:00:00+08:00",
+    )
+    assert report["result"] == "PASS"
+    assert report["diffs"] == []
+    assert report["samples_checked"] == 100
+    assert report["pairs_compared"] == 600
+    assert report["code_sha"]
+    assert report["config_hash"]
+    assert report["db_fingerprint"]
+
+
+def test_shadow_parity_detects_pit_missing(db: str):
+    """足量样本中一只标的 PIT 缺失 → 差异且 result=FAIL。"""
+    codes, dates = _seed_full_parity(db, pit_skip_code="000005.SZ")
+    report = shadow_parity(
+        db, seed=7, codes=codes, dates=dates,
+        decision_at="2026-08-11T00:00:00+08:00",
+    )
+    assert report["result"] == "FAIL"
+    assert any("缺失" in str(d["detail"]) for d in report["diffs"])
+
+
+def test_shadow_parity_explicit_small_sample_insufficient(db: str):
+    """RW-001：显式传入小样本（2 标的 × 1 日期）同样 INSUFFICIENT，不得 PASS。"""
+    _seed_daily(db, [
+        ("000001.SZ", "20260810", 10.0, 10.5, 9.8, 10.2, 1000, 1e7),
+        ("600000.SH", "20260810", 5.0, 5.2, 4.9, 5.1, 2000, 1e7),
+    ])
+    report = shadow_parity(
+        db, seed=7, codes=["000001.SZ", "600000.SH"],
+        dates=["20260810"], decision_at="2026-08-11T00:00:00+08:00",
+    )
+    assert report["result"] == "INSUFFICIENT"
+    assert report["pass"] is False
+    assert "样本不足" in report["reason"]
+
+
+def test_shadow_parity_insufficient_when_default_sample_too_small(tmp_path: Path, monkeypatch) -> None:
+    """默认采样（门禁报告路径）样本不足 20 标的 × 5 日期 → INSUFFICIENT，不得误判 PASS。"""
+    path = tmp_path / "empty.db"
+    monkeypatch.setattr(local_store_mod, "_DB_PATH", path)
+    from local_store import LocalStore
+
+    LocalStore()
+    conn = sqlite3.connect(str(path))
+    try:
+        apply_pending(conn)
+        # 只有 1 只标的 × 1 日期 → 默认采样覆盖不足
+        conn.execute(
+            "INSERT INTO daily(ts_code,trade_date,open,high,low,close,vol,amount)"
+            " VALUES ('000001.SZ','20260810',10,10,10,10,100,1000)"
+        )
+        conn.execute(
+            "INSERT INTO daily_history(ts_code,trade_date,revision,available_at,source,content_hash,payload_json)"
+            " VALUES ('000001.SZ','20260810',1,'2026-08-10T16:00:00+08:00','tushare','h',"
+            "'{\"open\":10,\"high\":10,\"low\":10,\"close\":10,\"vol\":100,\"amount\":1000}')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = shadow_parity(path, seed=7, decision_at="2026-08-11T00:00:00+08:00")
+    assert report["result"] == "INSUFFICIENT"
+    assert "样本不足" in report["reason"]

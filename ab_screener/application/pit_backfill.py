@@ -1,11 +1,14 @@
 """PIT 回填编排：按数据集/分区键分块，checkpoint 断点续跑。
 
-契约（implementation P1.1）：
+契约（implementation P1.1 / V2R-D）：
 - 分块：每个 (dataset, partition_key) 一块，单块行数 ≤ MAX_ROWS_PER_TX
   （默认 5 万）。写前登记 checkpoint(in_progress)，成功后置 done。
 - 中断恢复：done 且 source_hash 一致的分区跳过；in_progress 续跑。
 - 按分区逐块拉取（daily 族按 trade_date、fina/holder 按 ts_code、stock_basic 单块），
   避免一次性载入全量历史的内存峰值。
+- 公司行为同步（CorporateActionBackfill）：按 ts_code 分区，每条记录携带
+  effective_at / available_at / ingested_at / source / revision；checkpoint 记录
+  最后完成分区，不允许部分分区被标记完成（全部成功才置 done）。
 - 覆盖率与抽样 hash 100% 通过后才允许翻转 V2_PIT_READ_ENABLED；
   本模块提供 coverage_report() 供门禁使用。
 - 时间统一 +08:00；写入一律走 pit_writer（append-only）。
@@ -22,7 +25,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ab_screener.data.adapters.tushare_pit import df_to_pit_rows, get_pro_handle
+from ab_screener.data.adapters.tushare_pit import df_to_pit_rows, fetch_corporate_actions, get_pro_handle
+from ab_screener.data.corporate_action_repository import CorporateActionError, CorporateActionRepository
 from ab_screener.data.migration_intents.aux_history_v2 import ALL_HISTORY_TABLES as HISTORY_TABLES
 from ab_screener.data.pit_writer import MAX_ROWS_PER_TX, build_records, write_chunk
 from ab_screener.domain.data_point import normalize_ts
@@ -100,6 +104,19 @@ class PitBackfill:
         else:
             raise ValueError(f"未知 PIT 数据集: {dataset}")
         return df_to_pit_rows(df, dataset)
+
+    def checkpoint_partitions(self, datasets: Iterable[str]) -> dict[str, list[str]]:
+        """从 pit_backfill_checkpoints 读取各数据集既有分区键（断点续跑离线计划）。"""
+        out: dict[str, list[str]] = {}
+        with self._conn() as conn:
+            for ds in datasets:
+                rows = conn.execute(
+                    "SELECT partition_key FROM pit_backfill_checkpoints WHERE dataset=?",
+                    (ds,),
+                ).fetchall()
+                if rows:
+                    out[ds] = sorted({str(r[0]) for r in rows})
+        return out
 
     def run(
         self,
@@ -311,3 +328,120 @@ class PitBackfill:
             v["partitions"] > 0 and v["done"] == v["partitions"] for v in report.values()
         )
         return report
+
+
+class CorporateActionBackfill:
+    """公司行为同步：按 ts_code 分区，checkpoint 断点续跑。
+
+    V2R-D 契约：
+    - 每条记录携带 effective_at / available_at / ingested_at / source / revision。
+    - checkpoint 记录最后完成分区；一个分区内任一条目失败都不得标记 done
+      （不允许部分分区被标记完成）。
+    - 无权限/接口异常 → 分区失败记录，不伪装成功（fail-closed）。
+    - 重复抓取幂等：同一载荷重复拉取由 CorporateActionRepository.append 幂等跳过。
+    """
+
+    CHECKPOINT_DATASET = "corporate_action"
+
+    def __init__(self, db_path: str | Path, pro: Any | None = None):
+        self.db_path = str(db_path)
+        self._pro = pro
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=60)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
+
+    def run(
+        self,
+        ts_codes: Iterable[str],
+        *,
+        available_at: Any | None = None,
+        progress_cb: Callable[[str, int], None] | None = None,
+    ) -> dict[str, Any]:
+        """按 ts_code 分区同步公司行为；done 分区跳过（断点续跑）。
+
+        available_at 缺省用当前时刻；每个分区在全部条目入库成功后统一标记 done。
+        """
+        codes = sorted({str(c) for c in ts_codes if c})
+        repo = CorporateActionRepository(self.db_path)
+        available = normalize_ts(available_at or datetime.now(_TZ))
+        done: list[str] = []
+        skipped: list[str] = []
+        failed: list[dict[str, Any]] = []
+        with self._conn() as conn:
+            for code in codes:
+                cp = conn.execute(
+                    "SELECT status FROM pit_backfill_checkpoints"
+                    " WHERE dataset=? AND partition_key=?",
+                    (self.CHECKPOINT_DATASET, code),
+                ).fetchone()
+                if cp and cp[0] == "done":
+                    skipped.append(code)
+                    continue
+                try:
+                    rows = fetch_corporate_actions(self._pro, ts_code=code)
+                except CorporateActionError as exc:
+                    failed.append({"code": code, "error": str(exc)})
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    failed.append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
+                    continue
+                appended = 0
+                try:
+                    for row in rows:
+                        repo.append(
+                            {
+                                "ts_code": row["ts_code"],
+                                "ex_date": row["ex_date"],
+                                "kind": row["kind"],
+                                "payload": row["payload"],
+                                "source": row.get("source") or SOURCE,
+                                "available_at": available,
+                                "effective_at": row["ex_date"],
+                            }
+                        )
+                        appended += 1
+                except Exception as exc:  # noqa: BLE001
+                    failed.append({"code": code, "error": f"入账失败: {exc}"})
+                    continue
+                # 全部成功才标记 done（不允许部分分区被标记完成）
+                conn.execute(
+                    "INSERT INTO pit_backfill_checkpoints (dataset, partition_key, status,"
+                    " last_key, row_count, source_hash, updated_at)"
+                    " VALUES (?,?,'done',?,?,?,?)"
+                    " ON CONFLICT(dataset, partition_key) DO UPDATE SET status='done',"
+                    " last_key=excluded.last_key, row_count=excluded.row_count,"
+                    " source_hash=excluded.source_hash, updated_at=excluded.updated_at",
+                    (self.CHECKPOINT_DATASET, code, code, appended, _hash_rows(rows), _now_iso()),
+                )
+                conn.commit()
+                done.append(code)
+                if progress_cb:
+                    progress_cb(f"{self.CHECKPOINT_DATASET}/{code}", appended)
+        return {
+            "dataset": self.CHECKPOINT_DATASET,
+            "partitions_done": len(done),
+            "partitions_skipped": len(skipped),
+            "failed": failed,
+            "failed_count": len(failed),
+        }
+
+    def coverage_report(self) -> dict[str, Any]:
+        """公司行为同步覆盖率；all_done 判定供门禁使用。"""
+        with self._conn() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) FROM pit_backfill_checkpoints WHERE dataset=?",
+                (self.CHECKPOINT_DATASET,),
+            ).fetchone()[0]
+            done = conn.execute(
+                "SELECT COUNT(*) FROM pit_backfill_checkpoints"
+                " WHERE dataset=? AND status='done'",
+                (self.CHECKPOINT_DATASET,),
+            ).fetchone()[0]
+        return {
+            "dataset": self.CHECKPOINT_DATASET,
+            "partitions": int(total),
+            "done": int(done),
+            "all_done": int(total) > 0 and int(total) == int(done),
+        }

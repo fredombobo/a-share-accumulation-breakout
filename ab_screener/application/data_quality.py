@@ -1,20 +1,30 @@
-"""数据质量门禁（P1.3）：重复键/非法 OHLC/负量额/覆盖率/源端比对。
+"""数据质量门禁（P1.3 / V2R-D）：重复键/非法 OHLC/负量额/覆盖率/源端比对/影子 parity。
 
 契约（implementation P1.3）：
 - 重复键、非法 OHLC、负量额均为 0；活跃股票覆盖率 ≥98%；持仓/活动订单/A池 100%。
 - 源端比对：固定种子 ≥20 标的 × 5 日与数据源零差异；无 Token →
   `result=INSUFFICIENT`（不得 PASS）。
 - 覆盖率为 0/缺数据 → FAIL（fail-closed）。
+- shadow parity（V2R-D）：同一固定种子下 legacy `daily` 与 PIT `daily_history` as-of
+  读取逐字段一致；报告必须包含 code SHA、config hash、DB fingerprint、样本与差异。
 """
 from __future__ import annotations
 
+import hashlib
+import random
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
+
+_TZ = ZoneInfo("Asia/Shanghai")
 
 COVERAGE_MIN_PCT = 98.0
 PARITY_CODES = 20
 PARITY_DAYS = 5
+
+PARITY_FIELDS = ("open", "high", "low", "close", "vol", "amount")
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
@@ -155,6 +165,184 @@ def source_parity(
         "diffs": diffs,
         "days": days,
     }
+
+
+def _code_sha() -> str:
+    """git 当前 HEAD 短 SHA（报告身份用）。"""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    return "unknown"
+
+
+def _config_hash() -> str:
+    try:
+        import config
+
+        src = Path(config.__file__).read_text(encoding="utf-8")
+        return hashlib.sha256(src.encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001
+        return "n/a"
+
+
+def _db_fingerprint(db_path: str | Path) -> str:
+    try:
+        with _connect(db_path) as conn:
+            daily_n = conn.execute("SELECT COUNT(*) FROM daily").fetchone()[0]
+            daily_max = conn.execute("SELECT MAX(trade_date) FROM daily").fetchone()[0]
+            pit_n = conn.execute("SELECT COUNT(*) FROM daily_history").fetchone()[0]
+        raw = f"daily={daily_n}@{daily_max},daily_history={pit_n}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001
+        return "n/a"
+
+
+def _seed_sample_dates(db_path: str | Path, seed: int, n: int = PARITY_DAYS) -> list[str]:
+    """固定种子抽取 n 个 PIT 已覆盖的历史交易日（daily_history 与 legacy daily 交集）。
+
+    影子 parity 只比较「两个读取路径都存在」的日期；PIT 覆盖不足由
+    coverage/shortfall 字段单独暴露，避免把 PIT 缺口误当成字段不一致。
+    """
+    with _connect(db_path) as conn:
+        legacy = {r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM daily").fetchall()}
+        pit_dates = {r[0] for r in conn.execute(
+            "SELECT DISTINCT trade_date FROM daily_history").fetchall()}
+    common = sorted(legacy & pit_dates)
+    if not common:
+        return []
+    rng = random.Random(seed)
+    rng.shuffle(common)
+    return sorted(common[:n])
+
+
+def shadow_parity(
+    db_path: str | Path,
+    *,
+    seed: int = 42,
+    codes: list[str] | None = None,
+    dates: list[str] | None = None,
+    decision_at: str | None = None,
+) -> dict[str, Any]:
+    """legacy daily 与 PIT daily_history as-of 读取的影子 parity 报告。
+
+    固定种子抽取 ≥20 标的 × 5 日期；对每个 (ts_code, trade_date) 比较
+    open/high/low/close/vol/amount（价格按 4 位小数、量额按源精度）。
+    报告必须包含 code SHA、config hash、DB fingerprint、样本与差异。
+    """
+    from ab_screener.data.pit_repository import PitRepository
+
+    sample_dates = dates or _seed_sample_dates(db_path, seed)
+    if len(sample_dates) < 5:
+        sample_dates = (sample_dates + _seed_sample_dates(db_path, seed, 10))[:5]
+    sample_codes = codes or _sample_codes_covered(db_path, seed, sample_dates)
+    if len(sample_codes) < 20:
+        sample_codes = (sample_codes + _sample_codes_covered(db_path, seed, sample_dates, 40))[:20]
+    decision = decision_at or datetime.now(_TZ).isoformat(timespec="seconds")
+    # 样本硬门（不区分默认/显式传入）：少于 20 标的 × 5 日期（=100 样本 × 6 字段 = 600 比较）
+    # 一律 INSUFFICIENT，不得 PASS。
+    if len(sample_dates) < 5 or len(sample_codes) < 20:
+        return {
+            "name": "shadow_parity",
+            "pass": False,
+            "result": "INSUFFICIENT",
+            "code_sha": _code_sha(),
+            "config_hash": _config_hash(),
+            "db_fingerprint": _db_fingerprint(db_path),
+            "seed": seed,
+            "sample_codes": sample_codes[:PARITY_CODES],
+            "sample_dates": sample_dates[:PARITY_DAYS],
+            "samples_checked": 0,
+            "pairs_compared": 0,
+            "diffs": [],
+            "decision_at": decision,
+            "reason": f"样本不足：标的 {len(sample_codes)}/{PARITY_CODES}，日期 {len(sample_dates)}/{PARITY_DAYS}",
+        }
+    repo = PitRepository(db_path)
+    diffs: list[dict[str, Any]] = []
+    checked = 0
+    pairs = 0
+    for code in sample_codes[:PARITY_CODES]:
+        for d in sample_dates[:PARITY_DAYS]:
+            with _connect(db_path) as conn:
+                legacy = conn.execute(
+                    "SELECT open, high, low, close, vol, amount FROM daily"
+                    " WHERE ts_code=? AND trade_date=?",
+                    (code, d),
+                ).fetchone()
+            pit = repo.read_asof("daily", {"ts_code": code, "trade_date": d}, decision)
+            checked += 1
+            if legacy is None:
+                diffs.append({"code": code, "date": d, "field": "legacy", "detail": "legacy 缺失"})
+                continue
+            if pit is None:
+                diffs.append({"code": code, "date": d, "field": "pit", "detail": "PIT as-of 缺失"})
+                continue
+            for i, field in enumerate(PARITY_FIELDS):
+                lv = float(legacy[i])
+                pv = float(pit["payload"].get(field, float("nan")))
+                tolerance = 0.001 if field in ("vol", "amount") else 0.0001
+                if abs(lv - pv) > tolerance:
+                    diffs.append(
+                        {"code": code, "date": d, "field": field,
+                         "detail": f"legacy={lv}, pit={pv}"}
+                    )
+                pairs += 1
+    return {
+        "name": "shadow_parity",
+        "pass": not diffs,
+        "result": "PASS" if not diffs else "FAIL",
+        "code_sha": _code_sha(),
+        "config_hash": _config_hash(),
+        "db_fingerprint": _db_fingerprint(db_path),
+        "seed": seed,
+        "sample_codes": sample_codes[:PARITY_CODES],
+        "sample_dates": sample_dates[:PARITY_DAYS],
+        "samples_checked": checked,
+        "pairs_compared": pairs,
+        "diffs": diffs,
+        "decision_at": decision,
+    }
+
+
+def _sample_codes_covered(
+    db_path: str | Path, seed: int, sample_dates: list[str], n: int = PARITY_CODES
+) -> list[str]:
+    """固定种子抽取在全部 sample_dates 上 legacy 与 PIT 均有数据的标的。
+
+    只统计两个读取路径都存在的 (ts_code, trade_date)，避免把「退市/新上市」
+    造成的单侧缺失误当成字段不一致。
+    """
+    if not sample_dates:
+        return []
+    with _connect(db_path) as conn:
+        ph = ",".join("?" * len(sample_dates))
+        rows = conn.execute(
+            "SELECT ts_code FROM daily"
+            f" WHERE trade_date IN ({ph}) GROUP BY ts_code"
+            " HAVING COUNT(DISTINCT trade_date)=?",
+            (*sample_dates, len(sample_dates)),
+        ).fetchall()
+    legacy_codes = {r[0] for r in rows}
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ts_code FROM daily_history"
+            f" WHERE trade_date IN ({ph})",
+            (*sample_dates,),
+        ).fetchall()
+    pit_codes = {r[0] for r in rows}
+    covered = sorted(legacy_codes & pit_codes)
+    rng = random.Random(seed)
+    rng.shuffle(covered)
+    return covered[:n]
 
 
 def run_data_quality(

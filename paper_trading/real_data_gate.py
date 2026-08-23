@@ -152,6 +152,30 @@ def _finalize_report(
     return report
 
 
+def _corporate_probe_codes(
+    conn: sqlite3.Connection,
+    held_codes: list[str],
+    seed_codes: list[str],
+    active_codes: set[str],
+    local_max: str | None,
+) -> list[str]:
+    """公司行为探测标的推导：持仓 → 抽样标的 → 有效行情（V2R-D-RW-003）。
+
+    三级都推不出时返回 []，由调用方记 issue（不允许 0 标的静默跳过公司行为权限检查）。
+    """
+    if held_codes:
+        return held_codes
+    if seed_codes:
+        return [seed_codes[0]]
+    if not local_max:
+        return []
+    rows = {r[0] for r in conn.execute(
+        "SELECT DISTINCT ts_code FROM daily WHERE trade_date=? AND open>0", (local_max,),
+    )}
+    pool = sorted(rows & active_codes) if active_codes else sorted(rows)
+    return pool[:1]
+
+
 def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None = None) -> dict:
     """执行门禁。返回 {passed, issues[], report 字段...}。"""
     db_path = Path(db_path)
@@ -340,27 +364,34 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
         issues.append(f"种子抽样失败: {sanitize_error(e)}")
 
     # 8) 公司行为接口必须对持仓标的可用；无持仓时至少验证一次接口权限。
+    # V2R-D：经由 tushare_pit 适配器拉取，无权限/异常显式失败（fail-closed）。
+    # V2R-D-RW-003：探测标的必须可推导（持仓 → 抽样 → 有效行情），无法推导 → FAIL。
     print("[gate] 5/7 检查公司行为数据权限", file=sys.stderr)
-    corporate_action_codes = sorted({r[0] for r in conn.execute(
+    held_codes = sorted({r[0] for r in conn.execute(
         "SELECT DISTINCT ts_code FROM pt_position_lot WHERE account_id=1 AND remaining_qty>0"
     )})
-    if not corporate_action_codes and seed_codes:
-        corporate_action_codes = [seed_codes[0]]
+    corporate_action_codes = _corporate_probe_codes(
+        conn, held_codes, seed_codes, active_codes, local_max,
+    )
+    if not corporate_action_codes:
+        issues.append(
+            "公司行为探测标的选择失败：无持仓、抽样与有效行情均为空"
+            "（corporate_action_codes_checked=0，不允许静默跳过）"
+        )
     corporate_action_checked = 0
     try:
+        from ab_screener.data.adapters.tushare_pit import fetch_corporate_actions
+
         for code in corporate_action_codes:
-            result = pro.dividend(
-                ts_code=code,
-                fields="ts_code,ann_date,div_proc,stk_div,cash_div_tax,record_date,ex_date",
-            )
-            if result is None:
-                raise RuntimeError(f"{code} dividend 返回 None")
+            rows = fetch_corporate_actions(pro, ts_code=code)
+            if rows is None:
+                raise RuntimeError(f"{code} 公司行为返回 None")
             corporate_action_checked += 1
     except Exception as e:  # noqa: BLE001
-        issues.append(f"公司行为接口不可用: {sanitize_error(e)}")
+        issues.append(f"公司行为接口不可用或无权限: {sanitize_error(e)}")
     conn.close()
 
-    # P1.3：v2 数据质量门禁（instrument 注册表迁移后激活；未迁移不阻断 legacy 门禁）
+    # P1.3 / V2R-D：v2 数据质量门禁（instrument 注册表迁移后激活；未迁移不阻断 legacy 门禁）
     try:
         with sqlite3.connect(str(db_path)) as _qc_conn:
             _has_universe = _qc_conn.execute(
@@ -368,7 +399,12 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
                 " AND name='instrument_universe_rules'"
             ).fetchone()
         if _has_universe:
-            from ab_screener.application.data_quality import run_data_quality as _dq
+            from ab_screener.application.data_quality import (
+                run_data_quality as _dq,
+            )
+            from ab_screener.application.data_quality import (
+                shadow_parity as _shadow_parity,
+            )
 
             quality = _dq(
                 db_path,
@@ -379,6 +415,23 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
             )
             if quality["result"] != "PASS":
                 issues.append(f"v2 数据质量 {quality['result']}: {quality['summary']}")
+            # 影子 parity：legacy daily 与 PIT daily_history as-of 读取对比。
+            # decision_at 用「现在」：验证当前两个读取路径一致（PIT 回填的
+            # available_at 为入库时刻，不能用数据日期当 decision_at）。
+            # 不传 codes/dates，让 parity 自行抽样「两个路径都有数据」的
+            # 20 标的 × 5 日期；避免把「新上市无历史」误当成字段不一致。
+            parity = _shadow_parity(
+                db_path,
+                seed=42,
+                codes=None,
+                dates=None,
+                decision_at=_now(),
+            )
+            if parity["result"] != "PASS":
+                issues.append(
+                    f"shadow parity {parity['result']}: "
+                    f"{len(parity['diffs'])} 处差异（样本 {parity['samples_checked']}）"
+                )
     except Exception as e:  # noqa: BLE001
         issues.append(f"v2 数据质量检查异常: {sanitize_error(e)}")
 
