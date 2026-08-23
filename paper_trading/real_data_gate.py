@@ -152,6 +152,30 @@ def _finalize_report(
     return report
 
 
+def _corporate_probe_codes(
+    conn: sqlite3.Connection,
+    held_codes: list[str],
+    seed_codes: list[str],
+    active_codes: set[str],
+    local_max: str | None,
+) -> list[str]:
+    """公司行为探测标的推导：持仓 → 抽样标的 → 有效行情（V2R-D-RW-003）。
+
+    三级都推不出时返回 []，由调用方记 issue（不允许 0 标的静默跳过公司行为权限检查）。
+    """
+    if held_codes:
+        return held_codes
+    if seed_codes:
+        return [seed_codes[0]]
+    if not local_max:
+        return []
+    rows = {r[0] for r in conn.execute(
+        "SELECT DISTINCT ts_code FROM daily WHERE trade_date=? AND open>0", (local_max,),
+    )}
+    pool = sorted(rows & active_codes) if active_codes else sorted(rows)
+    return pool[:1]
+
+
 def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None = None) -> dict:
     """执行门禁。返回 {passed, issues[], report 字段...}。"""
     db_path = Path(db_path)
@@ -341,12 +365,19 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
 
     # 8) 公司行为接口必须对持仓标的可用；无持仓时至少验证一次接口权限。
     # V2R-D：经由 tushare_pit 适配器拉取，无权限/异常显式失败（fail-closed）。
+    # V2R-D-RW-003：探测标的必须可推导（持仓 → 抽样 → 有效行情），无法推导 → FAIL。
     print("[gate] 5/7 检查公司行为数据权限", file=sys.stderr)
-    corporate_action_codes = sorted({r[0] for r in conn.execute(
+    held_codes = sorted({r[0] for r in conn.execute(
         "SELECT DISTINCT ts_code FROM pt_position_lot WHERE account_id=1 AND remaining_qty>0"
     )})
-    if not corporate_action_codes and seed_codes:
-        corporate_action_codes = [seed_codes[0]]
+    corporate_action_codes = _corporate_probe_codes(
+        conn, held_codes, seed_codes, active_codes, local_max,
+    )
+    if not corporate_action_codes:
+        issues.append(
+            "公司行为探测标的选择失败：无持仓、抽样与有效行情均为空"
+            "（corporate_action_codes_checked=0，不允许静默跳过）"
+        )
     corporate_action_checked = 0
     try:
         from ab_screener.data.adapters.tushare_pit import fetch_corporate_actions

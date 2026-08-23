@@ -247,8 +247,9 @@ def shadow_parity(
     if len(sample_codes) < 20:
         sample_codes = (sample_codes + _sample_codes_covered(db_path, seed, sample_dates, 40))[:20]
     decision = decision_at or datetime.now(_TZ).isoformat(timespec="seconds")
-    # 默认采样（门禁报告路径）样本不足 → INSUFFICIENT（空样本/覆盖不足不得误判 PASS）
-    if codes is None and dates is None and (len(sample_dates) < 5 or len(sample_codes) < 20):
+    # 样本硬门（不区分默认/显式传入）：少于 20 标的 × 5 日期（=100 样本 × 6 字段 = 600 比较）
+    # 一律 INSUFFICIENT，不得 PASS。
+    if len(sample_dates) < 5 or len(sample_codes) < 20:
         return {
             "name": "shadow_parity",
             "pass": False,

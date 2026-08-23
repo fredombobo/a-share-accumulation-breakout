@@ -164,54 +164,75 @@ def test_full_quality_pass_with_fake_source(db: str):
     assert report["result"] == "PASS"
 
 
-def test_shadow_parity_legacy_matches_pit(db: str):
-    """legacy daily 与 PIT daily_history as-of 读取零差异 → PASS。"""
+def _seed_full_parity(db: str, pit_skip_code: str | None = None) -> tuple[list[str], list[str]]:
+    """足量 parity fixture：20 标的 × 5 日期（=100 样本 × 6 字段 = 600 比较）。
+
+    legacy daily 与 PIT daily_history 同值写入；pit_skip_code 指定的标的跳过 PIT 写入。
+    """
     from ab_screener.data.pit_writer import write_plain
 
-    # 同时写入 legacy daily 与 PIT daily_history（同值）
-    _seed_daily(db, [
-        ("000001.SZ", "20260810", 10.0, 10.5, 9.8, 10.2, 1000, 1e7),
-        ("600000.SH", "20260810", 5.0, 5.2, 4.9, 5.1, 2000, 1e7),
-        ("000002.SZ", "20260810", 12.0, 12.6, 11.9, 12.4, 3000, 1e7),
-    ])
+    dates = ["20260803", "20260804", "20260805", "20260806", "20260807"]
+    codes = [f"{i:06d}.SZ" for i in range(1, 21)]  # 000001.SZ .. 000020.SZ
+    daily_rows: list[tuple] = []
+    pit_by_date: dict[str, list[dict]] = {d: [] for d in dates}
+    for idx, code in enumerate(codes):
+        for di, d in enumerate(dates):
+            px = 10.0 + idx * 0.1 + di * 0.01
+            row = {
+                "ts_code": code, "trade_date": d,
+                "open": px, "high": px + 0.2, "low": px - 0.2, "close": px + 0.1,
+                "vol": 1000.0 + idx, "amount": 1e7,
+            }
+            daily_rows.append(
+                (code, d, row["open"], row["high"], row["low"], row["close"], row["vol"], row["amount"])
+            )
+            if code != pit_skip_code:
+                pit_by_date[d].append(row)
+    _seed_daily(db, daily_rows)
     conn = sqlite3.connect(db)
     try:
-        write_plain(
-            conn, "daily",
-            [{"ts_code": "000001.SZ", "trade_date": "20260810",
-              "open": 10.0, "high": 10.5, "low": 9.8, "close": 10.2, "vol": 1000.0,
-              "amount": 1e7}],
-            source="tushare", available_at="2026-08-10T16:00:00+08:00", partition_key="20260810",
-        )
-        write_plain(
-            conn, "daily",
-            [{"ts_code": "600000.SH", "trade_date": "20260810",
-              "open": 5.0, "high": 5.2, "low": 4.9, "close": 5.1, "vol": 2000.0,
-              "amount": 1e7}],
-            source="tushare", available_at="2026-08-10T16:00:00+08:00", partition_key="20260810",
-        )
-        write_plain(
-            conn, "daily",
-            [{"ts_code": "000002.SZ", "trade_date": "20260810",
-              "open": 12.0, "high": 12.6, "low": 11.9, "close": 12.4, "vol": 3000.0,
-              "amount": 1e7}],
-            source="tushare", available_at="2026-08-10T16:00:00+08:00", partition_key="20260810",
-        )
+        for d in dates:
+            if pit_by_date[d]:
+                write_plain(
+                    conn, "daily", pit_by_date[d], source="tushare",
+                    available_at=f"2026-08-{int(d[6:8]):02d}T16:00:00+08:00",
+                    partition_key=d,
+                )
+        conn.commit()
     finally:
         conn.close()
+    return codes, dates
+
+
+def test_shadow_parity_legacy_matches_pit(db: str):
+    """legacy daily 与 PIT as-of 读取零差异 → PASS（足量 20×5=600 字段比较）。"""
+    codes, dates = _seed_full_parity(db)
     report = shadow_parity(
-        db, seed=7, codes=["000001.SZ", "600000.SH", "000002.SZ"],
-        dates=["20260810"], decision_at="2026-08-11T00:00:00+08:00",
+        db, seed=7, codes=codes, dates=dates,
+        decision_at="2026-08-11T00:00:00+08:00",
     )
     assert report["result"] == "PASS"
     assert report["diffs"] == []
+    assert report["samples_checked"] == 100
+    assert report["pairs_compared"] == 600
     assert report["code_sha"]
     assert report["config_hash"]
     assert report["db_fingerprint"]
 
 
 def test_shadow_parity_detects_pit_missing(db: str):
-    """legacy 有行但 PIT as-of 缺失 → 差异且 result=FAIL。"""
+    """足量样本中一只标的 PIT 缺失 → 差异且 result=FAIL。"""
+    codes, dates = _seed_full_parity(db, pit_skip_code="000005.SZ")
+    report = shadow_parity(
+        db, seed=7, codes=codes, dates=dates,
+        decision_at="2026-08-11T00:00:00+08:00",
+    )
+    assert report["result"] == "FAIL"
+    assert any("缺失" in str(d["detail"]) for d in report["diffs"])
+
+
+def test_shadow_parity_explicit_small_sample_insufficient(db: str):
+    """RW-001：显式传入小样本（2 标的 × 1 日期）同样 INSUFFICIENT，不得 PASS。"""
     _seed_daily(db, [
         ("000001.SZ", "20260810", 10.0, 10.5, 9.8, 10.2, 1000, 1e7),
         ("600000.SH", "20260810", 5.0, 5.2, 4.9, 5.1, 2000, 1e7),
@@ -220,8 +241,9 @@ def test_shadow_parity_detects_pit_missing(db: str):
         db, seed=7, codes=["000001.SZ", "600000.SH"],
         dates=["20260810"], decision_at="2026-08-11T00:00:00+08:00",
     )
-    assert report["result"] == "FAIL"
-    assert any("缺失" in str(d["detail"]) for d in report["diffs"])
+    assert report["result"] == "INSUFFICIENT"
+    assert report["pass"] is False
+    assert "样本不足" in report["reason"]
 
 
 def test_shadow_parity_insufficient_when_default_sample_too_small(tmp_path: Path, monkeypatch) -> None:

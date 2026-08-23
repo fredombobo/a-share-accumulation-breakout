@@ -126,3 +126,61 @@ def test_fetch_corporate_actions_maps_rows() -> None:
     assert rows[0]["ex_date"] == "20260710"
     assert rows[0]["kind"] == "DIVIDEND"
     assert rows[0]["source"] == "tushare"
+
+
+# ── V2R-D-RW-003：公司行为探测标的推导（持仓 → 抽样 → 有效行情 → 空则 gate FAIL）──
+
+
+def _probe_db(tmp_path: Path) -> tuple[object, str]:
+    import sqlite3 as _sq
+
+    path = tmp_path / "probe.db"
+    conn = _sq.connect(path)
+    conn.execute("CREATE TABLE daily (ts_code TEXT, trade_date TEXT, open REAL, vol REAL)")
+    conn.executemany(
+        "INSERT INTO daily VALUES (?,?,?,?)",
+        [
+            ("000001.SZ", "20260821", 10.0, 1000),
+            ("600000.SH", "20260821", 5.0, 2000),
+            ("000002.SZ", "20260810", 0.0, 0),  # 旧日期/无效行情，不应入选
+        ],
+    )
+    conn.commit()
+    return conn, "20260821"
+
+
+def test_probe_prefers_held_positions(tmp_path: Path) -> None:
+    from paper_trading.real_data_gate import _corporate_probe_codes
+
+    conn, local_max = _probe_db(tmp_path)
+    try:
+        got = _corporate_probe_codes(conn, ["600519.SH"], ["000001.SZ"], set(), local_max)
+        assert got == ["600519.SH"]
+    finally:
+        conn.close()
+
+
+def test_probe_falls_back_to_seed_then_quotes(tmp_path: Path) -> None:
+    from paper_trading.real_data_gate import _corporate_probe_codes
+
+    conn, local_max = _probe_db(tmp_path)
+    try:
+        assert _corporate_probe_codes(conn, [], ["000001.SZ"], set(), local_max) == ["000001.SZ"]
+        # 无持仓无抽样 → 从有效行情（当日 open>0）推导
+        got = _corporate_probe_codes(conn, [], [], set(), local_max)
+        assert len(got) == 1
+        assert got[0] in {"000001.SZ", "600000.SH"}
+        assert got[0] != "000002.SZ"
+    finally:
+        conn.close()
+
+
+def test_probe_empty_when_no_valid_quotes(tmp_path: Path) -> None:
+    """三级都推不出 → 返回 []（gate 必须据此 FAIL，不允许 0 标的静默跳过）。"""
+    from paper_trading.real_data_gate import _corporate_probe_codes
+
+    conn, _ = _probe_db(tmp_path)
+    try:
+        assert _corporate_probe_codes(conn, [], [], set(), None) == []
+    finally:
+        conn.close()
