@@ -28,8 +28,23 @@ if ($Backups.Count -eq 0) {
 $Latest = $Backups[0].FullName
 $SizeMB = [math]::Round($Backups[0].Length / 1MB, 1)
 Write-Host ("[DRY-RUN] source backup: {0} ({1} MB)" -f $Latest, $SizeMB)
-$targetLabel = if ($RestoreTo) { $RestoreTo } else { "(unspecified)" }
-Write-Host ("[DRY-RUN] restore target: {0}" -f $targetLabel)
+
+# DryRun without an explicit target: derive a safe absolute temp target
+# (never inside the repo, never equal to the production db, never copied to).
+if ($DryRun -and -not $RestoreTo) {
+    $ProdDb = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")) "runtime\stock_data.db"
+    $RestoreTo = Join-Path $env:TEMP ("restore_drill_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".db")
+    $targetFull = [System.IO.Path]::GetFullPath($RestoreTo)
+    $prodFull = [System.IO.Path]::GetFullPath($ProdDb)
+    if ($targetFull -ieq $prodFull) {
+        Write-Error "derived temp target equals production db: $targetFull"
+        exit 2
+    }
+    Write-Host ("[DRY-RUN] derived safe temp target: {0}" -f $RestoreTo)
+    Write-Host ("[DRY-RUN] target != production db ({0})" -f $prodFull)
+}
+
+Write-Host ("[DRY-RUN] restore target: {0}" -f $RestoreTo)
 Write-Host "[DRY-RUN] readonly check: PRAGMA integrity_check + table count after restore"
 Write-Host "[DRY-RUN] safety: will not overwrite production db; pre-restore copy first"
 

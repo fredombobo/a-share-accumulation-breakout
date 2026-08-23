@@ -30,13 +30,32 @@ def test_fast_health_returns_quick_fields_and_deep_check_status(tmp_path: Path) 
     assert payload["database"]["fingerprint"]
 
 
-def test_fast_health_never_runs_full_integrity_check(tmp_path: Path) -> None:
-    """快速健康不返回 integrity_check 结果（深检只在离线证书里）。"""
-    from ab_screener.operations.health import system_health
+def test_fast_health_never_runs_full_integrity_check(monkeypatch, tmp_path: Path) -> None:
+    """RW-003：set_trace_callback 捕获全部 SQL；热路径出现 integrity_check/quick_check 即失败。"""
+    from ab_screener.operations import health as health_mod
 
     db = tmp_path / "tiny2.db"
     _make_tiny_db(db)
-    payload = system_health(db, backup_root=tmp_path)
-    # 快速路径绝不计算 integrity（PRAGMA integrity_check 对 16GB 库需数分钟）
-    assert "integrity" not in payload["database"]
+
+    statements: list[str] = []
+    original_connect = sqlite3.connect
+
+    def spy_connect(*args, **kwargs):
+        conn = original_connect(*args, **kwargs)
+        try:
+            conn.set_trace_callback(lambda statement: statements.append(statement))
+        except Exception:  # noqa: BLE001
+            pass
+        return conn
+
+    monkeypatch.setattr(health_mod.sqlite3, "connect", spy_connect)
+
+    payload = health_mod.system_health(db, backup_root=tmp_path)
+
     assert payload["database"]["deep_check"]["status"] in {"PASS", "STALE", "MISSING"}
+    assert statements, "应至少捕获到快速检查的 SQL"
+    forbidden = [
+        s for s in statements
+        if "integrity_check" in s.lower() or "quick_check" in s.lower()
+    ]
+    assert not forbidden, f"快速健康热路径执行了完整性检查: {forbidden}"

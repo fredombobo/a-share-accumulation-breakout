@@ -42,3 +42,7 @@ def test_restore_backup_dryrun_without_restoreto_exits_zero(tmp_path: Path) -> N
     assert r.returncode == 0, out
     assert "DRY-RUN" in out
     assert str(fake_backup.name) in out
+    # RW-001：必须推导并打印绝对安全临时目标，且不等于生产库
+    assert "derived safe temp target:" in out
+    assert "restore_drill_" in out
+    assert "target != production db" in out
