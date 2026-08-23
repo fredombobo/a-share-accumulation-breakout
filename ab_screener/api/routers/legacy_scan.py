@@ -48,8 +48,8 @@ def _signal_persistence_enabled() -> bool:
             load_resolved_config,
         )
 
-        flags = load_resolved_config()["flags"]
-        return flag_enabled(flags, "V2_STRATEGY_REGISTRY_ENABLED")
+        resolved = load_resolved_config()
+        return flag_enabled(resolved, "V2_STRATEGY_REGISTRY_ENABLED")
     except Exception:  # noqa: BLE001
         return False
 
@@ -138,8 +138,6 @@ def persist_scan_signals(
             "persisted": 0,
             "error": "bars_reader 未提供",
         }
-    import hashlib
-
     from ab_screener.application.signal_pipeline import run_signal_pipeline
     from ab_screener.data.db import connect
 
@@ -151,9 +149,12 @@ def persist_scan_signals(
                 bars = bars_reader(code)
                 if bars is None or len(bars) == 0:
                     continue
-                input_hash = hashlib.sha256(
-                    f"{strategy_version}|{code}".encode()
-                ).hexdigest()[:16]
+                input_hash = _bars_input_hash(
+                    bars,
+                    strategy_version=strategy_version,
+                    ts_code=code,
+                    as_of=as_of,
+                )
                 result = run_signal_pipeline(
                     conn,
                     bars=bars,
@@ -173,6 +174,36 @@ def persist_scan_signals(
         "saved_observation_ids": saved,
         "errors": errors,
     }
+
+
+def _bars_input_hash(
+    bars: Any,
+    *,
+    strategy_version: str,
+    ts_code: str,
+    as_of: str,
+) -> str:
+    """对实际行情输入生成确定性 hash，修订数据必须形成新 observation。"""
+    import hashlib
+    import json
+
+    if hasattr(bars, "columns") and hasattr(bars, "to_json"):
+        columns = sorted(str(column) for column in bars.columns)
+        normalized = bars.loc[:, columns].copy()
+        for date_column in ("date", "trade_date"):
+            if date_column in normalized.columns:
+                normalized[date_column] = normalized[date_column].astype(str)
+                normalized = normalized.sort_values(date_column).reset_index(drop=True)
+                break
+        bars_payload = normalized.to_json(
+            orient="split",
+            date_format="iso",
+            double_precision=15,
+        )
+    else:
+        bars_payload = json.dumps(bars, sort_keys=True, ensure_ascii=False, default=str)
+    payload = f"{strategy_version}|{ts_code}|{as_of}|{bars_payload}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _clear_overview_cache() -> None:
@@ -513,8 +544,12 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             )
             if signal_hook.get("persisted"):
                 _log(t, f"signal observations persisted: {signal_hook['persisted']}")
-        except Exception:  # noqa: BLE001
-            pass
+            if signal_hook.get("error"):
+                _log(t, f"signal persistence rejected: {signal_hook['error']}")
+            if signal_hook.get("errors"):
+                _log(t, f"signal persistence partial errors: {signal_hook['errors']}")
+        except Exception as exc:  # noqa: BLE001
+            _log(t, f"signal persistence failed: {type(exc).__name__}: {exc}")
         report(
             "完成",
             100,

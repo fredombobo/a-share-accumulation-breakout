@@ -124,6 +124,31 @@ def test_new_scan_run_revision_appends_and_old_rows_unchanged(db_path, monkeypat
     assert cur["strategy_definition_id"] == old["strategy_definition_id"]
 
 
+def test_same_scan_run_with_changed_bars_appends_new_input_revision(db_path, monkeypatch):
+    """input_hash 必须覆盖行情内容，修订行情不能被同 scan_run 幂等键吞掉。"""
+    from ab_screener.api.routers import legacy_scan
+
+    monkeypatch.setattr(legacy_scan, "_signal_persistence_enabled", lambda: True)
+    original = _bars()
+    revised = original.copy()
+    revised.loc[revised.index[-1], "close"] = float(revised.iloc[-1]["close"]) + 0.01
+
+    first = legacy_scan.persist_scan_signals(
+        db_path, scan_run_id="RUN-REV", candidate_codes=["000001.SZ"],
+        strategy_version="v1", bars_reader=lambda code: original,
+    )
+    second = legacy_scan.persist_scan_signals(
+        db_path, scan_run_id="RUN-REV", candidate_codes=["000001.SZ"],
+        strategy_version="v1", bars_reader=lambda code: revised,
+    )
+
+    assert first["persisted"] > 0
+    assert second["persisted"] > 0
+    assert set(first["saved_observation_ids"]).isdisjoint(
+        second["saved_observation_ids"]
+    )
+
+
 def test_signal_persistence_flag_gated_off_is_noop(db_path):
     """生产默认 V2_STRATEGY_REGISTRY_ENABLED=false：persist_scan_signals 为 no-op。"""
     from ab_screener.api.routers import legacy_scan
@@ -139,6 +164,14 @@ def test_signal_persistence_flag_gated_off_is_noop(db_path):
         assert _count(conn, "signal_observations") == 0
     finally:
         conn.close()
+
+
+def test_signal_persistence_flag_reads_enabled_environment(monkeypatch):
+    """真实配置边界：环境变量开启后，生产 hook 必须实际开启。"""
+    from ab_screener.api.routers import legacy_scan
+
+    monkeypatch.setenv("V2_STRATEGY_REGISTRY_ENABLED", "true")
+    assert legacy_scan._signal_persistence_enabled() is True
 
 
 def test_read_daily_bars_bounded_by_as_of(tmp_path):
@@ -227,6 +260,51 @@ def test_a_pool_candidates_filters_experimental_only():
 
     observations = [_obs()]  # 真实插件观察，其策略均为 EXPERIMENTAL
     assert a_pool_candidates(observations) == []
+
+
+def test_replay_preserves_active_a_pool_eligibility(db_path, monkeypatch):
+    """幂等重放不能让已经合格的观察从返回结果中消失。"""
+    from ab_screener.application import signal_pipeline
+    from ab_screener.strategies.contracts import StrategySpec
+
+    observation = _obs()
+    active = StrategySpec(
+        strategy_definition_id=observation.strategy_definition_id,
+        version="v1",
+        economic_assumption="a",
+        failure_conditions="b",
+        pit_test="c",
+        golden_fixture="f",
+        research_status="ACTIVE_FOR_A_POOL",
+    )
+    monkeypatch.setattr(
+        signal_pipeline,
+        "run_all_selection_plugins",
+        lambda *args, **kwargs: {"active": [observation]},
+    )
+    monkeypatch.setattr(
+        signal_pipeline,
+        "resolve_selection",
+        lambda strategy_id: {"spec": active},
+    )
+
+    conn = _open(db_path)
+    try:
+        first = signal_pipeline.run_signal_pipeline(
+            conn, bars=_bars(), ts_code=observation.ts_code,
+            snapshot_id=observation.snapshot_id, input_hash=observation.input_hash,
+        )
+        second = signal_pipeline.run_signal_pipeline(
+            conn, bars=_bars(), ts_code=observation.ts_code,
+            snapshot_id=observation.snapshot_id, input_hash=observation.input_hash,
+        )
+    finally:
+        conn.close()
+
+    assert first["saved_count"] == 1
+    assert second["saved_count"] == 0
+    assert first["a_pool_eligible_ids"] == [observation.observation_id]
+    assert second["a_pool_eligible_ids"] == [observation.observation_id]
 
 
 # ── RED #4：outcome 时点（交易日完成 + available_at <= calculation_at） ──
@@ -350,3 +428,54 @@ def test_backfill_horizon_outcome_wiring_idempotent(db_path):
     # 历史行未被覆盖：PENDING（rev1）+ MATURED（rev2）两行都在
     assert len(rows) == 2
     assert [r["revision"] for r in rows] == [1, 2]
+
+
+def test_outcome_benchmark_revision_is_appended(db_path):
+    """基准超额被修订时必须追加 revision，不能错误地判为同一结果。"""
+    from ab_screener.application.signal_outcomes import backfill_horizon_outcome
+    from ab_screener.data.signal_repository import outcomes_at, save_observation
+
+    conn = _open(db_path)
+    try:
+        oid = save_observation(conn, _obs())
+        common = {
+            "observation_id": oid,
+            "horizon_days": 5,
+            "entry_price_micro": 10_000_000,
+            "cost_rate": 0.001,
+            "maturity_trade_date": "20260817",
+            "last_completed_trade_date": "20260817",
+            "calculation_at": "2026-08-17T16:30:00+08:00",
+            "exit_price_micro": 10_500_000,
+            "data_available_at": "2026-08-17T16:00:00+08:00",
+        }
+        first = backfill_horizon_outcome(conn, benchmark_excess=0.002, **common)
+        revised = backfill_horizon_outcome(conn, benchmark_excess=0.003, **common)
+    finally:
+        conn.close()
+
+    assert first["idempotent"] is False
+    assert revised["idempotent"] is False
+    rows = outcomes_at(db_path, oid)
+    assert [row["revision"] for row in rows] == [1, 2]
+    assert rows[-1]["benchmark_excess"] == pytest.approx(0.003)
+
+
+def test_outcome_rejects_invalid_trade_date():
+    from ab_screener.application.signal_outcomes import (
+        OutcomeError,
+        compute_horizon_result,
+    )
+
+    with pytest.raises(OutcomeError, match="maturity_trade_date"):
+        compute_horizon_result(
+            horizon_days=5,
+            entry_price_micro=10_000_000,
+            exit_price_micro=10_500_000,
+            cost_rate=0.001,
+            benchmark_excess=None,
+            maturity_trade_date="not-a-date",
+            last_completed_trade_date="20260817",
+            data_available_at="2026-08-17T16:00:00+08:00",
+            calculation_at="2026-08-17T16:30:00+08:00",
+        )

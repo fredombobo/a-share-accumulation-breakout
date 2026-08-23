@@ -123,6 +123,7 @@ def run_signal_pipeline(
     )
     saved: list[str] = []
     saved_observations: list[SignalObservation] = []
+    emitted_observations: list[SignalObservation] = []
     errors: dict[str, str] = {}
     for plugin_id, value in results.items():
         if isinstance(value, dict) and "error" in value:
@@ -133,10 +134,12 @@ def run_signal_pipeline(
                 raise SignalPipelineError(
                     f"插件 {plugin_id} 返回非 SignalObservation: {type(obs).__name__}"
                 )
+            emitted_observations.append(obs)
             if insert_observation(conn, obs):
                 saved.append(obs.observation_id)
                 saved_observations.append(obs)
-    eligible = a_pool_candidates(saved_observations)
+    # 返回资格是本次确定性计算结果，不能因 observation 已存在而在重放时消失。
+    eligible = a_pool_candidates(emitted_observations)
     return {
         "plugins_run": list(results),
         "saved_observation_ids": saved,
