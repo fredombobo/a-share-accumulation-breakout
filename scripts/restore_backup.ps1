@@ -1,50 +1,75 @@
-﻿# restore_backup.ps1 — P8 备份恢复演练（RTO 目标 ≤30 分钟）
+# restore_backup.ps1 - P8 backup restore drill (RTO target <= 30 min)
 #
-# 用法：powershell -ExecutionPolicy Bypass -File scripts\restore_backup.ps1
-#       -BackupRoot <备份目录> -RestoreTo <目标绝对路径.db> [-DryRun]
+# Usage: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\restore_backup.ps1
+#        -BackupRoot <backup dir> -RestoreTo <absolute target.db> [-DryRun]
 #
-# 安全：只允许绝对路径目标；恢复前对目标做 .pre-restore 备份；
-# 恢复后校验完整性（PRAGMA integrity_check）与关键表行数。
+# Safety: absolute path target only; pre-restore copy before overwrite;
+# integrity check (PRAGMA integrity_check) + table count after restore.
 
 param(
     [Parameter(Mandatory = $true)][string]$BackupRoot,
-    [Parameter(Mandatory = $true)][string]$RestoreTo,
+    [string]$RestoreTo = "",
     [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
-$Py = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")) ".venv312\Scripts\python.exe"
-if (-not (Test-Path $Py)) { $Py = "python" }
 
-if (-not [System.IO.Path]::IsPathRooted($RestoreTo)) {
-    Write-Error "RestoreTo 必须是绝对路径（防误操作）"
+if (-not [System.IO.Path]::IsPathRooted($BackupRoot)) {
+    Write-Error "BackupRoot must be an absolute path"
     exit 2
 }
 
-# 最新备份
-$Backups = @(Get-ChildItem $BackupRoot -Filter "backup_*.db" | Sort-Object LastWriteTime -Descending)
-if ($Backups.Count -eq 0) { Write-Error "备份根目录无 backup_*.db"; exit 1 }
+# Latest backup
+$Backups = @(Get-ChildItem $BackupRoot -Filter "backup_*.db" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+if ($Backups.Count -eq 0) {
+    Write-Error "No backup_*.db found under: $BackupRoot"
+    exit 1
+}
 $Latest = $Backups[0].FullName
 $SizeMB = [math]::Round($Backups[0].Length / 1MB, 1)
-Write-Host ("选定备份: {0} ({1} MB)" -f $Latest, $SizeMB)
+Write-Host ("[DRY-RUN] source backup: {0} ({1} MB)" -f $Latest, $SizeMB)
+
+# DryRun without an explicit target: derive a safe absolute temp target
+# (never inside the repo, never equal to the production db, never copied to).
+if ($DryRun -and -not $RestoreTo) {
+    $ProdDb = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")) "runtime\stock_data.db"
+    $RestoreTo = Join-Path $env:TEMP ("restore_drill_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".db")
+    $targetFull = [System.IO.Path]::GetFullPath($RestoreTo)
+    $prodFull = [System.IO.Path]::GetFullPath($ProdDb)
+    if ($targetFull -ieq $prodFull) {
+        Write-Error "derived temp target equals production db: $targetFull"
+        exit 2
+    }
+    Write-Host ("[DRY-RUN] derived safe temp target: {0}" -f $RestoreTo)
+    Write-Host ("[DRY-RUN] target != production db ({0})" -f $prodFull)
+}
+
+Write-Host ("[DRY-RUN] restore target: {0}" -f $RestoreTo)
+Write-Host "[DRY-RUN] readonly check: PRAGMA integrity_check + table count after restore"
+Write-Host "[DRY-RUN] safety: will not overwrite production db; pre-restore copy first"
 
 if ($DryRun) {
-    Write-Host "[DRY-RUN] 将恢复 $Latest → $RestoreTo"
+    Write-Host "[DRY-RUN] preview only, no restore performed."
     exit 0
 }
 
-# 目标先做 .pre-restore 副本（绝不直接覆盖唯一可用数据）
+if (-not $RestoreTo -or -not [System.IO.Path]::IsPathRooted($RestoreTo)) {
+    Write-Error "RestoreTo must be an absolute path (required for actual restore)"
+    exit 2
+}
+
+# Pre-restore copy of existing target (never overwrite sole usable data directly)
 if (Test-Path $RestoreTo) {
     $Pre = "$RestoreTo.pre-restore"
     Copy-Item $RestoreTo $Pre -Force
-    Write-Host "目标已备份: $Pre"
+    Write-Host "target backed up: $Pre"
 }
 
 $t0 = Get-Date
 Copy-Item $Latest $RestoreTo -Force
 $elapsed = ((Get-Date) - $t0).TotalSeconds
 
-# 校验
+# Integrity verification
 $Code = @"
 import sqlite3, sys
 db = sys.argv[1]
@@ -59,8 +84,10 @@ finally:
 "@
 $CodeFile = Join-Path $env:TEMP "restore_check.py"
 [System.IO.File]::WriteAllText($CodeFile, $Code, [System.Text.Encoding]::UTF8)
+$Py = Join-Path (Resolve-Path (Join-Path $PSScriptRoot "..")) ".venv312\Scripts\python.exe"
+if (-not (Test-Path $Py)) { $Py = "python" }
 & $Py $CodeFile $RestoreTo
-if ($LASTEXITCODE -ne 0) { Write-Error "恢复后完整性校验失败"; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Error "integrity check failed after restore"; exit 1 }
 
-Write-Host "恢复完成: $RestoreTo（$([math]::Round($elapsed, 1))s，RTO 目标 ≤1800s）"
+Write-Host ("restore complete: {0} ({1}s, RTO target <= 1800s)" -f $RestoreTo, [math]::Round($elapsed, 1))
 exit 0
