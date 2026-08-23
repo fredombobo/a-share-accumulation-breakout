@@ -229,3 +229,13 @@ E:\CODEX\Stock_selection\accumulation_breakout\.venv312\Scripts\python.exe -m py
 - 缺陷编号：V2R-D-RW-001（空/不足样本假 PASS）；V2R-D-RW-002（报告身份不匹配）；V2R-D-RW-003（公司行为权限 0 代码跳过）。
 - 允许进入的下一任务：否；V2R-S/V2R-N 继续 blocked。
 - 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-d`。
+
+## 9. 返工修复（Wave1 REWORK，追加 commit）
+
+- 追加 commit：`80c3eaa` fix(v2r-d): return INSUFFICIENT when default parity sample under 20 codes x 5 dates
+- V2R-D-RW-001 修复：`shadow_parity` 默认采样（codes/dates 均未显式传入）样本 < 20 标的 × 5 日期 →
+  `result=INSUFFICIENT` / `pass=False`，不再误判 PASS；显式传入样本（单测路径）保持原 diff 检测行为。
+- 新增测试 `test_shadow_parity_insufficient_when_default_sample_too_small`（tests/test_data_quality_v2.py 10 passed）。
+- V2R-D-RW-002（报告身份）：real_data_gate 的 shadow parity 非 PASS 一律计入 issues（385-401 行既有逻辑覆盖
+  INSUFFICIENT）；绑定新 SHA 的副本门禁报告需在可写环境对 `E:\ab-maintenance\v2r-d\stock_data_copy.db`
+  重跑 `real_data_gate` 生成（本环境 DB 大文件写入受限）。
