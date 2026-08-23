@@ -62,3 +62,18 @@
   `RISK_UNAVAILABLE`）；observe 模式异常上抛由调用方处理。
 - 新增测试 `test_enforce_mode_blocks_when_flagged` + `test_enforce_mode_fail_closed_on_risk_error`
   （tests/test_order_risk_integration.py 5 passed；parity 3 passed）。
+
+## 10. 二验返工修复（RECHECK 2026-08-23，追加 commit）
+
+- 追加 commit：`57ddea4` fix(v2r-x): structured risk degradation with degraded flag and dual-mode boundary tests
+- **V2R-X-RW-002（统一入口结构化）**：`evaluate_order_risk` 始终返回结构化结果（不向调用方抛内部异常），
+  四键 `blocked/mode/violations/degraded` 恒存在；observe 评估异常 → `degraded=True` + `RISK_UNAVAILABLE`
+  + `blocked=False`（降级不抛出，修改前 observe 异常直接 raise 被调用方吞掉）。
+- **V2R-X-RW-002（调用边界）**：`review_order` 与 `confirm_order` 删除裸 `except Exception: pass`——
+  入口抛异常时 review 追加显式降级 RISK check（observe passed=True / enforce passed=False →
+  can_confirm=False）；confirm 按 enforce 双态（enforce → `_reject` + `DomainError("RISK_BLOCKED")`
+  fail-closed；observe → 降级放行 CONFIRMED）。
+- **双态测试**（monkeypatch 入口直接抛 `RuntimeError("risk backend down")`）：
+  review observe 降级 / review enforce 不通过 / confirm observe CONFIRMED / confirm enforce RISK_BLOCKED，
+  另加入口级 observe 结构化降级测试（四键断言）。修改前这些场景异常被吞、无降级记录。
+- 复验：tests 13 passed（order_risk 6 + parity 7）；ruff 0；mypy 0。
