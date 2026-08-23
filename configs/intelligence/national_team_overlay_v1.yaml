@@ -1,0 +1,15 @@
+# 国家队/机构资金信息增强只读覆盖层（V2R-N）
+# 本文件只描述覆盖层自身配置；覆盖层不进入 A/B 资格、仓位或订单。
+# config_hash = SHA-256(规范化配置（去掉 config_hash 自身）) 前 16 位
+overlay_id: national_team_overlay_v1
+version: v1
+config_hash: 335bf88cbe3bfa87
+enabled: false
+read_only: true
+not_a_pool: true
+research_only: true
+disclaimer: 研究情报，不是买卖指令，不进入 A/B 池，不改变资格、仓位或订单。
+params:
+  source: ntm
+  schema_version: 1
+  max_evidence_refs: 8
