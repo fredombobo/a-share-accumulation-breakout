@@ -28,13 +28,25 @@ vi.mock('../src/api/client', async (orig) => {
 import { fetchSystemHealth, fetchAlerts, fetchBackups } from '../src/api/system'
 import { fetchNotes, fetchDecisions } from '../src/api/review'
 import { api } from '../src/api/client'
+import type { SystemHealth } from '../src/types/system'
 
 import Monitor from '../src/pages/v2/Monitor'
 import Review from '../src/pages/v2/Review'
 import System from '../src/pages/v2/System'
 import Compare from '../src/pages/v2/Compare'
 
-const mockHealth = { build: 'abc123', db_size_mb: 10, wal_size_mb: 1, disk_free_gb: 100, errors: [] }
+const mockHealth = {
+  status: 'PASS',
+  build_version: 'abc123',
+  database: {
+    ok: true,
+    size_bytes: 10_000_000,
+    wal_bytes: 1_000_000,
+    deep_check: { status: 'PASS' },
+  },
+  disk: { free_gb: 100, ok: true },
+  issues: [],
+} satisfies SystemHealth
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -75,8 +87,12 @@ describe('System 页', () => {
       backup_root: 'E:\\ab-backups', latest: null, status: {},
     })
     render(<System />)
-    await waitFor(() => expect(screen.getByText(/快速健康/)).toBeInTheDocument())
-    expect(screen.getByText(/深度完整性检查/)).toBeInTheDocument()
+    await waitFor(() => expect(
+      screen.getByRole('heading', { name: /快速健康/ }),
+    ).toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: '最后一次深度完整性检查' })).toBeInTheDocument()
+    expect(screen.getByText('abc123')).toBeInTheDocument()
+    expect(screen.getByText('10.0 MB')).toBeInTheDocument()
   })
 })
 
@@ -97,7 +113,7 @@ describe('Compare 页', () => {
     render(<Compare />)
     const input = screen.getByLabelText('对比标的')
     await userEvent.type(input, '000001.SZ 600000.SH')
-    await userEvent.click(screen.getByText('对比'))
+    await userEvent.click(screen.getByRole('button', { name: '对比' }))
     await waitFor(() => expect(screen.getByText('000001.SZ')).toBeInTheDocument())
   })
 })

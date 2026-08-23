@@ -14,9 +14,10 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   // E2E 必须自启动当前分支的 dev server（reuseExistingServer=false 防跨分支误测）。
+  // 显式绑定 127.0.0.1：Windows 上 localhost 可能只监听 ::1，而 Playwright 探测 IPv4。
   // strictPort：端口被占即失败，绝不静默漂移到其他端口。
   webServer: {
-    command: `npm run dev -- --port ${E2E_PORT} --strictPort`,
+    command: `npm run dev -- --host 127.0.0.1 --port ${E2E_PORT} --strictPort`,
     url: E2E_BASE,
     reuseExistingServer: false,
     timeout: 120_000,
