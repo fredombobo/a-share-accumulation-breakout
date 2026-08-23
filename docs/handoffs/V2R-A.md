@@ -167,11 +167,12 @@ E:\CODEX\Stock_selection\accumulation_breakout\.venv312\Scripts\python.exe -m py
 
 ## 9. 管理者区（实现 Agent 不填）
 
-- 范围审查：
-- 代码审查：
-- 定向复验：
-- 交叉域复验：
-- 运行态复验：
-- 判定：ACCEPTED / REWORK_REQUIRED / REJECTED
-- 缺陷编号：
-- 允许进入的下一任务：
+- 范围审查：PASS；base/head 和 owned paths 符合，未触碰共享入口、配置、数据 adapter 或 dist。
+- 代码审查：PASS；facade 121 行、根 shim 保留，ENTRY/阈值/A-B 池语义未发现改动。
+- 定向复验：scanner golden、spawn、取消、进度、单/多 worker 等 59 passed；Ruff 0；Mypy 0。
+- 交叉域复验：strict architecture、upgrade system、architecture boundaries 通过。
+- 运行态复验：全部使用 fixture/临时库，无生产写入。
+- 判定：ACCEPTED
+- 缺陷编号：无阻断；pandas concat FutureWarning 交 Q2。
+- 允许进入的下一任务：V2R-A 依赖视为完成；Wave 2 仍受 D/X 等返工阻断。
+- 完整记录：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md`。
