@@ -1,14 +1,7 @@
-"""ab_store 测试：真实库取数 + 非法参数防护。"""
+"""ab_store 测试：隔离市场库取数 + 非法参数防护。"""
 from __future__ import annotations
 
 import pytest
-
-from logic_platform.data.ab_store import ABStore
-
-
-@pytest.fixture(scope="module")
-def store():
-    return ABStore(migrate=False)
 
 
 def test_ohlcv_has_expected_columns(store):

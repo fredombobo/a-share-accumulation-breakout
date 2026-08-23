@@ -83,8 +83,9 @@ def test_unmigrated_desk_404(tmp_path, monkeypatch):
 
 def test_default_db_path_points_into_project():
     """回归：deps 默认路径必须指向本项目 runtime（曾错指父目录空库）。"""
-    from ab_screener.api.deps import DEFAULT_DB_PATH, ROOT
+    from ab_screener.api import deps
 
-    assert str(ROOT).endswith("accumulation_breakout")
-    assert DEFAULT_DB_PATH == ROOT / "runtime" / "stock_data.db"
-    assert DEFAULT_DB_PATH.parent.name == "runtime"
+    expected_root = Path(deps.__file__).resolve().parents[2]
+    assert deps.ROOT == expected_root
+    assert deps.DEFAULT_DB_PATH == deps.ROOT / "runtime" / "stock_data.db"
+    assert deps.DEFAULT_DB_PATH.parent.name == "runtime"

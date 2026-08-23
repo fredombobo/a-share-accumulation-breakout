@@ -101,12 +101,10 @@ def test_evaluate_any_group():
     assert i.evaluate(dsl, _panel(vol_percentile_60=0.3)).passed is False
 
 
-def test_build_panel_from_raw():
-    """end-to-end：真实 _analyze_raw 产物 → 面板 → 求值。"""
-    from logic_platform.data.ab_store import ABStore
+def test_build_panel_from_raw(store):
+    """end-to-end：隔离行情的 _analyze_raw 产物 → 面板 → 求值。"""
     from logic_platform.service import _analyze_raw
 
-    store = ABStore(migrate=False)
     raw = _analyze_raw("000001.SZ", store)
     assert raw is not None
     df, feats, sig, rec = raw["df"], raw["feats"], raw["sig"], raw["record"]
