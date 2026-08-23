@@ -4,32 +4,16 @@ scan_spawn 等）函数内延迟 import，保持与原实现一致。
 """
 from __future__ import annotations
 
-import hashlib
-import threading
-import uuid
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel, Field
-import pandas as pd
+from fastapi import APIRouter, Header, HTTPException
+
 from ab_screener.api.legacy_state import (
     _DB,
-    _paper_enabled,
-    _BUILD_VERSION,
-    _LOGGER,
     _PARENT,
+    _paper_enabled,
     _store,
-    _LAB_TASKS,
-    _LAB_LOCK,
-    _LAB_TASKS_MAX,
-    _LAB_STORE,
-    _SYNC_LOCK,
-    _SYNC_STATE,
-    _BT_LOCK,
-    _BT_TASKS,
-    _BT_TASKS_MAX,
 )
 
 router = APIRouter(tags=["legacy"])

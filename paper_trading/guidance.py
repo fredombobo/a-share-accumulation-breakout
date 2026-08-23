@@ -212,6 +212,26 @@ def review_order(
     notional = int(fill.get("notional_fen", 0))
     cash_change = -(notional + commission + tax + other) if side == "BUY" \
         else notional - commission - tax - other
+
+    # 统一风控（与 confirm 共享同一入口；review 的 can_confirm 计入统一风控结果）
+    try:
+        from paper_trading.risk_adapter import evaluate_order_risk
+
+        risk = evaluate_order_risk(
+            db_path,
+            ts_code=code,
+            side=side,
+            qty=qty,
+            price_micro=int(round(float(fill.get("fill_price", bar["open"])) * 1_000_000)),
+            today=execution_date,
+        )
+        risk_blocked = bool(risk.get("blocked"))
+        checks.append({"code": "RISK", "label": "统一风控",
+                       "passed": not risk_blocked,
+                       "message": "风控通过" if not risk_blocked
+                       else f"风控拒绝: {risk.get('violations')}"})
+    except Exception:  # noqa: BLE001
+        pass
     return {
         "scope": scope,
         "persisted": False,

@@ -1,7 +1,7 @@
 """纸面风险适配（P5.1/P5.2）：pt DB → 约束评估 + 组合风险报告。
 
 - Review 与 confirm 共用 `evaluate_order_risk`（observe 模式：返回违规，是否阻断由
-  RISK_ENFORCE 决定——P5 回滚规定风险 V2 可先 observe 后 enforce）。
+  V2_RISK_ENFORCEMENT_ENABLED 决定——默认 false，先 observe 后 enforce）。
 - 硬约束（现金/份额/不做空/T+1）永不可关闭，由 legacy confirm 强制。
 """
 from __future__ import annotations
@@ -18,7 +18,18 @@ from ab_screener.domain.risk.models import (
     RiskConfig,
 )
 
-RISK_ENFORCE_DEFAULT = False  # observe 模式（先观察后强制）
+RISK_ENFORCE_DEFAULT = False  # observe 模式（先观察后强制；配置旗标覆盖）
+
+
+def _enforcement_enabled() -> bool:
+    """读取 resolved config 的 V2_RISK_ENFORCEMENT_ENABLED（默认 false）。"""
+    try:
+        from ab_screener.application.platform_config import load_resolved_config
+
+        flags = load_resolved_config().get("flags") or {}
+        return bool(flags.get("V2_RISK_ENFORCEMENT_ENABLED", RISK_ENFORCE_DEFAULT))
+    except Exception:  # noqa: BLE001
+        return RISK_ENFORCE_DEFAULT
 
 
 def _risk_config() -> RiskConfig:

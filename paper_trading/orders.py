@@ -554,6 +554,29 @@ def confirm_order(
     else:
         reserve_fen = 0
 
+    # 4.5) 统一风控（与 review 共享同一入口；确认不信任前端提交的风控结果）
+    try:
+        from paper_trading.risk_adapter import evaluate_order_risk
+
+        risk = evaluate_order_risk(
+            db_path,
+            ts_code=ts_code,
+            side=side,
+            qty=qty,
+            price_micro=int(round(price * 1_000_000)),
+            today=today,
+        )
+        if risk.get("blocked"):
+            detail = risk.get("violations") or []
+            _reject(order_id, "RISK_BLOCKED", f"统一风控拒绝: {detail}", db_path)
+            raise DomainError("RISK_BLOCKED", "统一风控拒绝", details=detail)
+        checks.append({"name": "统一风控", "pass": True, "mode": risk.get("mode")})
+    except DomainError:
+        raise
+    except Exception:  # noqa: BLE001
+        # 风控不可用不阻断纸面交易（observe 语义）；enforce 由配置控制
+        pass
+
     # 5) 预留 + 状态流转（BEGIN IMMEDIATE 内）
     now = _now()
     pending_error: DomainError | None = None
