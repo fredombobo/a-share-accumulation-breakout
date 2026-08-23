@@ -124,3 +124,22 @@ def test_migration_registered():
     from ab_screener.data.migration_registry import registered_ids
 
     assert "v2:corporate_actions" in registered_ids()
+
+
+def test_corporate_action_record_carries_pit_columns(db: str):
+    """V2R-D：每条公司行为记录必须携带 effective_at/available_at/ingested_at/source/revision。"""
+    ingest_dividend(db, ts_code="000001.SZ", ex_date="20260710", cash_div_fen=250)
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT ts_code, ex_date, kind, source, available_at, effective_at,"
+            " ingested_at, revision FROM corporate_actions"
+            " WHERE ts_code='000001.SZ' AND ex_date='20260710' AND kind='DIVIDEND'"
+        ).fetchone()
+    assert row is not None
+    ts_code, ex_date, kind, source, available_at, effective_at, ingested_at, revision = row
+    assert (ts_code, ex_date, kind) == ("000001.SZ", "20260710", "DIVIDEND")
+    assert source == "tushare"
+    assert available_at and available_at.endswith("+08:00")
+    assert effective_at and effective_at.endswith("+08:00")
+    assert ingested_at and ingested_at.endswith("+08:00")
+    assert revision >= 1

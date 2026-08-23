@@ -13,6 +13,7 @@ from ab_screener.application.data_quality import (
     check_duplicate_keys,
     check_invalid_ohlc_and_negative,
     run_data_quality,
+    shadow_parity,
     source_parity,
 )
 from ab_screener.data.instrument_repository import upsert_instrument
@@ -161,3 +162,63 @@ def test_full_quality_pass_with_fake_source(db: str):
         seed_codes=["000001.SZ"],
     )
     assert report["result"] == "PASS"
+
+
+def test_shadow_parity_legacy_matches_pit(db: str):
+    """legacy daily 与 PIT daily_history as-of 读取零差异 → PASS。"""
+    from ab_screener.data.pit_writer import write_plain
+
+    # 同时写入 legacy daily 与 PIT daily_history（同值）
+    _seed_daily(db, [
+        ("000001.SZ", "20260810", 10.0, 10.5, 9.8, 10.2, 1000, 1e7),
+        ("600000.SH", "20260810", 5.0, 5.2, 4.9, 5.1, 2000, 1e7),
+        ("000002.SZ", "20260810", 12.0, 12.6, 11.9, 12.4, 3000, 1e7),
+    ])
+    conn = sqlite3.connect(db)
+    try:
+        write_plain(
+            conn, "daily",
+            [{"ts_code": "000001.SZ", "trade_date": "20260810",
+              "open": 10.0, "high": 10.5, "low": 9.8, "close": 10.2, "vol": 1000.0,
+              "amount": 1e7}],
+            source="tushare", available_at="2026-08-10T16:00:00+08:00", partition_key="20260810",
+        )
+        write_plain(
+            conn, "daily",
+            [{"ts_code": "600000.SH", "trade_date": "20260810",
+              "open": 5.0, "high": 5.2, "low": 4.9, "close": 5.1, "vol": 2000.0,
+              "amount": 1e7}],
+            source="tushare", available_at="2026-08-10T16:00:00+08:00", partition_key="20260810",
+        )
+        write_plain(
+            conn, "daily",
+            [{"ts_code": "000002.SZ", "trade_date": "20260810",
+              "open": 12.0, "high": 12.6, "low": 11.9, "close": 12.4, "vol": 3000.0,
+              "amount": 1e7}],
+            source="tushare", available_at="2026-08-10T16:00:00+08:00", partition_key="20260810",
+        )
+    finally:
+        conn.close()
+    report = shadow_parity(
+        db, seed=7, codes=["000001.SZ", "600000.SH", "000002.SZ"],
+        dates=["20260810"], decision_at="2026-08-11T00:00:00+08:00",
+    )
+    assert report["result"] == "PASS"
+    assert report["diffs"] == []
+    assert report["code_sha"]
+    assert report["config_hash"]
+    assert report["db_fingerprint"]
+
+
+def test_shadow_parity_detects_pit_missing(db: str):
+    """legacy 有行但 PIT as-of 缺失 → 差异且 result=FAIL。"""
+    _seed_daily(db, [
+        ("000001.SZ", "20260810", 10.0, 10.5, 9.8, 10.2, 1000, 1e7),
+        ("600000.SH", "20260810", 5.0, 5.2, 4.9, 5.1, 2000, 1e7),
+    ])
+    report = shadow_parity(
+        db, seed=7, codes=["000001.SZ", "600000.SH"],
+        dates=["20260810"], decision_at="2026-08-11T00:00:00+08:00",
+    )
+    assert report["result"] == "FAIL"
+    assert any("缺失" in str(d["detail"]) for d in report["diffs"])
