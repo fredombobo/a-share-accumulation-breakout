@@ -247,6 +247,24 @@ def shadow_parity(
     if len(sample_codes) < 20:
         sample_codes = (sample_codes + _sample_codes_covered(db_path, seed, sample_dates, 40))[:20]
     decision = decision_at or datetime.now(_TZ).isoformat(timespec="seconds")
+    # 默认采样（门禁报告路径）样本不足 → INSUFFICIENT（空样本/覆盖不足不得误判 PASS）
+    if codes is None and dates is None and (len(sample_dates) < 5 or len(sample_codes) < 20):
+        return {
+            "name": "shadow_parity",
+            "pass": False,
+            "result": "INSUFFICIENT",
+            "code_sha": _code_sha(),
+            "config_hash": _config_hash(),
+            "db_fingerprint": _db_fingerprint(db_path),
+            "seed": seed,
+            "sample_codes": sample_codes[:PARITY_CODES],
+            "sample_dates": sample_dates[:PARITY_DAYS],
+            "samples_checked": 0,
+            "pairs_compared": 0,
+            "diffs": [],
+            "decision_at": decision,
+            "reason": f"样本不足：标的 {len(sample_codes)}/{PARITY_CODES}，日期 {len(sample_dates)}/{PARITY_DAYS}",
+        }
     repo = PitRepository(db_path)
     diffs: list[dict[str, Any]] = []
     checked = 0

@@ -222,3 +222,32 @@ def test_shadow_parity_detects_pit_missing(db: str):
     )
     assert report["result"] == "FAIL"
     assert any("缺失" in str(d["detail"]) for d in report["diffs"])
+
+
+def test_shadow_parity_insufficient_when_default_sample_too_small(tmp_path: Path, monkeypatch) -> None:
+    """默认采样（门禁报告路径）样本不足 20 标的 × 5 日期 → INSUFFICIENT，不得误判 PASS。"""
+    path = tmp_path / "empty.db"
+    monkeypatch.setattr(local_store_mod, "_DB_PATH", path)
+    from local_store import LocalStore
+
+    LocalStore()
+    conn = sqlite3.connect(str(path))
+    try:
+        apply_pending(conn)
+        # 只有 1 只标的 × 1 日期 → 默认采样覆盖不足
+        conn.execute(
+            "INSERT INTO daily(ts_code,trade_date,open,high,low,close,vol,amount)"
+            " VALUES ('000001.SZ','20260810',10,10,10,10,100,1000)"
+        )
+        conn.execute(
+            "INSERT INTO daily_history(ts_code,trade_date,revision,available_at,source,content_hash,payload_json)"
+            " VALUES ('000001.SZ','20260810',1,'2026-08-10T16:00:00+08:00','tushare','h',"
+            "'{\"open\":10,\"high\":10,\"low\":10,\"close\":10,\"vol\":100,\"amount\":1000}')"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = shadow_parity(path, seed=7, decision_at="2026-08-11T00:00:00+08:00")
+    assert report["result"] == "INSUFFICIENT"
+    assert "样本不足" in report["reason"]
