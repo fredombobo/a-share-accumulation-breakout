@@ -1,0 +1,337 @@
+version: 1
+created_at: "2026-08-23T00:30:00+08:00"
+program: PERSONAL-INSTITUTIONAL-CONSOLE-V2-REMEDIATION
+repository: "E:/CODEX/Stock_selection/accumulation_breakout"
+base_commit: "b6772c3001e1fa37447fca813b7ad3512b54eb49"
+integration_base: "2c04962e9d647a332be1f8944c4eebdbad80a2a6"
+overall_status: BLOCKED
+wave_1_reviewed_at: "2026-08-23T14:52:00+08:00"
+wave_1_verdict: REWORK_REQUIRED
+wave_1_summary:
+  accepted: [V2R-Q1, V2R-A]
+  rework_required: [V2R-D, V2R-X, V2R-F, V2R-O1]
+  released_wave_2_tasks: []
+manager_role: "Codex primary agent: dispatch, scope review, independent verification, rejection/rework, P8 verdict"
+
+authority:
+  implementation_plan: "docs/superpowers/plans/2026-08-23-v2-remediation-manager-plan.md"
+  handoff_template: "docs/handoffs/V2-REMEDIATION-AGENT-HANDOFF-TEMPLATE.md"
+  manager_acceptance: "docs/ACCEPTANCE-V2-REMEDIATION-MANAGER.md"
+  original_acceptance: "docs/superpowers/plans/2026-08-16-institutional-console-v2-acceptance.md"
+
+global_rules:
+  - "每个 Agent 使用独立 worktree 和独立分支，禁止在共享工作区直接实现"
+  - "只修改任务包列出的 owned_paths；shared_paths 只能由 V2R-G 集成 Agent 修改"
+  - "任何 Agent 不得自行改 overall_status 或宣布 PERSONAL_INSTITUTIONAL_READY"
+  - "LIVE_TRADING_ENABLED 始终为 false；不得新增券商下单能力"
+  - "生产数据库、现有备份和 portfolio.json 不得删除、覆盖或重写"
+  - "Tushare Token 只从受忽略的 .env 或环境变量读取，日志和提交不得包含 Token"
+  - "功能必须先有失败测试，再最小实现，再定向测试；交付必须有 commit SHA"
+  - "前端功能 Agent 不提交 web/frontend/dist；仅 V2R-G 在最终整合时统一构建"
+  - "实现 Agent 的 handoff 只是待验收，不等于 accepted"
+
+protected_paths:
+  - "docs/STATUS.md"
+  - "docs/RESEARCH-ROADMAP.md"
+  - "tasks/backlog.yaml"
+  - "tasks/implementation_state.yaml"
+
+shared_paths:
+  - "web/backend_app.py"
+  - "ab_screener/api/app_factory.py"
+  - "configs/platform_v2.yaml"
+  - "web/frontend/dist/**"
+
+waves:
+  wave_1:
+    parallel: true
+    tasks: [V2R-Q1, V2R-A, V2R-D, V2R-X, V2R-F, V2R-O1]
+    exit: "六个任务均由管理者独立验收或退回"
+  wave_2:
+    parallel: true
+    tasks: [V2R-S, V2R-O2, V2R-R, V2R-N]
+    exit: "生产接线、完整研究证据和信息增强分别形成可复验证据"
+  wave_3:
+    parallel: false
+    tasks: [V2R-Q2, V2R-G, V2R-P8]
+    exit: "当前身份七闸门诚实落锤"
+
+tasks:
+  V2R-Q1:
+    title: "正确性回归与可重复基线"
+    status: accepted
+    accepted_commit: "8310b08aeb677fc19206aa092aa3ac7e1d00abfd"
+    manager_review_commit: "4e01fb0"
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-q1"
+    wave: 1
+    agent_role: quality-baseline-agent
+    dependencies: []
+    owned_paths:
+      - "ab_screener/api/routers/legacy_misc.py"
+      - "tests/test_today_guide.py"
+      - "scripts/capture_v2_baseline.py"
+      - "tests/test_v2_baseline_manifest.py"
+      - "tests/test_build_version.py"
+    forbidden:
+      - "不得通过增加 timeout 掩盖 16GB 数据库扫描"
+      - "不得降低 baseline identity 或 DB 健康断言"
+    deliverable: "docs/handoffs/V2R-Q1.md"
+
+  V2R-A:
+    title: "扫描内核拆分与确定性回归"
+    status: accepted
+    accepted_commit: "26f77ebf5c7b662a2224aac8bdae4bde02af113d"
+    manager_review_commit: "53a796a"
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-a"
+    wave: 1
+    agent_role: scanner-architecture-agent
+    dependencies: []
+    owned_paths:
+      - "ab_screener/run_screener.py"
+      - "ab_screener/screener/**"
+      - "run_screener.py"
+      - "tests/test_*screener*.py"
+      - "tests/test_scan_spawn.py"
+      - "tests/test_scan_runtime.py"
+      - "tests/test_scan_progress_io.py"
+      - "tests/test_scan_guard.py"
+      - "tests/test_scan_result*.py"
+    forbidden:
+      - "不得改变 ENTRY、评分阈值、A/B 池或固定 fixture 结果"
+      - "不得修改 API router、数据 adapter 或配置"
+      - "不得删除根兼容 shim"
+    deliverable: "docs/handoffs/V2R-A.md"
+
+  V2R-D:
+    title: "PIT、公司行为与当前身份数据门禁"
+    status: rework_required
+    reviewed_commit: "8dcc696401d90310913fb74190690db64a95a4ae"
+    manager_review_commit: "f83dc31"
+    defect_ids: [V2R-D-RW-001, V2R-D-RW-002, V2R-D-RW-003]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-d"
+    wave: 1
+    agent_role: data-gate-agent
+    dependencies: []
+    owned_paths:
+      - "ab_screener/data/**"
+      - "ab_screener/application/data_quality.py"
+      - "ab_screener/application/pit_backfill.py"
+      - "paper_trading/real_data_gate.py"
+      - "scripts/backfill_pit_v2.py"
+      - "tests/test_*pit*.py"
+      - "tests/test_*data_quality*.py"
+      - "tests/test_*corporate_action*.py"
+    forbidden:
+      - "不得直接修改生产 DB；先在校验副本证明"
+      - "不得开启 V2_PIT_READ_ENABLED"
+      - "不得修改 tushare_init.py 或写入明文凭据"
+    deliverable: "docs/handoffs/V2R-D.md"
+
+  V2R-X:
+    title: "统一执行核心、账本 parity 与风险接线"
+    status: rework_required
+    reviewed_commit: "2039f897440884e78754fd1add9842b00de4a071"
+    manager_review_commit: "dd4e932"
+    defect_ids: [V2R-X-RW-001, V2R-X-RW-002]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-x"
+    wave: 1
+    agent_role: execution-risk-agent
+    dependencies: []
+    owned_paths:
+      - "ab_screener/domain/execution/**"
+      - "ab_screener/domain/risk/**"
+      - "ab_screener/application/portfolio_risk.py"
+      - "paper_trading/engine.py"
+      - "paper_trading/orders.py"
+      - "paper_trading/risk_adapter.py"
+      - "paper_trading/guidance.py"
+      - "ab_screener/api/routers/legacy_paper.py"
+      - "tests/test_execution*.py"
+      - "tests/test_risk*.py"
+      - "tests/test_paper*.py"
+    forbidden:
+      - "不得开启 V2_EXECUTION_WRITE_ENABLED 或 V2_RISK_ENFORCEMENT_ENABLED"
+      - "不得改现金/份额硬门，不得引入浮点记账"
+      - "不得改前端或 app_factory"
+    deliverable: "docs/handoffs/V2R-X.md"
+
+  V2R-F:
+    title: "v2 控制台缺页、前端测试和无障碍 E2E"
+    status: rework_required
+    reviewed_commit: "b378d3bd8b17c9ebe5ada04ba4f552d5c7fe06c1"
+    manager_review_commit: "f4295bd"
+    defect_ids: [V2R-F-RW-001, V2R-F-RW-002, V2R-F-RW-003, V2R-F-RW-004]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-f"
+    wave: 1
+    agent_role: frontend-e2e-agent
+    dependencies: []
+    owned_paths:
+      - "web/frontend/src/**"
+      - "web/frontend/package.json"
+      - "web/frontend/package-lock.json"
+      - "web/frontend/vite.config.ts"
+      - "web/frontend/playwright.config.ts"
+      - "web/frontend/tests/**"
+    forbidden:
+      - "不得提交 web/frontend/dist"
+      - "不得在前端计算账务、费用、风险或就绪状态"
+      - "不得用 URL/localStorage 打开服务端业务旗标"
+    deliverable: "docs/handoffs/V2R-F.md"
+
+  V2R-O1:
+    title: "快速健康检查、备份接线与严格恢复演练"
+    status: rework_required
+    reviewed_commit: "853cf54b875d4a110d4dce93c99888f83a71e079"
+    manager_review_commit: "0b20b0a"
+    defect_ids: [V2R-O1-RW-001, V2R-O1-RW-002, V2R-O1-RW-003]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-o1"
+    wave: 1
+    agent_role: operations-recovery-agent
+    dependencies: []
+    owned_paths:
+      - "ab_screener/operations/health.py"
+      - "ab_screener/operations/backup.py"
+      - "ab_screener/api/routers/system.py"
+      - "scripts/restore_backup.ps1"
+      - "scripts/soak_monitor_v2.py"
+      - "scripts/check_db_integrity.py"
+      - "tests/test_backup*.py"
+      - "tests/test_system_health*.py"
+    forbidden:
+      - "不得删除或覆盖 E:/ab-backups 中的现有文件"
+      - "不得在 GET 请求内执行 16GB 全库 integrity_check"
+      - "不得开启 DAILY_SCHEDULER_ENABLED"
+    deliverable: "docs/handoffs/V2R-O1.md"
+
+  V2R-S:
+    title: "六形态扫描、不可变信号、成交/outcome 生产接线"
+    status: blocked
+    wave: 2
+    agent_role: signal-lifecycle-agent
+    dependencies: [V2R-Q1, V2R-A, V2R-D, V2R-X]
+    owned_paths:
+      - "ab_screener/strategies/**"
+      - "ab_screener/application/signal_pipeline.py"
+      - "ab_screener/application/signal_outcomes.py"
+      - "ab_screener/domain/signal*.py"
+      - "ab_screener/data/signal*.py"
+      - "ab_screener/api/routers/legacy_scan.py"
+      - "tests/test_signal*.py"
+      - "tests/test_strategy*.py"
+    forbidden:
+      - "EXPERIMENTAL 插件不得进入 A 池或生成买单"
+      - "不得覆盖已成交、已退出或历史 observation"
+      - "不得修改共享 app_factory/config"
+    deliverable: "docs/handoffs/V2R-S.md"
+
+  V2R-O2:
+    title: "持久 EOD DAG、故障恢复、审计链与五日 soak 启动"
+    status: blocked
+    wave: 2
+    agent_role: operations-dag-agent
+    dependencies: [V2R-D, V2R-X, V2R-S, V2R-O1]
+    owned_paths:
+      - "ab_screener/operations/dag.py"
+      - "ab_screener/operations/scheduler.py"
+      - "ab_screener/operations/alerts.py"
+      - "ab_screener/application/audit_service.py"
+      - "ab_screener/data/scheduler_repository.py"
+      - "tests/test_dag*.py"
+      - "tests/test_scheduler*.py"
+      - "tests/test_audit*.py"
+      - "tests/test_fault_injection*.py"
+    forbidden:
+      - "不得在生产库先试；必须使用副本"
+      - "不得伪造五交易日 soak"
+      - "不得把 FastAPI 进程内状态当业务事实源"
+    deliverable: "docs/handoffs/V2R-O2.md"
+
+  V2R-R:
+    title: "600 股、步长 5 的净成本 IS/OOS/WF 与反过拟合证据"
+    status: blocked
+    wave: 2
+    agent_role: research-evidence-agent
+    dependencies: [V2R-Q1, V2R-D, V2R-X]
+    owned_paths:
+      - "ab_screener/research/**"
+      - "tests/test_*research*.py"
+      - "tests/test_*walkforward*.py"
+      - "runtime/v2/research_*/**"
+    forbidden:
+      - "不得为了 PASS 调阈值、删失败窗口或事后改参数网格"
+      - "PASS 不得自动进入 A 池或生成订单"
+      - "运行结果允许诚实 FAIL 或 INSUFFICIENT"
+    deliverable: "docs/handoffs/V2R-R.md"
+
+  V2R-N:
+    title: "国家队/机构资金等信息增强只读覆盖层"
+    status: blocked
+    wave: 2
+    agent_role: information-overlay-agent
+    dependencies: [V2R-D]
+    owned_paths:
+      - "ab_screener/intelligence/national_team_overlay_v1.py"
+      - "ab_screener/data/adapters/ntm_client.py"
+      - "ab_screener/application/evaluate_overlays.py"
+      - "configs/intelligence/national_team_overlay_v1.yaml"
+      - "tests/test_national_team_overlay.py"
+      - "tests/test_ntm_client.py"
+      - "tests/test_evaluate_overlays.py"
+    forbidden:
+      - "不得成为 A/B 池资格、仓位权重或订单输入"
+      - "不得使用 available_at 晚于 decision_at 的信息"
+      - "不得伪造供应商字段或接口权限"
+    deliverable: "docs/handoffs/V2R-N.md"
+
+  V2R-Q2:
+    title: "集成后 Ruff/Mypy/测试债务清零"
+    status: blocked
+    wave: 3
+    agent_role: quality-sweep-agent
+    dependencies: [V2R-A, V2R-D, V2R-X, V2R-F, V2R-O1, V2R-S, V2R-O2, V2R-N]
+    owned_paths:
+      - "由管理者根据集成 diff 临时授予；默认只允许 import、typing、测试标记和质量配置"
+    forbidden:
+      - "不得改变策略、成交、费用、风险、PIT 或门禁语义"
+      - "不得删除测试或扩大 ignore/exclude 来制造绿灯"
+    deliverable: "docs/handoffs/V2R-Q2.md"
+
+  V2R-G:
+    title: "共享入口、服务端 flags、readiness、台账和最终构建收口"
+    status: blocked
+    wave: 3
+    agent_role: integration-governance-agent
+    dependencies: [V2R-Q2, V2R-R]
+    owned_paths:
+      - "web/backend_app.py"
+      - "ab_screener/api/app_factory.py"
+      - "ab_screener/application/platform_config.py"
+      - "ab_screener/domain/readiness.py"
+      - "ab_screener/api/routers/readiness.py"
+      - "tests/test_readiness_v2.py"
+      - "configs/platform_v2.yaml"
+      - "AGENTS.md"
+      - "docs/API-CONTRACT-V2.md"
+      - "web/frontend/dist/**"
+    forbidden:
+      - "不得自行修改 protected task/status 文档；提交建议给管理者"
+      - "不得把研究 FAIL 改成 PASS"
+      - "不得开启 LIVE_TRADING_ENABLED"
+    deliverable: "docs/handoffs/V2R-G.md"
+
+  V2R-P8:
+    title: "七闸门独立总验收"
+    status: blocked
+    wave: 3
+    agent_role: manager-only
+    dependencies: [V2R-G]
+    owned_paths:
+      - "docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md"
+      - "tasks/v2_remediation_board_20260823.yaml"
+      - "tasks/backlog.yaml"
+      - "tasks/implementation_state.yaml"
+      - "docs/STATUS.md"
+      - "docs/RESEARCH-ROADMAP.md"
+    forbidden:
+      - "实现 Agent 不得领取"
+    deliverable: "管理者最终裁决：BLOCKED / ENGINEERING_READY_RESEARCH_BLOCKED / PERSONAL_INSTITUTIONAL_READY"
