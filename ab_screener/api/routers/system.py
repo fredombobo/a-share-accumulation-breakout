@@ -15,29 +15,29 @@ from ab_screener.operations.health import system_health
 router = APIRouter(prefix="/api/v2/system", tags=["system"])
 
 
-def _backup_root(explicit: str | None) -> str | None:
-    """backup_root 解析：显式参数（仅测试）→ AB_BACKUP_ROOT；未设置 → None。
+def _backup_root() -> str | None:
+    """backup_root：只读 AB_BACKUP_ROOT；未设置 → None。
 
     不得悄悄把 runtime/backups 当通过；未配置时明确 BACKUP_ROOT_UNCONFIGURED。
+    HTTP 查询参数不得作为生产 backup_root 覆盖来源（防越权）。
     """
-    return explicit or os.environ.get("AB_BACKUP_ROOT")
+    return os.environ.get("AB_BACKUP_ROOT")
 
 
 @router.get("/health")
 def health(
     port: int = 8001,
-    backup_root: str | None = None,
     db_path: str = Depends(get_db_path),
 ) -> dict[str, Any]:
     """DB/WAL/磁盘/DAG/端口身份。backup_root 未配置 → BACKUP_ROOT_UNCONFIGURED。"""
-    root = _backup_root(backup_root)
+    root = _backup_root()
     return system_health(db_path, root, port=port)
 
 
 @router.get("/backups")
-def backups(backup_root: str | None = None) -> dict[str, Any]:
-    """备份及恢复演练状态（backup_root 缺省取 AB_BACKUP_ROOT；未配置 → BACKUP_ROOT_UNCONFIGURED）。"""
-    root = _backup_root(backup_root)
+def backups() -> dict[str, Any]:
+    """备份及恢复演练状态（backup_root 只取 AB_BACKUP_ROOT；未配置 → BACKUP_ROOT_UNCONFIGURED）。"""
+    root = _backup_root()
     if root is None:
         return {"backup_root": None, "latest": None, "status": {"status": "BACKUP_ROOT_UNCONFIGURED"}}
     latest = latest_backup(root)

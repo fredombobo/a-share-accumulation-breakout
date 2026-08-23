@@ -8,16 +8,12 @@
 
 param(
     [Parameter(Mandatory = $true)][string]$BackupRoot,
-    [Parameter(Mandatory = $true)][string]$RestoreTo,
+    [string]$RestoreTo = "",
     [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 
-if (-not [System.IO.Path]::IsPathRooted($RestoreTo)) {
-    Write-Error "RestoreTo must be an absolute path"
-    exit 2
-}
 if (-not [System.IO.Path]::IsPathRooted($BackupRoot)) {
     Write-Error "BackupRoot must be an absolute path"
     exit 2
@@ -32,13 +28,19 @@ if ($Backups.Count -eq 0) {
 $Latest = $Backups[0].FullName
 $SizeMB = [math]::Round($Backups[0].Length / 1MB, 1)
 Write-Host ("[DRY-RUN] source backup: {0} ({1} MB)" -f $Latest, $SizeMB)
-Write-Host ("[DRY-RUN] restore target: {0}" -f $RestoreTo)
+$targetLabel = if ($RestoreTo) { $RestoreTo } else { "(unspecified)" }
+Write-Host ("[DRY-RUN] restore target: {0}" -f $targetLabel)
 Write-Host "[DRY-RUN] readonly check: PRAGMA integrity_check + table count after restore"
 Write-Host "[DRY-RUN] safety: will not overwrite production db; pre-restore copy first"
 
 if ($DryRun) {
     Write-Host "[DRY-RUN] preview only, no restore performed."
     exit 0
+}
+
+if (-not $RestoreTo -or -not [System.IO.Path]::IsPathRooted($RestoreTo)) {
+    Write-Error "RestoreTo must be an absolute path (required for actual restore)"
+    exit 2
 }
 
 # Pre-restore copy of existing target (never overwrite sole usable data directly)
