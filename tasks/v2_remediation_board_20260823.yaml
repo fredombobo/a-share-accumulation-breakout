@@ -7,6 +7,8 @@ integration_base: "2c04962e9d647a332be1f8944c4eebdbad80a2a6"
 overall_status: BLOCKED
 wave_1_reviewed_at: "2026-08-23T14:52:00+08:00"
 wave_1_verdict: REWORK_REQUIRED
+wave_1_rechecked_at: "2026-08-23T15:45:00+08:00"
+wave_1_recheck_verdict: REWORK_REQUIRED
 wave_1_summary:
   accepted: [V2R-Q1, V2R-A]
   rework_required: [V2R-D, V2R-X, V2R-F, V2R-O1]
@@ -17,6 +19,7 @@ authority:
   implementation_plan: "docs/superpowers/plans/2026-08-23-v2-remediation-manager-plan.md"
   handoff_template: "docs/handoffs/V2-REMEDIATION-AGENT-HANDOFF-TEMPLATE.md"
   manager_acceptance: "docs/ACCEPTANCE-V2-REMEDIATION-MANAGER.md"
+  wave_1_recheck: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md"
   original_acceptance: "docs/superpowers/plans/2026-08-16-institutional-console-v2-acceptance.md"
 
 global_rules:
@@ -105,10 +108,12 @@ tasks:
   V2R-D:
     title: "PIT、公司行为与当前身份数据门禁"
     status: rework_required
-    reviewed_commit: "8dcc696401d90310913fb74190690db64a95a4ae"
+    reviewed_commit: "57c5a8b764cbcc3535e04908359955598f832d25"
     manager_review_commit: "f83dc31"
     defect_ids: [V2R-D-RW-001, V2R-D-RW-002, V2R-D-RW-003]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-d"
+    resolved_defect_ids: []
+    remaining_defect_ids: [V2R-D-RW-001, V2R-D-RW-002, V2R-D-RW-003]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-d"
     wave: 1
     agent_role: data-gate-agent
     dependencies: []
@@ -130,10 +135,12 @@ tasks:
   V2R-X:
     title: "统一执行核心、账本 parity 与风险接线"
     status: rework_required
-    reviewed_commit: "2039f897440884e78754fd1add9842b00de4a071"
+    reviewed_commit: "d7551bc310a3a3581b303e631d89d29cb95b84ab"
     manager_review_commit: "dd4e932"
     defect_ids: [V2R-X-RW-001, V2R-X-RW-002]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-x"
+    resolved_defect_ids: [V2R-X-RW-001]
+    remaining_defect_ids: [V2R-X-RW-002]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-x"
     wave: 1
     agent_role: execution-risk-agent
     dependencies: []
@@ -158,10 +165,12 @@ tasks:
   V2R-F:
     title: "v2 控制台缺页、前端测试和无障碍 E2E"
     status: rework_required
-    reviewed_commit: "b378d3bd8b17c9ebe5ada04ba4f552d5c7fe06c1"
+    reviewed_commit: "f5bfff4fd9f9d6a5830e88476032746c1582865b"
     manager_review_commit: "f4295bd"
     defect_ids: [V2R-F-RW-001, V2R-F-RW-002, V2R-F-RW-003, V2R-F-RW-004]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-f"
+    resolved_defect_ids: [V2R-F-RW-003]
+    remaining_defect_ids: [V2R-F-RW-001, V2R-F-RW-002, V2R-F-RW-004]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-f"
     wave: 1
     agent_role: frontend-e2e-agent
     dependencies: []
@@ -181,10 +190,12 @@ tasks:
   V2R-O1:
     title: "快速健康检查、备份接线与严格恢复演练"
     status: rework_required
-    reviewed_commit: "853cf54b875d4a110d4dce93c99888f83a71e079"
+    reviewed_commit: "b02ed05d5a24e361ece4a1a0b617f390cf6636e9"
     manager_review_commit: "0b20b0a"
     defect_ids: [V2R-O1-RW-001, V2R-O1-RW-002, V2R-O1-RW-003]
-    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-o1"
+    resolved_defect_ids: [V2R-O1-RW-002]
+    remaining_defect_ids: [V2R-O1-RW-001, V2R-O1-RW-003]
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-RECHECK-2026-08-23.md#v2r-o1"
     wave: 1
     agent_role: operations-recovery-agent
     dependencies: []
