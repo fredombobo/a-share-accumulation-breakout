@@ -112,16 +112,28 @@ def evaluate_order_risk(
     today: str,
     participation_bps: int = 500,
 ) -> dict[str, Any]:
-    """订单风险评估（Review 与 confirm 共用；observe 模式返回违规清单）。"""
-    state = build_portfolio_state(db_path, today=today)
-    order = OrderIntent(
-        ts_code=ts_code, side=side, qty=qty, price_micro=price_micro,
-        participation_bps=participation_bps,
-    )
-    violations = evaluate_constraints(state, order, _risk_config())
+    """订单风险评估（Review 与 confirm 共用；enforce 模式 fail-closed）。"""
+    enforce = _enforcement_enabled()
+    try:
+        state = build_portfolio_state(db_path, today=today)
+        order = OrderIntent(
+            ts_code=ts_code, side=side, qty=qty, price_micro=price_micro,
+            participation_bps=participation_bps,
+        )
+        violations = evaluate_constraints(state, order, _risk_config())
+    except Exception as exc:
+        if enforce:
+            # fail-closed：enforce 模式下风控不可用 → 拒绝
+            return {
+                "ts_code": ts_code, "side": side, "today": today,
+                "violations": [{"code": "RISK_UNAVAILABLE", "message": str(exc)[:200]}],
+                "blocked": True,
+                "mode": "enforce",
+            }
+        raise
     return {
         "ts_code": ts_code, "side": side, "today": today,
         "violations": [v.to_dict() for v in violations],
-        "blocked": bool(violations) and RISK_ENFORCE_DEFAULT,
-        "mode": "observe" if not RISK_ENFORCE_DEFAULT else "enforce",
+        "blocked": bool(violations) and enforce,
+        "mode": "enforce" if enforce else "observe",
     }
