@@ -41,3 +41,15 @@
 ## 8. 声明
 - 未宣布 PERSONAL_INSTITUTIONAL_READY。
 - 结论：READY_FOR_REVIEW（等管理者验收）。
+
+## 9. 管理者区（2026-08-23）
+
+- 范围审查：PASS；base/head、owned paths、无生产 DB/凭据/flags 改动均符合。
+- 代码审查：PASS；today 使用显式 DB 依赖，baseline 测试使用小型临时 DB，生产默认路径未放宽。
+- 定向复验：22 passed, 1 skipped；Ruff 0；Mypy 0。
+- 交叉域复验：OpenAPI/架构边界通过。全量 worktree 诊断为 662 passed、3 个既有路径/真实数据依赖失败，登记到 Q2，不冒充全绿。
+- 运行态复验：无生产数据写入。
+- 判定：ACCEPTED
+- 缺陷编号：无任务内阻断。
+- 允许进入的下一任务：V2R-Q1 依赖视为完成；Wave 2 仍受 D/X 等返工阻断。
+- 完整记录：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md`。
