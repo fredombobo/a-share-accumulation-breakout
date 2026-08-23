@@ -9,8 +9,8 @@
 - 基线 commit：b6772c3001e1fa37447fca813b7ad3512b54eb49（任务板指定 base）
 - 分支：v2r-d
 - worktree 绝对路径：E:\CODEX\Stock_selection\worktrees\v2r-d
-- 交付 commit：见 head SHA（提交后回填）
-- 开始/完成时间（Asia/Shanghai）：2026-08-23 09:00 ~ 2026-08-23 11:20
+- 交付 commit：d81cf748c4d6b68ace80bbc02076cdf41689e630（分支 v2r-d，base b6772c3）
+- 开始/完成时间（Asia/Shanghai）：2026-08-23 09:00 ~ 2026-08-23 11:25
 
 ## 2. 范围核对
 
@@ -35,10 +35,25 @@
 
 ~~~bash
 git status --short
-git diff --stat <base_commit>..<delivery_commit>
-git diff --name-only <base_commit>..<delivery_commit>
+# （工作区干净，无未提交变更）
+
+git diff --stat b6772c3001e1fa37447fca813b7ad3512b54eb49..d81cf748c4d6b68ace80bbc02076cdf41689e630
+# 12 files changed, 1120 insertions(+), 29 deletions(-)
+
+git diff --name-only b6772c3001e1fa37447fca813b7ad3512b54eb49..d81cf748c4d6b68ace80bbc02076cdf41689e630
+# ab_screener/application/data_quality.py
+# ab_screener/application/pit_backfill.py
+# ab_screener/data/adapters/tushare_pit.py
+# ab_screener/data/corporate_action_repository.py
+# ab_screener/data/migration_intents/__init__.py
+# ab_screener/data/migration_intents/corporate_action_pit_v2.py
+# docs/handoffs/V2R-D.md
+# paper_trading/real_data_gate.py
+# scripts/backfill_pit_v2.py
+# tests/test_adjustment_asof.py
+# tests/test_corporate_action_sync_v2.py
+# tests/test_data_quality_v2.py
 ~~~
-（提交后回填原始输出）
 
 ## 3. 根因与设计
 
