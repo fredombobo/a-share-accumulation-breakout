@@ -55,3 +55,16 @@
 - 缺陷编号：V2R-F-RW-001（lock/Vitest）；V2R-F-RW-002（E2E 不自包含且失败）；V2R-F-RW-003（step=10）；V2R-F-RW-004（API 类型/页面状态）。
 - 允许进入的下一任务：否。
 - 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-f`。
+
+## 9. 返工修复（Wave1 REWORK，追加 commit）
+
+- 追加 commit：`e78a235`
+- V2R-F-RW-003 修复：可信验证 `runTrusted` 预设 `step: 10 → 5`（600 股 × 步长 5）。
+- V2R-F-RW-004 修复：`types/system.ts` 的 `SystemHealth` 对齐 V2R-O1 后端新结构
+  （status/issues/database{size_bytes,wal_bytes,deep_check}/disk）；Monitor/System 页面改用新字段，
+  System 页显示 deep_check 证书状态（PASS/STALE/MISSING/FAIL + 时间 + 原因）。
+- V2R-F-RW-002 修复：`playwright.config.ts` 加 `webServer`（npm run dev，`reuseExistingServer: false`）
+  → E2E 自启动当前分支服务；Compare 输入框加 `min-w-0` + 短 placeholder（修 390px 横向溢出）。
+- V2R-F-RW-001 部分修复：`package.json` 补 `@testing-library/user-event`（此前遗漏导致 Vitest import 失败）；
+  `tsc --noEmit` 通过。**lockfile 同步仍受 npm EPERM 环境阻塞**（写 node_modules/.vite、package-lock.json
+  被操作系统拒绝），需在可写环境执行 `npm install` 更新 package-lock.json 后复跑 `npm run test`。
