@@ -16,11 +16,12 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from ab_screener.api.deps import get_db_path
 from ab_screener.api.legacy_state import (
-    _DB,
     _BUILD_VERSION,
+    _DB,
     _INSTANCE_ID,
     _STARTED_AT,
     _store,
@@ -151,7 +152,10 @@ def daily_manifests(limit: int = 30):
 
 
 @router.get("/api/today")
-def today_guide(at: str | None = None):
+def today_guide(
+    at: str | None = None,
+    db_path: str = Depends(get_db_path),
+) -> dict[str, object]:
     """Return exactly one plain-language action for the current workflow state."""
     from ab_screener.application.today_guide import build_today_guide
 
@@ -159,7 +163,7 @@ def today_guide(at: str | None = None):
         now = datetime.fromisoformat(at) if at else None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="at 必须是 ISO 8601 时间") from exc
-    return build_today_guide(_DB, now=now)
+    return build_today_guide(db_path, now=now)
 
 
 @router.get("/api/manifests/{trade_date}")
