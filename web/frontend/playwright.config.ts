@@ -1,18 +1,23 @@
 import { defineConfig, devices } from '@playwright/test'
 
+// E2E 独立验收端口（不与 dev 默认 3001 冲突；3001 常被主仓库/开发实例占用）
+const E2E_PORT = Number(process.env.E2E_PORT || 4173)
+const E2E_BASE = `http://127.0.0.1:${E2E_PORT}`
+
 export default defineConfig({
   testDir: './tests',
   testMatch: /.*\.spec\.ts/,
   fullyParallel: true,
   reporter: 'list',
   use: {
-    baseURL: 'http://127.0.0.1:3001',
+    baseURL: E2E_BASE,
     trace: 'on-first-retry',
   },
-  // E2E 必须启动当前分支的 dev server（不复用主仓库服务，防止跨分支误测）
+  // E2E 必须自启动当前分支的 dev server（reuseExistingServer=false 防跨分支误测）。
+  // strictPort：端口被占即失败，绝不静默漂移到其他端口。
   webServer: {
-    command: 'npm run dev',
-    url: 'http://127.0.0.1:3001',
+    command: `npm run dev -- --port ${E2E_PORT} --strictPort`,
+    url: E2E_BASE,
     reuseExistingServer: false,
     timeout: 120_000,
   },
