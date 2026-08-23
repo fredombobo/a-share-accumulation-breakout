@@ -52,3 +52,13 @@
 - 缺陷编号：V2R-X-RW-001（enforce 永远失效）；V2R-X-RW-002（enforce 风控异常 fail-open）。
 - 允许进入的下一任务：否；V2R-S/V2R-R 等依赖继续 blocked。
 - 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-x`。
+
+## 9. 返工修复（Wave1 REWORK，追加 commit）
+
+- 追加 commit：`2ce56e6` fix(v2r-x): honor V2_RISK_ENFORCEMENT_ENABLED and fail closed on risk error
+- V2R-X-RW-001 修复：`evaluate_order_risk` 改为真正调用 `_enforcement_enabled()`（读 resolved config 的
+  `V2_RISK_ENFORCEMENT_ENABLED`），不再用硬编码 `RISK_ENFORCE_DEFAULT` 判定 blocked/mode。
+- V2R-X-RW-002 修复：enforce 模式下评估异常 → fail-closed（`blocked=True`，violations 含
+  `RISK_UNAVAILABLE`）；observe 模式异常上抛由调用方处理。
+- 新增测试 `test_enforce_mode_blocks_when_flagged` + `test_enforce_mode_fail_closed_on_risk_error`
+  （tests/test_order_risk_integration.py 5 passed；parity 3 passed）。
