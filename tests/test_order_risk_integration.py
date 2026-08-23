@@ -92,3 +92,24 @@ def test_enforce_mode_fail_closed_on_risk_error(db: str, monkeypatch) -> None:
     assert result["mode"] == "enforce"
     assert result["blocked"] is True
     assert result["violations"][0]["code"] == "RISK_UNAVAILABLE"
+
+
+def test_observe_mode_returns_structured_degradation_not_raise(db: str, monkeypatch) -> None:
+    """observe 模式评估异常 → 结构化降级（degraded=True/blocked=False），不抛出。"""
+    monkeypatch.setattr(risk_adapter, "_enforcement_enabled", lambda: False)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("risk backend down")
+
+    monkeypatch.setattr(risk_adapter, "build_portfolio_state", _boom)
+    result = evaluate_order_risk(
+        db, ts_code="000001.SZ", side="BUY", qty=100,
+        price_micro=10_000_000, today="20260810",
+    )
+    assert result["mode"] == "observe"
+    assert result["degraded"] is True
+    assert result["blocked"] is False
+    assert result["violations"][0]["code"] == "RISK_UNAVAILABLE"
+    # 结构化四键始终存在
+    for key in ("blocked", "mode", "violations", "degraded"):
+        assert key in result

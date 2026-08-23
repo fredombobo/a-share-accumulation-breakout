@@ -4,6 +4,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from paper_trading.account import create_account
 from paper_trading.guidance import review_order
 from tests.paper_market_fixture import seed_fresh_neutral_benchmark
@@ -97,12 +99,102 @@ def test_confirm_calls_unified_risk_entry(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(ra, "evaluate_order_risk", spy)
 
-    # confirm 路径会调用 evaluate_order_risk（在规则检查后）；注入 spy 观察
+    # confirm 路径会调用 evaluate_order_risk（在规则检查后）；注入 spy 观察。
+    # 确认可能因无关的业务前置检查抛 DomainError，本测试只关心入口被调用。
+    import contextlib
+
     import paper_trading.orders as _orders
-    try:
+
+    with contextlib.suppress(Exception):
         _orders.confirm_order(db, draft["order_id"], today="20260807")
-    except Exception:
-        pass
 
     assert calls, "confirm_order 应调用统一风控入口 evaluate_order_risk"
     assert calls[0]["ts_code"] == "000001.SZ"
+
+
+def _raising_entry(db_path, **_kw):
+    raise RuntimeError("risk backend down")
+
+
+def test_review_degrades_explicitly_when_unified_entry_raises(monkeypatch, tmp_path: Path) -> None:
+    """RW-002 双态（observe）：统一入口直接抛异常 → review 不得裸吞，必须显式降级 check。"""
+    db = tmp_path / "review-degrade.db"
+    _setup(db)
+
+    import paper_trading.risk_adapter as ra
+
+    monkeypatch.setattr(ra, "evaluate_order_risk", _raising_entry)
+    monkeypatch.setattr(ra, "_enforcement_enabled", lambda: False)
+
+    review = review_order(
+        db, scope="ACCOUNT", side="BUY", mode="MANUAL_HISTORY",
+        ts_code="000001", execution_trade_date="20260806", qty=100,
+    )
+    risk_checks = [c for c in review["checks"] if c.get("code") == "RISK"]
+    assert risk_checks, "入口抛异常时 review 必须追加 RISK 降级检查（禁止裸吞）"
+    assert risk_checks[0].get("degraded") is True
+    assert "observe" in risk_checks[0]["message"]
+
+
+def test_review_enforce_fails_closed_when_unified_entry_raises(monkeypatch, tmp_path: Path) -> None:
+    """RW-002 双态（enforce）：入口抛异常 → review 的降级 check 不通过（can_confirm=False）。"""
+    db = tmp_path / "review-enforce-degrade.db"
+    _setup(db)
+
+    import paper_trading.risk_adapter as ra
+
+    monkeypatch.setattr(ra, "evaluate_order_risk", _raising_entry)
+    monkeypatch.setattr(ra, "_enforcement_enabled", lambda: True)
+
+    review = review_order(
+        db, scope="ACCOUNT", side="BUY", mode="MANUAL_HISTORY",
+        ts_code="000001", execution_trade_date="20260806", qty=100,
+    )
+    risk_checks = [c for c in review["checks"] if c.get("code") == "RISK"]
+    assert risk_checks and risk_checks[0].get("degraded") is True
+    assert risk_checks[0]["passed"] is False
+    assert review["can_confirm"] is False
+
+
+def test_confirm_observe_degrades_when_unified_entry_raises(monkeypatch, tmp_path: Path) -> None:
+    """RW-002 双态（observe）：confirm 在入口抛异常时降级放行（订单 CONFIRMED，不拒单）。
+
+    confirm_order 返回订单本身（不含 checks）；observe 降级的行为证据 = 入口异常但订单仍确认成功，
+    与 enforce 用例（同输入抛 RISK_BLOCKED）构成双态对照——证明 except 分支按模式区分而非裸吞。
+    """
+    from paper_trading.orders import confirm_order, create_historical_buy_draft
+
+    db = tmp_path / "confirm-degrade.db"
+    _setup(db)
+    draft = create_historical_buy_draft(
+        db, ts_code="000001.SZ", execution_trade_date="20260806", qty=100,
+    )
+
+    import paper_trading.risk_adapter as ra
+
+    monkeypatch.setattr(ra, "evaluate_order_risk", _raising_entry)
+    monkeypatch.setattr(ra, "_enforcement_enabled", lambda: False)
+
+    result = confirm_order(db, draft["order_id"], today="20260807")
+    assert result["state"] == "CONFIRMED", "observe 降级不应阻断确认"
+
+
+def test_confirm_enforce_fail_closed_when_unified_entry_raises(monkeypatch, tmp_path: Path) -> None:
+    """RW-002 双态（enforce）：confirm 在入口抛异常时必须拒单（fail-closed）。"""
+    from paper_trading.errors import DomainError
+    from paper_trading.orders import confirm_order, create_historical_buy_draft
+
+    db = tmp_path / "confirm-enforce-degrade.db"
+    _setup(db)
+    draft = create_historical_buy_draft(
+        db, ts_code="000001.SZ", execution_trade_date="20260806", qty=100,
+    )
+
+    import paper_trading.risk_adapter as ra
+
+    monkeypatch.setattr(ra, "evaluate_order_risk", _raising_entry)
+    monkeypatch.setattr(ra, "_enforcement_enabled", lambda: True)
+
+    with pytest.raises(DomainError) as exc_info:
+        confirm_order(db, draft["order_id"], today="20260807")
+    assert exc_info.value.code == "RISK_BLOCKED"

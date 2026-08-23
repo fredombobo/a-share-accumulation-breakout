@@ -570,12 +570,22 @@ def confirm_order(
             detail = risk.get("violations") or []
             _reject(order_id, "RISK_BLOCKED", f"统一风控拒绝: {detail}", db_path)
             raise DomainError("RISK_BLOCKED", "统一风控拒绝", details=detail)
-        checks.append({"name": "统一风控", "pass": True, "mode": risk.get("mode")})
+        checks.append({
+            "name": "统一风控", "pass": True, "mode": risk.get("mode"),
+            "degraded": bool(risk.get("degraded")),
+        })
     except DomainError:
         raise
-    except Exception:  # noqa: BLE001
-        # 风控不可用不阻断纸面交易（observe 语义）；enforce 由配置控制
-        pass
+    except Exception as exc:  # noqa: BLE001
+        # 统一入口承诺不抛出；此处兜底（禁止裸吞）：enforce → fail-closed 拒单
+        from paper_trading.risk_adapter import _enforcement_enabled
+
+        if _enforcement_enabled():
+            _reject(order_id, "RISK_BLOCKED", f"统一风控不可用（enforce fail-closed）: {exc}", db_path)
+            raise DomainError("RISK_BLOCKED", "统一风控不可用（enforce fail-closed）",
+                              details={"error": str(exc)[:200]})
+        checks.append({"name": "统一风控", "pass": True, "mode": "observe", "degraded": True,
+                       "note": f"风控入口异常（observe 降级）: {str(exc)[:120]}"})
 
     # 5) 预留 + 状态流转（BEGIN IMMEDIATE 内）
     now = _now()

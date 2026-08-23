@@ -226,12 +226,28 @@ def review_order(
             today=execution_date,
         )
         risk_blocked = bool(risk.get("blocked"))
+        degraded = bool(risk.get("degraded"))
+        if degraded:
+            checks.append({"code": "RISK", "label": "统一风控",
+                           "passed": not risk_blocked,
+                           "degraded": True,
+                           "message": f"风控不可用（{risk.get('mode')} 降级）: "
+                                      f"{risk.get('violations')}"})
+        else:
+            checks.append({"code": "RISK", "label": "统一风控",
+                           "passed": not risk_blocked,
+                           "message": "风控通过" if not risk_blocked
+                           else f"风控拒绝: {risk.get('violations')}"})
+    except Exception as exc:  # noqa: BLE001
+        # 统一入口承诺不抛出；此处兜底为显式降级检查（禁止裸吞）
+        from paper_trading.risk_adapter import _enforcement_enabled
+
+        enforce_down = _enforcement_enabled()
         checks.append({"code": "RISK", "label": "统一风控",
-                       "passed": not risk_blocked,
-                       "message": "风控通过" if not risk_blocked
-                       else f"风控拒绝: {risk.get('violations')}"})
-    except Exception:  # noqa: BLE001
-        pass
+                       "passed": not enforce_down,
+                       "degraded": True,
+                       "message": f"风控入口异常（{'enforce 拒绝' if enforce_down else 'observe 降级'}）: "
+                                  f"{str(exc)[:120]}"})
     return {
         "scope": scope,
         "persisted": False,
