@@ -12,7 +12,7 @@ V2R-S outcome 时点门：ret_5/10/20 只在对应交易日完成且行情
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,19 @@ class OutcomeError(ValueError):
 
 def _now() -> str:
     return datetime.now(_TZ).isoformat(timespec="seconds")
+
+
+def _trade_date(value: str, field: str) -> str:
+    """校验并归一化交易日为 YYYYMMDD，拒绝字符串字典序伪比较。"""
+    raw = str(value or "")
+    try:
+        if len(raw) == 8 and raw.isdigit():
+            parsed = datetime.strptime(raw, "%Y%m%d").date()
+        else:
+            parsed = date.fromisoformat(raw)
+    except ValueError as exc:
+        raise OutcomeError(f"{field} 必须为有效交易日: {value!r}") from exc
+    return parsed.strftime("%Y%m%d")
 
 
 def compute_outcome(
@@ -134,13 +147,20 @@ def compute_horizon_result(
     """
     if horizon_days not in HORIZONS:
         raise OutcomeError(f"horizon_days 必须为 {HORIZONS} 之一: {horizon_days}")
-    if entry_price_micro is None or entry_price_micro <= 0:
+    if entry_price_micro is None:
         return {
             "status": "UNFILLABLE", "entry_price_micro": None,
             "exit_price_micro": None, "net_return": None,
             "benchmark_excess": None,
         }
-    day_complete = str(maturity_trade_date) <= str(last_completed_trade_date)
+    if entry_price_micro <= 0:
+        raise OutcomeError("入场价必须为正")
+    maturity_day = _trade_date(maturity_trade_date, "maturity_trade_date")
+    completed_day = _trade_date(
+        last_completed_trade_date,
+        "last_completed_trade_date",
+    )
+    day_complete = maturity_day <= completed_day
     pit_ok = (
         data_available_at is not None
         and normalize_ts(data_available_at) <= normalize_ts(calculation_at)
@@ -204,6 +224,7 @@ def backfill_horizon_outcome(
         and latest["entry_price_micro"] == result["entry_price_micro"]
         and latest["exit_price_micro"] == result["exit_price_micro"]
         and latest["net_return"] == result["net_return"]
+        and latest["benchmark_excess"] == result["benchmark_excess"]
     ):
         return {"outcome_id": latest["outcome_id"], "idempotent": True, **result}
     outcome_id = record_outcome(
