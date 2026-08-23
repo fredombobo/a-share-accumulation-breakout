@@ -59,3 +59,17 @@
 - V2R-O1-RW-001 修复：`restore_backup.ps1` 的 `RestoreTo` 改为可选——DryRun 不传 RestoreTo 也 exit 0
   （目标显示 "(unspecified)"）；实际恢复仍要求绝对路径。
 - 新增测试 `test_restore_backup_dryrun_without_restoreto_exits_zero`（9 passed，ruff All checks passed）。
+
+## 10. 二验返工修复（RECHECK 2026-08-23，追加 commit）
+
+- 追加 commit：`b953773` fix(v2r-o1): derive safe temp restore target on dry-run and trace-callback sql guard
+- **V2R-O1-RW-001**：DryRun 未传 RestoreTo 时推导并打印绝对安全临时目标
+  （`%TEMP%\restore_drill_<timestamp>.db`），并校验该目标不等于生产库
+  （`target != production db` 打印证明）；不执行复制。测试断言输出含
+  `derived safe temp target:` / `restore_drill_` / `target != production db`。
+- **V2R-O1-RW-003**：`test_fast_health_never_runs_full_integrity_check` 重写为
+  `sqlite3.connect` 代理 + `set_trace_callback` 捕获热路径全部 SQL，出现
+  `integrity_check` / `quick_check` 立即断言失败；同时断言捕获语句非空（证明检查真实执行）。
+  修改前该测试仅断言响应中无 `integrity` 字段（无法证明 SQL 未执行）。
+- 复验：tests 9 passed（system_health_fast 2 + restore_contract 2 + backup_restore 5）；ruff 0；mypy 0。
+  大库性能证据沿用二验：16.3GB 生产库只读快速健康 3.545ms（<500ms）。
