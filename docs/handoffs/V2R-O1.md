@@ -38,3 +38,15 @@
 
 ## 8. 声明
 - 未宣布 PERSONAL_INSTITUTIONAL_READY。结论 READY_FOR_REVIEW。
+
+## 9. 管理者区（2026-08-23）
+
+- 范围审查：PASS；未删除备份、未开启 scheduler、无生产 DB 写入。
+- 代码审查：FAIL；RestoreTo 在 DryRun 仍必填；health/backups 公开 backup_root 查询覆盖。
+- 定向复验：8 passed；Ruff 0；Mypy 0；16GB 生产库只读快速健康约 10.1ms。
+- 交叉域复验：合同原命令 `-BackupRoot E:\ab-backups -DryRun` exit 1；OpenAPI 显示 health/backups 均含 backup_root 查询参数。
+- 运行态复验：当前备份 2 份、最新 <24h，但未满足 7 份；状态保持 FAIL。
+- 判定：REWORK_REQUIRED
+- 缺陷编号：V2R-O1-RW-001（DryRun 合同失败）；V2R-O1-RW-002（HTTP 可覆盖备份根）；V2R-O1-RW-003（健康 SQL 防回归测试不足）。
+- 允许进入的下一任务：否；V2R-O2 继续 blocked。
+- 完整要求：`docs/ACCEPTANCE-V2-REMEDIATION-WAVE1-2026-08-23.md#v2r-o1`。
