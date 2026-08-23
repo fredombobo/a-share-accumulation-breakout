@@ -15,6 +15,10 @@ const V2Intelligence = lazy(() => import('./pages/v2/Intelligence'))
 const V2Strategies = lazy(() => import('./pages/v2/Strategies'))
 const V2Signals = lazy(() => import('./pages/v2/Signals'))
 const V2Research = lazy(() => import('./pages/v2/Research'))
+const V2Monitor = lazy(() => import('./pages/v2/Monitor'))
+const V2Review = lazy(() => import('./pages/v2/Review'))
+const V2System = lazy(() => import('./pages/v2/System'))
+const V2Compare = lazy(() => import('./pages/v2/Compare'))
 
 export default function App() {
   return (
@@ -35,6 +39,10 @@ export default function App() {
               <Route path="/v2/strategies" element={<V2Strategies />} />
               <Route path="/v2/signals" element={<V2Signals />} />
               <Route path="/v2/research" element={<V2Research />} />
+              <Route path="/v2/monitor" element={<V2Monitor />} />
+              <Route path="/v2/review" element={<V2Review />} />
+              <Route path="/v2/system" element={<V2System />} />
+              <Route path="/v2/compare" element={<V2Compare />} />
               <Route path="*" element={<Overview />} />
             </Routes>
           </Suspense>

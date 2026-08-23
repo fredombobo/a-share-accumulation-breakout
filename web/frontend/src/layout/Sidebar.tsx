@@ -15,6 +15,10 @@ const v2Items = [
   { path: '/v2/strategies', label: '六形态', hint: '插件契约 · 研究状态', Icon: IcoLab },
   { path: '/v2/signals', label: '信号观察', hint: '不可变观察 · 生命周期', Icon: IcoPaper },
   { path: '/v2/research', label: '研究治理', hint: '实验登记 · trial ledger', Icon: IcoLab },
+  { path: '/v2/monitor', label: '监控', hint: '系统健康 · 告警', Icon: IcoOverview },
+  { path: '/v2/review', label: '复核', hint: '笔记 · 决策', Icon: IcoPaper },
+  { path: '/v2/system', label: '系统', hint: '健康 · 备份 · 深检', Icon: IcoTarget },
+  { path: '/v2/compare', label: '对比', hint: '2–6 标的 K 线', Icon: IcoLab },
 ]
 
 export default function Sidebar() {
