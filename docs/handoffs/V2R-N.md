@@ -10,7 +10,8 @@
 - 基线 commit（base）：`7bbca60aeeaa150d133d66ebd344f5d1ee7d29fe`（集成基线，禁止改动其历史）
 - 分支：`v2r-n`
 - worktree 绝对路径：`E:\CODEX\Stock_selection\worktrees\v2r-n`
-- 交付 commit（head）：`76d2219a0fef374177e531c4c61cffb166c93f5e`（feature 提交，base 7bbca60 之后仅此 feature + 上一提交为本分支新增）；本 handoff 在后续 `docs(v2r-n)` 提交中（见 §9）
+- 交付 feature commit（head）：`76d2219a0fef374177e531c4c61cffb166c93f5e`（3 模块 + 1 配置 + 3 测试）
+- 分支最终 HEAD：`bf64da0`（feature + handoff `57becbd` + 证据补充提交，均在 base 之后、无历史改写、无 force-push）
 - 完成时间（Asia/Shanghai）：2026-08-23
 
 ## 2. 范围核对
@@ -170,9 +171,10 @@ $ <PY> -m pytest tests/test_intelligence_catalog.py tests/test_intelligence_supp
 
 ## 9. 提交与回滚
 
-- 提交 1（feature，交付 head）：`git commit` 内容 = 3 模块 + 1 配置 + 3 测试。
-- 提交 2（本 handoff）：`docs(v2r-n): add V2R-N handoff`。
-- 回滚：本分支对既有文件零修改；回滚 = `git revert <head>` 或直接删除 7 个新增 owned 文件与 handoff。不触碰基线前历史，无 force-push。
+- 提交 1（feature，交付 head `76d2219`）：3 模块 + 1 配置 + 3 测试。
+- 提交 2（handoff `57becbd`）：`docs(v2r-n): add V2R-N handoff`。
+- 提交 3（证据补充 `bf64da0`，分支最终 HEAD）：`docs(v2r-n): record final regression evidence in handoff`。
+- 回滚：本分支对既有文件零修改；回滚 = `git revert <feature_head>` 或直接删除 7 个新增 owned 文件与 handoff。不触碰基线前历史，无 force-push。
 
 ## 10. 未决项
 
