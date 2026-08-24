@@ -257,6 +257,11 @@ tasks:
     status: ready
     released_at: "2026-08-24T08:20:00+08:00"
     release_reason: "V2R-S 管理者终验通过；其余依赖已在 Wave 1 接受"
+    base_commit: "011f76cfdbc7b3e044a20b45e77cb6d1fb113256"
+    branch: "v2r-o2"
+    worktree: "E:/CODEX/Stock_selection/worktrees/v2r-o2"
+    start_packet_commit: "934d04be000f69a15be136d3cd050cc57144d49d"
+    start_packet: "docs/handoffs/V2R-O2-START-2026-08-24.md"
     wave: 2
     agent_role: operations-dag-agent
     dependencies: [V2R-D, V2R-X, V2R-S, V2R-O1]
@@ -266,10 +271,14 @@ tasks:
       - "ab_screener/operations/alerts.py"
       - "ab_screener/application/audit_service.py"
       - "ab_screener/data/scheduler_repository.py"
+      - "scripts/soak_monitor_v2.py"
       - "tests/test_dag*.py"
       - "tests/test_scheduler*.py"
       - "tests/test_audit*.py"
       - "tests/test_fault_injection*.py"
+      - "tests/test_soak*.py"
+      - "pyproject.toml（仅注册 fault_injection/performance markers）"
+      - "docs/BACKUP-RESTORE-RUNBOOK-V2.md"
     forbidden:
       - "不得在生产库先试；必须使用副本"
       - "不得伪造五交易日 soak"
