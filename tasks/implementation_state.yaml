@@ -1,11 +1,11 @@
 version: 1
-updated_at: "2026-08-18T08:30:00+08:00"
+updated_at: "2026-08-24T08:20:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
-  Design frozen. Planning commit is V2-P0-BOOTSTRAP.
-  P0-P6 complete; P7.1 API routers 已交付（P7.2 前端拆分待续）;
-  P8 总验收待办. Do not claim PERSONAL_INSTITUTIONAL_READY.
+  V2 remediation Wave 1 已接受；第二波已提交的 V2R-S/V2R-R/V2R-N
+  经管理者纠错后接受。可信研究任务 0746a4108e15 结论为 FAIL 且不得晋级。
+  V2R-O2 现已解锁；Q2/G/P8 仍阻塞。Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
 live_trading_enabled: false
@@ -13,8 +13,7 @@ protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
 ready_now:
-  - V2-P0.1-BASELINE
-  - V2-P0.4-CONTRACTS
+  - V2R-O2
 tasks:
   NINE_POINT_CLOSED_LOOP:
     status: complete
@@ -205,3 +204,36 @@ tasks:
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
+v2_remediation_20260823:
+  authority: tasks/v2_remediation_board_20260823.yaml
+  manager_review: docs/ACCEPTANCE-V2-REMEDIATION-WAVE2-SRN-2026-08-24.md
+  integration_branch: v2r-wave2-integration
+  overall_status: BLOCKED
+  accepted:
+    - V2R-Q1
+    - V2R-A
+    - V2R-D
+    - V2R-X
+    - V2R-F
+    - V2R-O1
+    - V2R-S
+    - V2R-R
+    - V2R-N
+  ready:
+    - V2R-O2
+  blocked:
+    - V2R-Q2
+    - V2R-G
+    - V2R-P8
+  research:
+    authoritative_task_id: "0746a4108e15"
+    verdict: FAIL
+    candidate_eligible: false
+  quality_snapshot:
+    pytest: "825 passed, 8 warnings"
+    wave_2_changed_files_ruff: PASS
+    wave_2_relevant_mypy: PASS
+    architecture_strict: PASS
+    frontend_build: PASS
+    full_ruff: "BLOCKED: 88 errors assigned to V2R-Q2 after O2"
+    quality_script_mypy: "BLOCKED: 9 baseline errors assigned to V2R-Q2 after O2"

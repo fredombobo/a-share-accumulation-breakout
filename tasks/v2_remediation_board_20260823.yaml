@@ -17,6 +17,15 @@ wave_1_summary:
   rework_required: []
   released_wave_2_tasks: [V2R-S, V2R-R, V2R-N]
   dependency_blocked_wave_2_tasks: [V2R-O2]
+wave_2_srn_reviewed_at: "2026-08-24T08:20:00+08:00"
+wave_2_srn_verdict: ACCEPTED
+wave_2_srn_summary:
+  accepted: [V2R-S, V2R-R, V2R-N]
+  rework_required: []
+  research_verdict: FAIL
+  candidate_eligible: false
+  newly_released_tasks: [V2R-O2]
+  still_blocked_tasks: [V2R-Q2, V2R-G, V2R-P8]
 manager_role: "Codex primary agent: dispatch, scope review, independent verification, rejection/rework, P8 verdict"
 
 authority:
@@ -220,7 +229,11 @@ tasks:
 
   V2R-S:
     title: "六形态扫描、不可变信号、成交/outcome 生产接线"
-    status: ready
+    status: accepted
+    accepted_commit: "a07b8cfacb896d6e48dbd597ba6c57b50284e61e"
+    integration_commit: "6e52e4f3aead150da537ea151ccd5da2e4bf2320"
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE2-SRN-2026-08-24.md#v2r-s"
+    remaining_defect_ids: []
     wave: 2
     agent_role: signal-lifecycle-agent
     dependencies: [V2R-Q1, V2R-A, V2R-D, V2R-X]
@@ -241,7 +254,9 @@ tasks:
 
   V2R-O2:
     title: "持久 EOD DAG、故障恢复、审计链与五日 soak 启动"
-    status: blocked
+    status: ready
+    released_at: "2026-08-24T08:20:00+08:00"
+    release_reason: "V2R-S 管理者终验通过；其余依赖已在 Wave 1 接受"
     wave: 2
     agent_role: operations-dag-agent
     dependencies: [V2R-D, V2R-X, V2R-S, V2R-O1]
@@ -263,7 +278,15 @@ tasks:
 
   V2R-R:
     title: "600 股、步长 5 的净成本 IS/OOS/WF 与反过拟合证据"
-    status: ready
+    status: accepted
+    accepted_commit: "269ec71c58cb9e3aca36ad1000cf7731c5402d60"
+    integration_commit: "6e52e4f3aead150da537ea151ccd5da2e4bf2320"
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE2-SRN-2026-08-24.md#v2r-r"
+    authoritative_task_id: "0746a4108e15"
+    research_verdict: FAIL
+    candidate_eligible: false
+    superseded_task_ids: ["1699927499ff"]
+    remaining_defect_ids: []
     wave: 2
     agent_role: research-evidence-agent
     dependencies: [V2R-Q1, V2R-D, V2R-X]
@@ -280,7 +303,11 @@ tasks:
 
   V2R-N:
     title: "国家队/机构资金等信息增强只读覆盖层"
-    status: ready
+    status: accepted
+    accepted_commit: "cac52559cba48cdaacc4da672b72f18221d71d8a"
+    integration_commit: "6e52e4f3aead150da537ea151ccd5da2e4bf2320"
+    manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE2-SRN-2026-08-24.md#v2r-n"
+    remaining_defect_ids: []
     wave: 2
     agent_role: information-overlay-agent
     dependencies: [V2R-D]
