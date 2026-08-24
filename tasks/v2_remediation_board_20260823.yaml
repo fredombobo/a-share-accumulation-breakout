@@ -260,7 +260,7 @@ tasks:
     base_commit: "011f76cfdbc7b3e044a20b45e77cb6d1fb113256"
     branch: "v2r-o2"
     worktree: "E:/CODEX/Stock_selection/worktrees/v2r-o2"
-    start_packet_commit: "934d04be000f69a15be136d3cd050cc57144d49d"
+    start_packet_commit: "1dffcb72d6e616b9a94508208ac78c76dc1db6e3"
     start_packet: "docs/handoffs/V2R-O2-START-2026-08-24.md"
     wave: 2
     agent_role: operations-dag-agent
