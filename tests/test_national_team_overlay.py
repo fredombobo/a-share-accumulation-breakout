@@ -175,7 +175,7 @@ def test_overlay_exposes_id_and_spec():
 
 def test_overlay_not_registered_into_open_permission_registry():
     """覆盖层不进入 regime overlay 开仓许可 registry（只读边界）。"""
-    from ab_screener.regimes.registry import regime_overlays  # noqa: PLC0415
+    from ab_screener.regimes.registry import regime_overlays
 
     assert NATIONAL_TEAM_OVERLAY_ID not in regime_overlays()
 
