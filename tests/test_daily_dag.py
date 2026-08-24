@@ -1,4 +1,4 @@
-"""P6.1 每日 DAG 测试：幂等、attempt 保留、崩溃续跑、依赖阻断。"""
+"""P6.1 每日 DAG 测试：幂等、attempt 保留、崩溃续跑、依赖阻断、租约、输入身份。"""
 from __future__ import annotations
 
 import sqlite3
@@ -19,10 +19,16 @@ def conn(tmp_path: Path):
     c.close()
 
 
-def _dag(run_log: list[str], fail_step: str | None = None) -> DailyDag:
+def _dag(run_log: list[str], fail_step: str | None = None,
+         fail_times: int = 999) -> DailyDag:
+    counters: dict[str, dict[str, int]] = {}
+
     def make(name: str):
+        counters[name] = {"n": 0}
+
         def fn(**kwargs):
-            if fail_step == name:
+            if fail_step == name and counters[name]["n"] < fail_times:
+                counters[name]["n"] += 1
                 raise RuntimeError(f"{name} 失败")
             run_log.append(name)
         return fn
@@ -46,24 +52,40 @@ def test_same_key_succeeds_once(conn, tmp_path):
 
 
 def test_attempt_retention_and_resume(conn, tmp_path):
-    """首轮 b 失败 → 保留 ATTEMPT_FAILED；重跑续跑。"""
+    """首轮 b 失败 2 次 → 保留 ATTEMPT_FAILED；第 3 次成功完成。"""
+    db = str(tmp_path / "dag.db")
+    log: list[str] = []
+    runner = SchedulerRunner(db, _dag(log, fail_step="b", fail_times=2))
+    first = runner.run_day("20260810")
+    assert first["status"] == "COMPLETED", first
+    with sqlite3.connect(db) as c:
+        statuses = [r[0] for r in c.execute(
+            "SELECT status FROM dag_step_runs WHERE step_name='b' ORDER BY attempt"
+        ).fetchall()]
+    assert statuses == ["ATTEMPT_FAILED", "ATTEMPT_FAILED", "SUCCESS"]
+    assert log.count("b") == 1  # 仅成功 attempt 计入 run_log（1/2 次失败未计入）
+
+
+def test_exhausted_attempts_no_fourth_execution(conn, tmp_path):
+    """1/2 次失败 + 第 3 次终止后重启仍保留 attempt，第 4 次不得执行。"""
     db = str(tmp_path / "dag.db")
     log: list[str] = []
     runner = SchedulerRunner(db, _dag(log, fail_step="b"))
     first = runner.run_day("20260810")
     assert first["results"]["b"]["status"] == "FAIL"
-    with sqlite3.connect(db) as c:
-        statuses = [r[0] for r in c.execute(
-            "SELECT status FROM dag_step_runs WHERE step_name='b' ORDER BY attempt"
-        ).fetchall()]
-    assert "ATTEMPT_FAILED" in statuses or "FAIL" in statuses
-    # 修复后重跑：c 可完成（b 重跑成功）
+    assert first["status"] == "FAILED"
+    # 重启（新 runner）：b 已 EXHAUSTED → 不再执行；c 被上游阻断
     log2: list[str] = []
     runner2 = SchedulerRunner(db, _dag(log2))
     second = runner2.run_day("20260810")
-    assert (second["results"]["b"].get("idempotent") is True
-            or second["results"]["b"]["status"] == "SUCCESS")
-    assert second["status"] == "COMPLETED"
+    assert second["results"]["b"]["status"] == "FAIL"
+    assert "不得执行" in str(second["results"]["b"].get("error", ""))
+    assert second["results"]["c"]["status"] == "SKIPPED"
+    assert second["status"] == "FAILED"
+    assert log2.count("b") == 0  # 重启后不得再执行 b
+    with sqlite3.connect(db) as c:
+        n = c.execute("SELECT COUNT(*) FROM dag_step_runs WHERE step_name='b'").fetchone()[0]
+    assert n == 3  # attempt 保留：不重数
 
 
 def test_upstream_failure_blocks_dependents(conn, tmp_path):
@@ -75,6 +97,22 @@ def test_upstream_failure_blocks_dependents(conn, tmp_path):
     assert result["results"]["b"]["status"] == "SKIPPED"
     assert result["results"]["c"]["status"] == "SKIPPED"
     assert result["status"] == "FAILED"
+
+
+def test_input_identity_change_reruns_steps(conn, tmp_path):
+    """输入身份变化不得复用旧成功步骤。"""
+    db = str(tmp_path / "dag.db")
+    log: list[str] = []
+    runner = SchedulerRunner(db, _dag(log))
+    first = runner.run_day("20260810", input_hash="v1")
+    assert first["status"] == "COMPLETED"
+    assert log.count("a") == 1
+    log2: list[str] = []
+    runner2 = SchedulerRunner(db, _dag(log2))
+    second = runner2.run_day("20260810", input_hash="v2")
+    assert second["status"] == "COMPLETED"
+    assert second["results"]["a"].get("idempotent") is not True
+    assert log2.count("a") == 1  # 新输入身份 → 步骤重跑
 
 
 def test_lease_exclusive(conn, tmp_path):

@@ -18,3 +18,9 @@ ignore_missing_imports = true
 follow_imports = "skip"
 check_untyped_defs = true
 warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+markers = [
+    "fault_injection: 七类故障注入（同步失败/行情缺失/公司行为/撮合中断/对账差异/审计写失败/进程重启）",
+    "performance: 性能标记（长耗时或大数据量用例）",
+]
