@@ -241,8 +241,8 @@ def _detect_signals_for_code(
             )[:8]
             if not causal_sig.get("is_breakout") or causal_bd != bd:
                 continue
-            key = (bd, None)
-            if key in seen:
+            key_a = (bd, None)
+            if key_a in seen:
                 continue
             entry_i = dts.index(bd)
             if entry_i + 1 >= len(df):
@@ -252,7 +252,7 @@ def _detect_signals_for_code(
             for vr in vr_levels:
                 seqs = find_build_seqs(causal, vol_ratio_min=vr)
                 bench_vols[vr] = seqs[-1]["bench_vol"] if seqs else bo_vol
-            seen.add(key)
+            seen.add(key_a)
             signals.append({
                 "day": bd, "discovered_on": day,
                 "entry_i": entry_i, "bench_vols": bench_vols,
@@ -281,13 +281,13 @@ def _detect_signals_for_code(
                 )[:8]
                 if not causal_sig.get("is_breakout") or causal_bd != bd:
                     continue
-                key = (bd, vr)
-                if key in seen:
+                key_b = (bd, vr)
+                if key_b in seen:
                     continue
                 entry_i = dts.index(bd)
                 if entry_i + 1 >= len(df):
                     continue
-                seen.add(key)
+                seen.add(key_b)
                 signals.append({
                     "day": bd, "discovered_on": day, "entry_i": entry_i,
                     "bench_vols": {vr: causal_sig["bench_vol"]}, "vr": vr,
