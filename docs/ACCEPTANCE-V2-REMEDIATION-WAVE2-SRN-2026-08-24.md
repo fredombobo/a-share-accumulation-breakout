@@ -1,7 +1,9 @@
 # V2 修复计划第二波（S / R / N）管理者终验
 
-日期：2026-08-24（Asia/Shanghai）  
-集成分支：`v2r-wave2-integration`  
+日期：2026-08-24（Asia/Shanghai）
+
+集成分支：`v2r-wave2-integration`
+
 共同基线：`7bbca60aeeaa150d133d66ebd344f5d1ee7d29fe`
 
 ## 1. 裁决
@@ -125,4 +127,3 @@ O2 经管理者验收后，再释放 `V2R-Q2`；随后依次为 `V2R-G` 和管�
 - N 配置 `enabled: false`，且没有订单/持仓写路径；回滚只需不调用覆盖层或 revert 对应提交。
 - R 只改变研究检测语义和离线证据，不改变纸面账本；禁止恢复引用旧非因果报告。
 - 所有回滚均使用追加冲正或 commit revert；不得删除生产数据库、历史信号、研究失败证据或审计记录。
-
