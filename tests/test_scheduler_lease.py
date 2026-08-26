@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 import ab_screener.data.scheduler_repository as repo
+import ab_screener.operations.scheduler as scheduler_mod
 from ab_screener.data.migration_registry import apply_pending
 from ab_screener.data.scheduler_repository import (
     acquire_lease,
@@ -104,6 +106,69 @@ def test_lease_released_after_normal_run(db_path):
     with sqlite3.connect(db_path) as c:
         status = lease_status(c, repo.lease_id_for("20260810", "GLOBAL", "all"))
     assert status is None  # 租约已释放
+
+
+def test_long_running_step_keeps_lease_alive(db_path):
+    """步骤超过原 TTL 时由 heartbeat 续租，第二个 runner 仍不得接管。"""
+    started = threading.Event()
+    release = threading.Event()
+    results: dict[str, dict] = {}
+
+    def long_step(**kwargs):
+        started.set()
+        assert release.wait(5)
+
+    dag = DailyDag([StepSpec("long", "GLOBAL", "all", long_step)])
+    runner_a = SchedulerRunner(
+        db_path, dag, holder="heartbeat-A", lease_ttl_seconds=1
+    )
+    runner_b = SchedulerRunner(
+        db_path, dag, holder="heartbeat-B", lease_ttl_seconds=1
+    )
+    thread = threading.Thread(
+        target=lambda: results.setdefault("a", runner_a.run_day("20260810"))
+    )
+    thread.start()
+    assert started.wait(5)
+    time.sleep(1.25)
+    results["b"] = runner_b.run_day("20260810")
+    release.set()
+    thread.join(5)
+    assert results["b"]["status"] == "LEASE_CONFLICT", results["b"]
+    assert results["a"]["status"] == "COMPLETED", results["a"]
+
+
+def test_lease_loss_during_step_stops_without_in_process_retry(db_path, monkeypatch):
+    """续租失败是 run 级故障；不得把同一有副作用步骤再执行两次。"""
+    calls: list[str] = []
+
+    def step(**kwargs):
+        calls.append("executed")
+        time.sleep(0.55)
+
+    renew_calls = [0]
+
+    def lose_after_step_starts(*args, **kwargs):
+        renew_calls[0] += 1
+        return renew_calls[0] == 1  # step 前成功，首个 heartbeat 失败
+
+    monkeypatch.setattr(scheduler_mod, "renew_lease", lose_after_step_starts)
+    runner = SchedulerRunner(
+        db_path,
+        DailyDag([StepSpec("guarded", "GLOBAL", "all", step)], max_attempts=3),
+        holder="lease-loss",
+        lease_ttl_seconds=1,
+    )
+    result = runner.run_day("20260810")
+
+    assert result["status"] == "FAILED"
+    assert "LEASE_LOST" in result["error"]
+    assert calls == ["executed"]
+    with sqlite3.connect(db_path) as conn:
+        attempts = conn.execute(
+            "SELECT attempt, status FROM dag_step_runs ORDER BY attempt"
+        ).fetchall()
+    assert attempts == [(1, "ATTEMPT_FAILED")]
 
 
 def test_no_permanent_running_or_lease_after_crash(db_path, monkeypatch):

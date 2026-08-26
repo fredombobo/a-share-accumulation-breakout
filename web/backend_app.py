@@ -49,7 +49,7 @@ if os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true":
 # 未应用迁移/checksum 漂移 → 拒绝启动（fail-closed）。
 from ab_screener.data.schema_check import assert_schema_compatible
 
-assert_schema_compatible(_PARENT / "runtime" / "stock_data.db")
+assert_schema_compatible(_DB)
 
 app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
 
@@ -72,10 +72,10 @@ from ab_screener.api.routers.legacy_scan import router as legacy_scan_router
 app.include_router(legacy_scan_router)
 
 # G2 拆路由：纸面 / 实验室 / 同步 / 回测
-from ab_screener.api.routers.legacy_paper import router as legacy_paper_router
-from ab_screener.api.routers.legacy_lab import router as legacy_lab_router
-from ab_screener.api.routers.legacy_sync import router as legacy_sync_router
 from ab_screener.api.routers.legacy_backtest import router as legacy_backtest_router
+from ab_screener.api.routers.legacy_lab import router as legacy_lab_router
+from ab_screener.api.routers.legacy_paper import router as legacy_paper_router
+from ab_screener.api.routers.legacy_sync import router as legacy_sync_router
 
 app.include_router(legacy_paper_router)
 app.include_router(legacy_lab_router)

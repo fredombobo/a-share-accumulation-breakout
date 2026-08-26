@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,10 @@ def _error_text(exc: Exception) -> str:
     return text
 
 
+class LeaseLostError(RuntimeError):
+    """The run no longer owns its fencing lease and must stop immediately."""
+
+
 class SchedulerRunner:
     """串行执行 DAG 步骤；至多 max_attempts 次；崩溃可续跑；并发单租约。"""
 
@@ -53,6 +58,8 @@ class SchedulerRunner:
         self.db_path = db_path
         self.dag = dag
         self.holder = holder or f"scheduler-{os.getpid()}"
+        if lease_ttl_seconds < 1:
+            raise ValueError("lease_ttl_seconds 必须至少为 1 秒")
         self.lease_ttl_seconds = lease_ttl_seconds
         self.signing_key = signing_key
         self.audit_anchor_dir = audit_anchor_dir
@@ -181,12 +188,19 @@ class SchedulerRunner:
                     continue
                 # 每步前续租（长步骤期间租约续期；同 holder 才能续）
                 with sqlite3.connect(self.db_path) as conn:
-                    renew_lease(conn, lease_id=lease_id, holder=holder,
-                                ttl_seconds=self.lease_ttl_seconds)
+                    renewed = renew_lease(
+                        conn,
+                        lease_id=lease_id,
+                        holder=holder,
+                        ttl_seconds=self.lease_ttl_seconds,
+                    )
+                if not renewed:
+                    raise LeaseLostError("LEASE_LOST: 步骤执行前租约已丢失")
                 outcome = self._execute_with_retry(
                     step, trade_date=trade_date, run_id=run_id,
                     scope_type=scope_type, scope_id=scope_id, input_hash=input_hash,
                     attempt=attempt, status=status, ctx=ctx,
+                    lease_id=lease_id, lease_holder=holder,
                 )
                 ctx["results"][step.name] = outcome
                 results[step.name] = outcome
@@ -224,7 +238,7 @@ class SchedulerRunner:
     def _execute_with_retry(
         self, step: StepSpec, *, trade_date: str, run_id: str,
         scope_type: str, scope_id: str, input_hash: str, attempt: int,
-        status: str, ctx: dict[str, Any],
+        status: str, ctx: dict[str, Any], lease_id: str, lease_holder: str,
     ) -> dict[str, Any]:
         # 崩溃遗留 RUNNING → 同 attempt 覆盖重试；失败/无记录 → 从 attempt+1 继续。
         start = attempt if status == "RUNNING" else attempt + 1
@@ -236,8 +250,31 @@ class SchedulerRunner:
                     attempt=i, status="RUNNING",
                 )
             try:
-                step_result = step.fn(trade_date=trade_date, ctx=ctx)
-            except Exception as exc:  # noqa: BLE001
+                step_result = self._execute_with_lease_heartbeat(
+                    step,
+                    trade_date=trade_date,
+                    ctx=ctx,
+                    lease_id=lease_id,
+                    lease_holder=lease_holder,
+                )
+            except Exception as exc:
+                if isinstance(exc, LeaseLostError):
+                    # 租约是 run 级包围控制。失去租约后绝不能在同一 run 内
+                    # 重试业务步骤，否则会与新 holder 并发产生副作用。
+                    with sqlite3.connect(self.db_path) as conn:
+                        record_step_attempt(
+                            conn,
+                            run_id=run_id,
+                            trade_date=trade_date,
+                            step_name=step.name,
+                            scope_type=scope_type,
+                            scope_id=scope_id,
+                            input_hash=input_hash,
+                            attempt=i,
+                            status="ATTEMPT_FAILED",
+                            error=_error_text(exc),
+                        )
+                    raise
                 last = (i == self.dag.max_attempts)
                 with sqlite3.connect(self.db_path) as conn:
                     record_step_attempt(
@@ -263,3 +300,49 @@ class SchedulerRunner:
                         outcome[k] = v
             return outcome
         return {"status": "FAIL", "error": "no attempts left"}
+
+    def _execute_with_lease_heartbeat(
+        self,
+        step: StepSpec,
+        *,
+        trade_date: str,
+        ctx: dict[str, Any],
+        lease_id: str,
+        lease_holder: str,
+    ) -> Any:
+        """步骤运行期间持续续租；续租失败后 fail-closed，不执行下游步骤。"""
+        stop = threading.Event()
+        lost = threading.Event()
+        interval = max(0.2, min(self.lease_ttl_seconds / 3.0, 30.0))
+
+        def heartbeat() -> None:
+            while not stop.wait(interval):
+                try:
+                    with sqlite3.connect(self.db_path) as conn:
+                        ok = renew_lease(
+                            conn,
+                            lease_id=lease_id,
+                            holder=lease_holder,
+                            ttl_seconds=self.lease_ttl_seconds,
+                        )
+                except Exception:  # noqa: BLE001 续租异常必须阻断后续业务
+                    lost.set()
+                    return
+                if not ok:
+                    lost.set()
+                    return
+
+        worker = threading.Thread(
+            target=heartbeat,
+            name=f"dag-lease-{lease_id}",
+            daemon=True,
+        )
+        worker.start()
+        try:
+            result = step.fn(trade_date=trade_date, ctx=ctx)
+        finally:
+            stop.set()
+            worker.join(timeout=max(1.0, interval * 2.0))
+        if lost.is_set():
+            raise LeaseLostError("LEASE_LOST: 步骤执行期间租约续期失败")
+        return result

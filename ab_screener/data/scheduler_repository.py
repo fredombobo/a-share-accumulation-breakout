@@ -162,7 +162,7 @@ def last_completed_steps(
 
 def _lease_expires_iso(ttl_seconds: int) -> str:
     return datetime.fromtimestamp(_now_timestamp() + ttl_seconds, _TZ).isoformat(
-        timespec="seconds"
+        timespec="microseconds"
     )
 
 

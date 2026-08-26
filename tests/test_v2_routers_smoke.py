@@ -89,3 +89,13 @@ def test_default_db_path_points_into_project():
     assert deps.ROOT == expected_root
     assert deps.DEFAULT_DB_PATH == deps.ROOT / "runtime" / "stock_data.db"
     assert deps.DEFAULT_DB_PATH.parent.name == "runtime"
+
+
+def test_legacy_web_state_honours_injected_absolute_db_path():
+    """Assembled Web state must not bypass AB_DB_PATH with a worktree-local DB."""
+    import os
+
+    from ab_screener.api import legacy_state
+
+    assert legacy_state._DB == Path(os.environ["AB_DB_PATH"])
+    assert legacy_state._store.db_path == legacy_state._DB

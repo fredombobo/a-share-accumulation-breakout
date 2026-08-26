@@ -16,7 +16,8 @@ import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -235,7 +236,7 @@ def _step_close_valuation(trade_date: str, *, ctx: dict[str, Any]) -> dict[str, 
 def _step_risk_pnl_snapshot(trade_date: str, *, ctx: dict[str, Any]) -> dict[str, Any]:
     """快照 5：固化现金/市值/总资产/损益快照（幂等 upsert）。"""
     db = ctx["db_path"]
-    mark = ctx["results"]["close_valuation"]["mark"]
+    mark = _mark_for_context(trade_date, ctx)
     with sqlite3.connect(db) as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
@@ -266,7 +267,7 @@ def _step_internal_reconciliation(trade_date: str, *, ctx: dict[str, Any]) -> di
     from paper_trading.settlement import run_reconciliation
 
     db = ctx["db_path"]
-    mark = ctx["results"]["close_valuation"]["mark"]
+    mark = _mark_for_context(trade_date, ctx)
     rec = run_reconciliation(db, trade_date, expected_mark=mark)
     if rec["result"] != "OK":
         with sqlite3.connect(db) as conn:
@@ -284,32 +285,73 @@ def _step_internal_reconciliation(trade_date: str, *, ctx: dict[str, Any]) -> di
 
 
 def _advance_trading_days(db: str | Path, start: str, days: int) -> str:
-    from paper_trading.cal import next_open
-
     current = start
     for _ in range(days):
-        current = next_open(db, current)
+        current = _next_open_after(db, current)
     return current
 
 
-def _close_price_micro(db: str | Path, ts_code: str, trade_date: str) -> int | None:
+def _next_open_after(db: str | Path, trade_date: str) -> str:
+    """返回严格晚于 trade_date 的下一开市日，避免含当日 next_open 停滞。"""
+    from paper_trading.cal import next_open
+
+    current = datetime.strptime(trade_date, "%Y%m%d").date() + timedelta(days=1)
+    return next_open(db, current.strftime("%Y%m%d"))
+
+
+def _mark_for_context(trade_date: str, ctx: dict[str, Any]) -> dict[str, Any]:
+    """恢复估值步骤结果。
+
+    调度进程可能在 close_valuation 成功落 attempt 后崩溃。重启时该步骤会按幂等键
+    跳过，因此不能依赖上一个进程的内存 ctx；缺失时从同一账本和收盘行情重新估值。
+    """
+    cached = (ctx.get("results") or {}).get("close_valuation") or {}
+    mark = cached.get("mark")
+    if isinstance(mark, dict):
+        return mark
+    from paper_trading.settlement import mark_to_market
+
+    return mark_to_market(ctx["db_path"], trade_date)
+
+
+def _price_micro(value: Any) -> int:
+    """把 SQLite 行情值精确转换为微元，禁止二进制浮点参与定点换算。"""
+    return int(
+        (Decimal(str(value)) * Decimal(1_000_000)).quantize(
+            Decimal(1), rounding=ROUND_HALF_UP
+        )
+    )
+
+
+def _close_quote_micro(
+    db: str | Path, ts_code: str, trade_date: str
+) -> tuple[int | None, str | None]:
+    """读取收盘价与真实可用时点；缺时点时保守返回 PENDING 所需的 None。"""
     with sqlite3.connect(db) as conn:
         row = conn.execute(
-            "SELECT close FROM daily WHERE ts_code=? AND trade_date=?",
+            "SELECT close, available_at FROM daily WHERE ts_code=? AND trade_date=?",
             (ts_code, trade_date),
         ).fetchone()
-    return int(round(float(row[0]) * 1_000_000)) if row else None
+    if row is None or row[0] is None:
+        return None, None
+    return _price_micro(row[0]), (str(row[1]) if row[1] else None)
 
 
-def _entry_price_micro(db: str | Path, ts_code: str, entry_date: str) -> int | None:
-    """理论入场价：SIGNAL 买单在 entry_date 的成交价；无成交 → None（UNFILLABLE）。"""
+def _entry_price_micro(
+    db: str | Path,
+    ts_code: str,
+    signal_date: str,
+    entry_date: str,
+) -> int | None:
+    """理论入场价：指定信号在下一开市日的实际 SIGNAL 成交价。"""
     with sqlite3.connect(db) as conn:
         row = conn.execute(
             "SELECT f.fill_price_micro FROM pt_fill f"
             " JOIN pt_order o ON o.order_id=f.order_id"
             " WHERE o.ts_code=? AND o.side='BUY' AND o.source='SIGNAL'"
-            " AND o.signal_trade_date=? ORDER BY f.filled_at LIMIT 1",
-            (ts_code, entry_date),
+            " AND o.signal_trade_date=? AND o.eligible_trade_date=?"
+            " ORDER BY f.filled_at LIMIT 1",
+            (ts_code, signal_date, entry_date),
         ).fetchone()
     return int(row[0]) if row else None
 
@@ -321,8 +363,6 @@ def _step_outcome_backfill(trade_date: str, *, ctx: dict[str, Any]) -> dict[str,
     UNFILLABLE（收益 NULL 不填 0）；交易日未完成/行情未 available → PENDING。
     """
     from ab_screener.application.signal_outcomes import HORIZONS, backfill_horizon_outcome
-    from paper_trading.cal import next_open
-
     db = ctx["db_path"]
     calculation_at = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}T16:30:00+08:00"
     with sqlite3.connect(db) as conn:
@@ -337,15 +377,18 @@ def _step_outcome_backfill(trade_date: str, *, ctx: dict[str, Any]) -> dict[str,
     processed: list[dict[str, Any]] = []
     for observation_id, ts_code, signal_date in rows:
         try:
-            entry_date = next_open(db, signal_date)
+            entry_date = _next_open_after(db, signal_date)
         except Exception:  # noqa: BLE001, S112 交易日历缺失 → 跳过该 observation
             continue
-        entry_micro = _entry_price_micro(db, ts_code, entry_date)
+        entry_micro = _entry_price_micro(db, ts_code, signal_date, entry_date)
         for horizon in HORIZONS:
-            maturity = _advance_trading_days(db, entry_date, horizon)
+            try:
+                maturity = _advance_trading_days(db, entry_date, horizon)
+            except Exception:  # noqa: BLE001, S112 交易日历尚未覆盖成熟日，保守等待
+                continue
             if maturity > trade_date:
                 continue
-            exit_micro = _close_price_micro(db, ts_code, maturity)
+            exit_micro, data_available_at = _close_quote_micro(db, ts_code, maturity)
             with sqlite3.connect(db) as conn:
                 result = backfill_horizon_outcome(
                     conn,
@@ -357,7 +400,7 @@ def _step_outcome_backfill(trade_date: str, *, ctx: dict[str, Any]) -> dict[str,
                     last_completed_trade_date=trade_date,
                     calculation_at=calculation_at,
                     exit_price_micro=exit_micro,
-                    data_available_at=None,
+                    data_available_at=data_available_at,
                 )
             processed.append({
                 "observation_id": observation_id, "horizon_days": horizon,
@@ -403,8 +446,17 @@ def _step_daily_manifest(trade_date: str, *, ctx: dict[str, Any]) -> dict[str, A
     from ab_screener.application.daily_manifest import create_daily_manifest
 
     db = ctx["db_path"]
-    manifest = create_daily_manifest(db, trade_date)
+    try:
+        manifest = create_daily_manifest(db, trade_date)
+    except Exception as exc:
+        _mark_manifest_blocked(db, trade_date, f"MANIFEST_ERROR: {exc}")
+        raise
     if manifest["status"] != "COMPLETE":
+        _mark_manifest_blocked(
+            db,
+            trade_date,
+            f"MANIFEST_NOT_COMPLETE: {manifest['blockers']}",
+        )
         raise DagStepError(
             "MANIFEST_NOT_COMPLETE",
             f"daily manifest 非 COMPLETE（blockers: {manifest['blockers']}）",
@@ -415,6 +467,17 @@ def _step_daily_manifest(trade_date: str, *, ctx: dict[str, Any]) -> dict[str, A
         "manifest_sha256": manifest["manifest_sha256"],
         "blockers": manifest["blockers"],
     }
+
+
+def _mark_manifest_blocked(db: str | Path, trade_date: str, reason: str) -> None:
+    """manifest 未完成时撤销纸面 DONE 投影，避免 UI/调度误报日结完成。"""
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE pt_cycle SET phase='RECONCILE', blocked_reason=?, finished_at=NULL"
+            " WHERE cycle_id=?",
+            (reason[:2000], f"CY-{trade_date}"),
+        )
+        conn.commit()
 
 
 def build_eod_dag(db_path: str | Path, *, today: str | None = None) -> DailyDag:
