@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from ab_screener.api.deps import get_db_path
 from ab_screener.application.today_guide import build_today_guide

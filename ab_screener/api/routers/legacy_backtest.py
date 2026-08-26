@@ -61,7 +61,7 @@ def backtest_run(body: dict):
         if not (len(is_start) == 8 and len(is_end) == 8 and len(oos_start) == 8 and len(oos_end) == 8):
             raise HTTPException(status_code=422, detail="手动窗口需提供 is_start/is_end/oos_start/oos_end（YYYYMMDD）")
         mode_label = "manual"
-        wf_windows = []
+        wf_windows: list[tuple[str, str, str, str]] = []
     else:
         plan = recommend_research_plan()
         if plan.mode == "insufficient":

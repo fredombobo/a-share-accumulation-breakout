@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from ab_screener.application.release_evidence import evaluate_release_readiness
 from web import backend_app as backend

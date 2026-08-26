@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from ab_screener.api.app_factory import include_v2_routers
 

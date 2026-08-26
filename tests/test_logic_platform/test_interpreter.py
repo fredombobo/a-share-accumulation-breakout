@@ -43,6 +43,9 @@ def test_eval_ops():
     assert i.eval_condition(Condition(feature="close", op="<", value=10.5), p, []) is False
     assert i.eval_condition(Condition(feature="close", op="==", value=10.6), p, []) is True
     assert i.eval_condition(Condition(feature="close", op="!=", value=1), p, []) is True
+    assert i.eval_condition(
+        Condition(feature="structure.state", op="==", value="BREAKOUT"), p, []
+    ) is True
     assert i.eval_condition(Condition(feature="structure.state", op="in",
                                       value=["BREAKOUT", "FAIL"]), p, []) is True
     assert i.eval_condition(Condition(feature="structure.state", op="not_in",

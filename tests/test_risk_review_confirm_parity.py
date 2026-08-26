@@ -112,6 +112,39 @@ def test_confirm_calls_unified_risk_entry(monkeypatch, tmp_path: Path) -> None:
     assert calls[0]["ts_code"] == "000001.SZ"
 
 
+def test_confirm_risk_rejection_keeps_structured_violation_details(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """领域错误 details 始终为对象，并保留逐项稳定拒绝码。"""
+    from paper_trading.errors import DomainError
+    from paper_trading.orders import confirm_order, create_historical_buy_draft
+
+    db = tmp_path / "confirm-risk-blocked.db"
+    _setup(db)
+    draft = create_historical_buy_draft(
+        db, ts_code="000001.SZ", execution_trade_date="20260806", qty=100,
+    )
+
+    import paper_trading.risk_adapter as ra
+
+    violations = [{"code": "RISK_CASH_INSUFFICIENT", "message": "现金不足"}]
+    monkeypatch.setattr(
+        ra,
+        "evaluate_order_risk",
+        lambda *args, **kwargs: {
+            "blocked": True,
+            "violations": violations,
+            "mode": "enforce",
+            "degraded": False,
+        },
+    )
+
+    with pytest.raises(DomainError) as exc_info:
+        confirm_order(db, draft["order_id"], today="20260807")
+    assert exc_info.value.code == "RISK_BLOCKED"
+    assert exc_info.value.details == {"violations": violations}
+
+
 def _raising_entry(db_path, **_kw):
     raise RuntimeError("risk backend down")
 

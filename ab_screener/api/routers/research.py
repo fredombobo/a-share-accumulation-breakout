@@ -32,7 +32,12 @@ def create_experiment(
     payload: dict[str, Any], db_path: str = Depends(get_db_path)
 ) -> dict[str, Any]:
     strategy = str(payload.get("strategy", "")).strip()
-    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    raw_params = payload.get("params")
+    params: dict[str, Any] = (
+        {str(key): value for key, value in raw_params.items()}
+        if isinstance(raw_params, dict)
+        else {}
+    )
     config_hash = str(payload.get("config_hash", "")).strip()
     if not strategy or not config_hash:
         raise HTTPException(

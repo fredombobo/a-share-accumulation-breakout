@@ -125,7 +125,7 @@ class StateStatsTable(BaseModel):
             raise RuntimeError("模型未训练")
         if states is None or vol is None:
             raise ValueError("StateStatsTable 推理需要 states 与 vol 列")
-        out = np.empty(len(X), dtype=float)
+        out: np.ndarray = np.empty(len(X), dtype=float)
         for i in range(len(X)):
             key = f"{states[i]}|{self._bucket(float(vol[i]))}"
             out[i] = self.table.get(key, self.fallback.get(str(states[i]), {})).get(

@@ -1,7 +1,7 @@
 """/api/logic/health 挂载测试（TestClient 直接打宿主 app）。"""
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from web.backend_app import app
 

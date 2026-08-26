@@ -219,7 +219,8 @@ def build_master_score(
     param_weight：策略实验室回灌的历史验证权重（active 参数样本外 PF），默认 1.0 不生效。
     """
     sig_score = score_breakout_strength(sig)
-    fund_score, fund_notes = fund_flow_score, []
+    fund_score = fund_flow_score
+    fund_notes: list[str] = []
     basic_score, basic_notes = score_fundamentals(fund_row)
 
     base = (

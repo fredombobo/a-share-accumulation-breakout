@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from ab_screener.api.routers import legacy_misc
 from ab_screener.application.daily_manifest import create_daily_manifest, get_daily_manifest

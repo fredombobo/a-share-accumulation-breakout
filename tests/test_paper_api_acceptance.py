@@ -6,7 +6,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from ab_screener.api.routers import legacy_paper
 from local_store import LocalStore

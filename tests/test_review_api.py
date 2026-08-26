@@ -5,15 +5,17 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from ab_screener.api.app_factory import include_v2_routers
 from ab_screener.data.migration_registry import apply_pending
+from local_store import LocalStore
 
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch):
     db = tmp_path / "api.db"
+    LocalStore(db_path=db)
     conn = sqlite3.connect(str(db))
     apply_pending(conn)
     conn.close()
@@ -66,6 +68,20 @@ def test_weekly_endpoint(client):
     r = client.get("/api/v2/review/weekly")
     assert r.status_code == 200
     assert r.json()["note_count"] == 1
+
+
+def test_attribution_endpoint_uses_explicit_window_and_empty_store(client):
+    r = client.get(
+        "/api/v2/review/attribution",
+        params={"start": "20260101", "end": "20260131"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "side_effects": False,
+        "window": {"start": "20260101", "end": "20260131"},
+        "count": 0,
+        "message": "无归因事件",
+    }
 
 
 def test_unmigrated_db_fail_closed(tmp_path, monkeypatch):

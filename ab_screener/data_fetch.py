@@ -49,13 +49,15 @@ def run_sync(days_back: int = 300, moneyflow_days: int | None = None,
 
 def _retry(fn, retries: int = 3, delay: float = 2.0):
     """带重试的调用包装（直连服务器偶发 ConnectionReset）"""
-    last_err = None
+    last_err: Exception | None = None
     for i in range(retries):
         try:
             return fn()
         except Exception as e:  # noqa: BLE001
             last_err = e
             time.sleep(delay * (i + 1))
+    if last_err is None:
+        raise ValueError("retries 必须至少为 1")
     raise last_err
 
 

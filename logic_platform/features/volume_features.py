@@ -39,7 +39,7 @@ def compute_volume_features(
     )
 
     # 连续缩量天数：vol 逐日递减计数
-    shrink = np.zeros(len(out), dtype=float)
+    shrink: np.ndarray = np.zeros(len(out), dtype=float)
     run = 0
     prev = None
     for i in range(len(out)):

@@ -100,12 +100,27 @@ def attribution(
 ) -> dict[str, Any]:
     """归因任务状态（只读）；完整归因计算由 CLI run_attribution.py 提供。"""
     from ab_screener.research.attribution import collect_attribution_events
+    from local_store import LocalStore
+    from research_windows import recommend_research_plan
+
     try:
-        events = collect_attribution_events(db_path)
+        store = LocalStore(db_path=db_path)
+        plan = recommend_research_plan(store.distinct_dates("daily"))
+        range_start = start or plan.is_start
+        range_end = end or plan.oos_end
+        events = collect_attribution_events(
+            store=store,
+            start=range_start,
+            end=range_end,
+        )
         summary = review_service.attribution_summary(events)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=409,
             detail={"code": "INVALID_STATE", "message": f"归因不可用: {exc}"},
         )
-    return {"side_effects": False, "window": {"start": start, "end": end}, **summary}
+    return {
+        "side_effects": False,
+        "window": {"start": range_start, "end": range_end},
+        **summary,
+    }

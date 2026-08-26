@@ -83,6 +83,25 @@ def _resolve_store(store):
     return LocalStore()
 
 
+def _concat_candidate_frames(*frames: pd.DataFrame) -> pd.DataFrame:
+    """合并候选且保留列顺序，避开 pandas 的全空列 dtype 漂移。
+
+    pandas 将改变 concat 对全空列的 dtype 推断。先从每个输入的推断阶段移除
+    全空列，再按原始列并集补回，可同时保持当前输出 schema 与未来版本行为。
+    """
+    columns = list(
+        dict.fromkeys(column for frame in frames for column in frame.columns)
+    )
+    prepared = [
+        frame.dropna(axis=1, how="all")
+        for frame in frames
+        if not frame.empty
+    ]
+    if not prepared:
+        return pd.DataFrame(columns=columns)
+    return pd.concat(prepared, ignore_index=True).reindex(columns=columns)
+
+
 def run_scan(
     top: int = TOP_N,
     days: int = HORIZON_DAYS,
@@ -366,7 +385,7 @@ def run_scan(
             df_all = pd.DataFrame(merged_rows)
         elif extra:
             df_all = (
-                pd.concat([df_all, pd.DataFrame(extra)], ignore_index=True)
+                _concat_candidate_frames(df_all, pd.DataFrame(extra))
                 .drop_duplicates("ts_code", keep="first")
                 if not df_all.empty
                 else pd.DataFrame(extra)
@@ -396,7 +415,9 @@ def run_scan(
                 sig_by_code=sig_by_code,
             )
             if fill_rows:
-                df_all = pd.concat([df_all, pd.DataFrame(fill_rows)], ignore_index=True).drop_duplicates("ts_code", keep="first")
+                df_all = _concat_candidate_frames(
+                    df_all, pd.DataFrame(fill_rows)
+                ).drop_duplicates("ts_code", keep="first")
 
     # 拆池：A 池目标 top_a（默认 20）；防守期仍清空可交易名额
     slots = regime.max_trade_slots if regime.allow_new_entries else 0

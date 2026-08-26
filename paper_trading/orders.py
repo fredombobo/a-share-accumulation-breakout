@@ -569,7 +569,11 @@ def confirm_order(
         if risk.get("blocked"):
             detail = risk.get("violations") or []
             _reject(order_id, "RISK_BLOCKED", f"统一风控拒绝: {detail}", db_path)
-            raise DomainError("RISK_BLOCKED", "统一风控拒绝", details=detail)
+            raise DomainError(
+                "RISK_BLOCKED",
+                "统一风控拒绝",
+                details={"violations": detail},
+            )
         checks.append({
             "name": "统一风控", "pass": True, "mode": risk.get("mode"),
             "degraded": bool(risk.get("degraded")),

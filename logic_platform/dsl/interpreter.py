@@ -101,7 +101,7 @@ class Interpreter:
 
     # ── 条件求值 ──
 
-    def _resolve_value(self, cond: Condition, panel: dict) -> float | None:
+    def _resolve_value(self, cond: Condition, panel: dict) -> object | None:
         if cond.ref:
             # ref 语义映射：box_mid → structure.box_mid（schema 里 ref 独立命名）
             key = {
@@ -110,7 +110,7 @@ class Interpreter:
                 "box_low": "structure.box_low",
             }.get(cond.ref, cond.ref)
             v = panel.get(key)
-            return None if v is None or (isinstance(v, float) and math.isnan(v)) else float(v)
+            return None if v is None or (isinstance(v, float) and math.isnan(v)) else v
         return cond.value
 
     def eval_condition(self, cond: Condition, panel: dict, warnings: list[str]) -> bool:
@@ -130,12 +130,18 @@ class Interpreter:
 
         try:
             if cond.op in ("in", "not_in"):
-                hit = v in (cond.value or [])
+                candidates = cond.value if isinstance(cond.value, list) else []
+                hit = v in candidates
                 return hit if cond.op == "in" else not hit
             target = self._resolve_value(cond, panel)
             if target is None:
                 warnings.append(f"{cond.feature} 的 ref/值不可用 → 条件视为不通过")
                 return False
+            if cond.op in ("==", "!="):
+                equal = v == target
+                return equal if cond.op == "==" else not equal
+            if not isinstance(target, (str, int, float)):
+                raise TypeError("数值比较的目标必须是标量")
             fv, tv = float(v), float(target)
             return {
                 ">=": fv >= tv, "<=": fv <= tv, ">": fv > tv,
@@ -197,7 +203,7 @@ class Interpreter:
         args = [(code, dsl_dict, bt.lookback_bars, early, bt.end,
                  sample_days, str(store.db_path)) for code in codes]
 
-        results: list[list[dict] | None] = []
+        results: list[dict | None] = []
         if workers <= 1 or len(codes) <= 2:
             for i, a in enumerate(args, 1):
                 results.append(_scan_stock(*a))

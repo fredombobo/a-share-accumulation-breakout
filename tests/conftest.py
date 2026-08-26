@@ -21,6 +21,11 @@ from pathlib import Path
 from ab_screener.data.migration_registry import apply_pending
 from local_store import LocalStore
 
+# joblib/loky probes physical cores through PowerShell on Windows.  On GBK
+# hosts that subprocess can emit undecodable output in a background reader.
+# A fixed test ceiling avoids the external probe and keeps resource use stable.
+os.environ["LOKY_MAX_CPU_COUNT"] = "1"
+
 _TEST_DB_DIR = tempfile.TemporaryDirectory(
     prefix="ab-screener-pytest-", ignore_cleanup_errors=True
 )
