@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from ab_screener.api.routers import legacy_misc
 from ab_screener.application.daily_manifest import create_daily_manifest, get_daily_manifest
 from ab_screener.data.migrations_v2 import run_v2_migrations
 from local_store import LocalStore
 from paper_trading.account import create_account
 from paper_trading.migrations import run_migrations
 from web import backend_app as backend
-import ab_screener.api.routers.legacy_misc as legacy_misc
 
 
 def _setup(db: Path, *, include_scan: bool = True) -> None:

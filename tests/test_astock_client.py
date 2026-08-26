@@ -34,10 +34,10 @@ def test_probe_health_ok_global(monkeypatch):
         def read(self) -> bytes:
             return json.dumps({"service": "A-Stock"}).encode()
 
-        def __enter__(self) -> "_Resp":
+        def __enter__(self) -> _Resp:
             return self
 
-        def __exit__(self, *a: Any) -> None:
+        def __exit__(self, *a: object) -> None:
             return None
 
     def fake_urlopen(req: Any, timeout: float):
@@ -54,10 +54,10 @@ def test_probe_health_ok_global(monkeypatch):
         def read(self) -> bytes:
             return json.dumps(self._p).encode()
 
-        def __enter__(self) -> "_Resp2":
+        def __enter__(self) -> _Resp2:
             return self
 
-        def __exit__(self, *a: Any) -> None:
+        def __exit__(self, *a: object) -> None:
             return None
 
     calls = iter(payloads)
@@ -90,10 +90,10 @@ def test_fetch_json_invalid(monkeypatch):
         def read(self) -> bytes:
             return b"not-json"
 
-        def __enter__(self) -> "_Bad":
+        def __enter__(self) -> _Bad:
             return self
 
-        def __exit__(self, *a: Any) -> None:
+        def __exit__(self, *a: object) -> None:
             return None
 
     monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: _Bad())

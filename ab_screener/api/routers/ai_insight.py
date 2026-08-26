@@ -14,8 +14,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from ab_screener.api.deps import get_db_path
 from ab_screener.ai.client import has_provider
+from ab_screener.api.deps import get_db_path
 from ab_screener.intelligence.ai_analysis import (
     analyze_pool,
     analyze_stock,

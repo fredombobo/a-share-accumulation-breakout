@@ -17,8 +17,8 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ab_screener.research.trusted_run import execute_trusted_research  # noqa: E402
-from research_windows import recommend_research_plan  # noqa: E402
+from ab_screener.research.trusted_run import execute_trusted_research
+from research_windows import recommend_research_plan
 
 _TZ = ZoneInfo("Asia/Shanghai")
 

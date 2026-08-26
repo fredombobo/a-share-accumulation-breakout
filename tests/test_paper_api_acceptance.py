@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import ab_screener.api.routers.legacy_paper as legacy_paper
+from ab_screener.api.routers import legacy_paper
 from local_store import LocalStore
 
 

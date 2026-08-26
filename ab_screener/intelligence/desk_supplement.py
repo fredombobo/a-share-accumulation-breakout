@@ -5,10 +5,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from ab_screener.integrations.astock_client import probe_astock
 from ab_screener.intelligence.breadth import market_breadth
 from ab_screener.intelligence.indices import index_snapshot
 from ab_screener.intelligence.limit_up import limit_up_ladder
-from ab_screener.integrations.astock_client import probe_astock
 
 
 def latest_trade_date(db_path: str | Path) -> str | None:

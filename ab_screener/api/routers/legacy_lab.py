@@ -13,24 +13,19 @@ import json
 import threading
 import uuid
 from datetime import datetime
-from pathlib import Path
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
-
-import pandas as pd
+from pydantic import BaseModel
 
 from ab_screener.api.legacy_state import (
-    _DB,
     _BUILD_VERSION,
-    _LOGGER,
-    _PARENT,
-    _store,
-    _LAB_TASKS,
     _LAB_LOCK,
-    _LAB_TASKS_MAX,
     _LAB_STORE,
+    _LAB_TASKS,
+    _LAB_TASKS_MAX,
+    _LOGGER,
+    _store,
 )
 
 router = APIRouter(tags=["legacy"])

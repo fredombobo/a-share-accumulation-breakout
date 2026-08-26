@@ -3,5 +3,6 @@
 保留本文件以兼容旧导入路径 `from local_store import ...`（含下划线私有名）。
 """
 import ab_screener.local_store as _m
-from ab_screener.local_store import *  # noqa: F401,F403
+from ab_screener.local_store import *
+
 globals().update({k: v for k, v in vars(_m).items() if not k.startswith("__")})
