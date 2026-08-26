@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Self
 
 from ab_screener.integrations.astock_client import (
     astock_base_url,
@@ -34,7 +34,7 @@ def test_probe_health_ok_global(monkeypatch):
         def read(self) -> bytes:
             return json.dumps({"service": "A-Stock"}).encode()
 
-        def __enter__(self) -> _Resp:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *a: object) -> None:
@@ -54,7 +54,7 @@ def test_probe_health_ok_global(monkeypatch):
         def read(self) -> bytes:
             return json.dumps(self._p).encode()
 
-        def __enter__(self) -> _Resp2:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *a: object) -> None:
@@ -90,7 +90,7 @@ def test_fetch_json_invalid(monkeypatch):
         def read(self) -> bytes:
             return b"not-json"
 
-        def __enter__(self) -> _Bad:
+        def __enter__(self) -> Self:
             return self
 
         def __exit__(self, *a: object) -> None:

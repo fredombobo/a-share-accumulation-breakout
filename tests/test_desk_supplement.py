@@ -87,7 +87,7 @@ def test_desk_supplement_readonly_g1(db: str, monkeypatch):
         ).fetchall()
     }
     conn.close()
-    extra = [t for t in names if t.startswith("scan_") or t.startswith("pt_")]
+    extra = [t for t in names if t.startswith(("scan_", "pt_"))]
     extra_before = {t: _table_count(db, t) for t in extra}
     build_desk_supplement(db, "20260810")
     after = _table_count(db, "daily")

@@ -19,7 +19,6 @@ A_SHARE_INDICES: tuple[tuple[str, str], ...] = (
 def index_snapshot(db_path: str | Path, trade_date: str) -> dict[str, Any]:
     path = Path(db_path)
     codes = [c for c, _ in A_SHARE_INDICES]
-    names = dict(A_SHARE_INDICES)
     if not path.is_file():
         return {"trade_date": trade_date, "status": "INSUFFICIENT", "reason": "db_missing", "items": []}
     placeholders = ",".join("?" * len(codes))

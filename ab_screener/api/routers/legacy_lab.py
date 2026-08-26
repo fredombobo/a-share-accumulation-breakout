@@ -231,7 +231,7 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
             can_claim_edge=bool(report.get("candidate_eligible")),
             report_markdown=report.get("markdown") or "",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 worker boundary must persist terminal state
         task = _LAB_TASKS.get(task_id)
         persisted_before = _LAB_STORE.get(task_id)
         persisted_cancel = bool(
@@ -255,7 +255,7 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
             task.update({"status": status, "message": message, "error": None if cancelled else str(exc)[:500]})
         try:
             _LAB_STORE.update(task_id, status=status, message=message)
-        except Exception:
+        except Exception:  # noqa: BLE001 last-resort logging at worker boundary
             _LOGGER.exception("failed to persist Lab terminal state task_id=%s", task_id)
 
 
