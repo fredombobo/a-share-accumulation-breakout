@@ -50,6 +50,7 @@ def test_compressed_backup_restores_and_matches_all_tables(db: str, tmp_path: Pa
     restored = restore_verified_backup(result["path"], target)
 
     assert restored["status"] == "PASS"
+    assert restored["logical_sha256_match"] is True
     assert restored["table_hashes_match"] is True
     with sqlite3.connect(target) as conn:
         assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3

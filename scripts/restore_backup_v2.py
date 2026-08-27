@@ -1,4 +1,4 @@
-"""严格恢复演练：只接受带有效 v2 清单的备份，且绝不覆盖已有目标。"""
+"""严格恢复演练：只接受带有效清单的备份，且绝不覆盖已有目标。"""
 from __future__ import annotations
 
 import argparse
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
                 "archive_sha256",
                 "PRAGMA integrity_check",
                 "PRAGMA foreign_key_check",
-                "all_table_content_hashes",
+                "logical_database_sha256",
             ],
             "overwrite": False,
         }

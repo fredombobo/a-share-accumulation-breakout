@@ -1,4 +1,4 @@
-# restore_backup.ps1 - verified v2 backup restore drill (RTO target <= 30 min)
+# restore_backup.ps1 - verified backup restore drill (RTO target <= 30 min)
 #
 # Safety: the Python implementation accepts only manifest-backed backups and
 # refuses to overwrite an existing target. DryRun performs no filesystem write.
@@ -54,7 +54,7 @@ if ($Report) {
 
 Write-Host ("restore source root: {0}" -f $BackupRoot)
 Write-Host ("restore target: {0}" -f $RestoreTo)
-Write-Host "readonly checks: manifest/archive SHA-256, integrity, foreign keys, table hashes"
+Write-Host "readonly checks: manifest/archive/logical SHA-256, integrity, foreign keys"
 Write-Host "safety: verified backups only; existing target and production overwrite are rejected"
 
 & $Python @ArgsList

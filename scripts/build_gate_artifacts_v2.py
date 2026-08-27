@@ -256,7 +256,10 @@ def build_artifacts(
         restore_payload
         and restore_payload.get("status") == "PASS"
         and restore_payload.get("integrity") == "ok"
-        and restore_payload.get("table_hashes_match") is True
+        and (
+            restore_payload.get("logical_sha256_match") is True
+            or restore_payload.get("table_hashes_match") is True
+        )
         and restore_payload.get("rto_pass") is True
     )
     o_status = "PASS" if backups.get("ok") and restore_pass else "INSUFFICIENT"

@@ -56,7 +56,8 @@
 ### 3.2 迁移与生产库安全
 
 - 修复迁移 checksum 对 worktree 绝对路径敏感的问题；未知源码漂移仍拒绝。
-- 使用 SQLite online backup 生成并逐表哈希验证备份：
+- 使用 SQLite online backup 生成备份；最终口径以完整性/FK、归档 SHA-256 与逻辑库
+  字节级 SHA-256 验证（旧逐表 JSON 哈希因超过恢复 RTO 已退役）：
   `E:/ab-backups/backup_20260827_084523.db`，16,324,935,680 bytes。
 - 先在 16GB 校验副本迁移两次（第一次应用、第二次 no-op），再在生产库执行同一迁移；
   `PRAGMA quick_check=ok`，原行情、扫描和纸面账本关键计数保持。

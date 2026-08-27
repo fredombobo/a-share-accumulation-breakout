@@ -35,7 +35,7 @@ def test_gate_builder_binds_every_artifact_to_current_identity(tmp_path, monkeyp
             {
                 "status": "PASS",
                 "integrity": "ok",
-                "table_hashes_match": True,
+                "logical_sha256_match": True,
                 "rto_pass": True,
             }
         ),

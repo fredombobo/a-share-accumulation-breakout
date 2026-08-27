@@ -17,11 +17,13 @@
 create_backup(db, backup_root, compressed=True)
 ```
 
-- SQLite **online backup**（`src.backup(dst)`）→ 临时文件 → 全表确定性 SHA-256、
+- SQLite **online backup**（`src.backup(dst)`）→ 临时文件 → 全逻辑库字节级 SHA-256、
   `PRAGMA integrity_check` 和 `foreign_key_check` → gzip 压缩 → 通过后原子命名
   `backup_<stamp>.db.gz`（同秒冲突加序号）。
 - 每份有效备份必须有同名 `.manifest.json`，清单自身带 SHA-256，并记录归档哈希、
-  逻辑库大小、全表哈希、验证时间和工具版本。只有清单有效的文件才计入 7 份。
+  解压后逻辑库哈希、逻辑库大小、表数量、验证时间和工具版本。只有清单有效的文件才计入 7 份。
+- 禁止用 Python 逐行序列化大表做内容哈希；完整逻辑库字节哈希覆盖全部页和内容，并使
+  13--16GB 生产库有机会满足 30 分钟恢复 RTO。
 - 校验失败 → 丢弃临时文件并抛错，**不更新 last good**。
 - `verify_backup(path)` 可给已有 `.db` 全量校验并补清单；未经验证的历史裸文件不计数。
 - `prune_old_backups(keep=7)`：只清理经过验证的旧文件，绝不删除裸历史文件或唯一备份。
@@ -37,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File scripts\restore_backup.ps1 `
 ```
 
 - 只接受绝对路径和带有效清单的备份；目标必须不存在，禁止覆盖生产库或旧演练库。
-- 恢复后自动执行归档 SHA-256、`integrity_check`、外键和全表内容哈希复验；
+- 恢复后自动执行归档 SHA-256、解压后逻辑库 SHA-256、`integrity_check` 和外键复验；
   任一不符即删除 partial 文件并非零退出。
 - 计时输出供 RTO 记录（目标 ≤1800s）。
 
