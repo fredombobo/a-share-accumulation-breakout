@@ -260,7 +260,7 @@ tasks:
 
   - id: V2-P7.1-PORTFOLIO-BACKTEST
     title: 组合级现金、持仓、估值与回撤回测 V2
-    status: ready
+    status: in_progress
     work_package: WP75
     phase: P7
     dependencies:
