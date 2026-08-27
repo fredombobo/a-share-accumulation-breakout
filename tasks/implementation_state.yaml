@@ -1,19 +1,18 @@
 version: 1
-updated_at: "2026-08-27T08:10:00+08:00"
+updated_at: "2026-08-27T11:05:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
-  V2 remediation 的 O2 工程实现与 Q2 质量清零已由管理者接受，G 已解锁。
-  权威研究任务 0746a4108e15 结论仍为 FAIL 且不得晋级；O-12 五个真实完成交易日
-  仍为 INSUFFICIENT。P8 继续阻塞。Do not claim PERSONAL_INSTITUTIONAL_READY.
+  三波工程交付与 G 共享入口已由管理者接受，但七闸门现场仅 D=PASS；
+  R/S/P=INSUFFICIENT，L/O/G=FAIL。历史研究 0746a4108e15 为 FAIL，且不属于
+  当前最终代码身份；P8 保持 BLOCKED。Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
 live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now:
-  - V2R-G
+ready_now: []
 tasks:
   NINE_POINT_CLOSED_LOOP:
     status: complete
@@ -192,22 +191,28 @@ tasks:
       - "P6.4: integrations/holdings_state 只读适配器（字段拆分/旧 synced_at 保守映射 unknown/stale/O 闸门不得 PASS）"
       - "测试 19 用例（dag/audit_hash_chain/backup_restore/holdings_state）；scripts/soak_monitor、restore_runbook 待 P8 集成"
   V2-P7-API-UI:
-    status: ready
+    status: complete
     work_package: WP70
     assignee: integration-agent
-    note: "P7.1 后端 v2 routers 已交付（intelligence/strategies/risk/system/monitor + 既有 scan_profiles/signals 挂载 + OpenAPI 契约测试 3 用例）；P7.2 前端 API/类型与大页面、backend_app 深度拆分待后续"
+    note: "v2 routers、服务端 flags/readiness、控制台页面与 E2E 已集成；平台状态缺字段时前端 fail-closed，不再整页崩溃。"
     started_at: "2026-08-18T08:20:00+08:00"
     completed_evidence:
       - "api/routers/{intelligence,strategies,risk,system,monitor}.py 独立 router（不直写 SQL 业务逻辑，薄封装已建 domain）"
       - "app_factory.include_v2_routers 挂载全部 v2 routers（含既有 scan_profiles/signals）"
       - "tests/test_openapi_contract_v2.py：v2 最小公共 API 存在性 + 重复 path=0 + tags（3 用例）"
+      - "Playwright 4/4：导航、刷新恢复、390px 窄屏与键盘焦点"
+      - "Vitest 7/7；生产前端构建通过；npm audit 0 vulnerabilities"
+      - "V2R-G accepted at a197ac6；管理者安全降级纠错 fab7340"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
+    verdict: BLOCKED
+    manager_review: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
+    gate_results: {D: PASS, R: INSUFFICIENT, S: INSUFFICIENT, P: INSUFFICIENT, L: FAIL, O: FAIL, G: FAIL}
 v2_remediation_20260823:
   authority: tasks/v2_remediation_board_20260823.yaml
-  manager_review: docs/ACCEPTANCE-V2-REMEDIATION-WAVE2-SRN-2026-08-24.md
-  integration_branch: v2r-wave2-integration
+  manager_review: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
+  integration_branch: v2r-final-integration
   overall_status: BLOCKED
   accepted:
     - V2R-Q1
@@ -221,21 +226,23 @@ v2_remediation_20260823:
     - V2R-N
     - V2R-O2
     - V2R-Q2
-  ready:
     - V2R-G
+  ready: []
   blocked:
     - V2R-P8
   research:
     authoritative_task_id: "0746a4108e15"
-    verdict: FAIL
+    current_identity_verdict: INSUFFICIENT
+    historical_verdict: FAIL
     candidate_eligible: false
   quality_snapshot:
-    pytest: "879 passed, 0 failed, no warning summary"
-    performance: "3 passed, 876 deselected"
-    fault_injection: "18 passed, 861 deselected"
+    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 868 offline tests, frontend build"
+    pytest: "900 passed in 281.45s"
+    pit_data: "70 passed"
     full_ruff: PASS
-    full_mypy: "PASS: 239 source files"
+    full_mypy: "PASS: strict configured source set"
     architecture_strict: PASS
-    frontend_test: "6 passed"
+    frontend_test: "7 passed"
+    playwright: "4 passed"
     frontend_build: PASS
     npm_audit: "0 vulnerabilities"

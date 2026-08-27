@@ -1,107 +1,76 @@
-# 个人研究路线图：A 股「平台突破」形态
+# Breakout V2 研究与晋级路线图
 
-> 更新：2026-08-06  
-> 根目录：以本机 `accumulation_breakout` 实际路径为准（常见 `C:\Users\13818\accumulation_breakout`）
+> 更新：2026-08-27
+>
+> 项目：`accumulation_breakout`（AB-Screener · 横盘吸筹突破）
 
-## 目标边界
+## 当前研究裁决
 
-- **要做**：形态扫描、参数摸底、IS/OOS/WF 纪律、环境过滤下的 A 池研究辅助  
-- **不做（本阶段）**：券商对接、自动下单、把 Lab 排行榜当买卖指令  
+当前为 **INSUFFICIENT**，不能晋级候选参数，更不能进入 A 池或生成订单。
 
-## 相关扩展规格
+历史权威实验 `0746a4108e15` 的已保存结论是 **FAIL**：OOS PF 1.112、最大回撤
+88.03%、PBO 0.3815、DSR 0；该证据又不属于当前最终代码身份，因此只能作为失败历史，
+不能充当当前 R 闸门证据。失败是有效研究结果，禁止为了通过而调整阈值、删除失败窗口或复制
+旧 PASS。
 
-- **量价预测 · 逻辑生成平台**（挂本仓 + 复用 888 数据湖）：[`VOLUME-PRICE-LOGIC-PLATFORM.md`](./VOLUME-PRICE-LOGIC-PLATFORM.md)
+## 强制隔离
 
-## 两区隔离（强制心智模型）
+| 区域 | 用途 | 能否进入交易链 |
+|---|---|---|
+| 参数研究 | 预登记、IS/OOS、Nested WF、成本/容量压力、PBO/DSR/MinTRL | 否；PASS 也只成为隔离候选 |
+| Shadow 观察 | 用当前定义产生不可变 observation，跟踪 outcome | 只有满足 S 门的正式 profile 才可申请晋级 |
+| A 池候选 | 当前交易日扫描后的人工研究候选 | 仍需纸面订单确认和风控 |
+| 纸面交易 | 下一可交易日开盘仿真、账本和对账 | 仅模拟；不连接券商 |
 
-| 区域 | 入口 | 用途 | 可否当「明天买谁」 |
-|------|------|------|-------------------|
-| **可交易研究** | UI 总览 `/` · A 池 | 当日/近窗形态 + 防守过滤 | 仅作候选，仍需人工 |
-| **参数研究** | UI `/lab` · CLI 优化 | 历史网格 / OOS / 擂台 | **否** |
+## R 闸门：重建当前身份权威研究
 
-## 推进顺序
+必须使用当前代码、配置、数据库、策略语义、成本和撮合身份：
 
-### P0 — 数据与验证窗
+1. 冻结 ENTRY、股票池、日期窗、参数网格、随机种子、成本模型和基准。
+2. 在正式运行前写入实验登记和 trial ledger，禁止看结果后补登记。
+3. 使用完整 PIT 数据运行净成本 IS/OOS 与 Nested Walk-Forward。
+4. 默认输出随机基线与 MA20/60 基线；报告是否 beat 两个基线。
+5. 运行 1×/2×/3×成本压力、ADV/参与率容量、参数扰动和消融。
+6. 计算 PBO、DSR 和 MinTRL；证据不足必须返回 `INSUFFICIENT`。
+7. 将产物哈希和当前身份写入生产事实库，供 `/api/v2/readiness` 复算。
 
-1. 有效 `TUSHARE_TOKEN` 写入 `.env`  
-2. `python research_status.py` → 看 mode / 下一步  
-3. `python sync_history.py` → 目标 ~730 交易日（断点续传，2~4h）  
-4. 再次 `research_status.py` → **mode=full** 后才严肃谈 edge  
+研究结果可以是 PASS、FAIL 或 INSUFFICIENT；只有完整证据下的 PASS 才能成为
+`CANDIDATE`，仍不得自动进入 A 池或创建订单。
 
-当前库若只有 ~400 日（约 2024-12 起），系统自动 **degraded** 窗（约 65% IS / 35% OOS），结果**仅摸底**。
-**2026-08-08 本机快照：日线 ~969 日 → mode=full**（edge 仍需净成本门禁，非自动通过）。
+## S 闸门：从候选到可观察策略
 
-### P0b — 入场定义与证据（2026-08-08 启动）
+六类策略插件和生命周期代码已经实现，但生产样本为空。下一阶段必须：
 
-| 项 | 状态 | 入口 |
-|----|------|------|
-| A 池入场定义 v1 冻结 | ✅ | `docs/ENTRY-DEFINITION-V1.md` · `ab_screener/domain/entry_definition.py` |
-| 回测/trade_sim 对齐次日开盘 | ✅ | `backtest_signals.py` · `trade_sim.py` |
-| 假突破归因 5/10/20 | ✅ | `python run_attribution.py` |
-| 成本后 IS/OOS 证据报告 | ✅ | `python run_evidence_report.py` |
-| 双基线自动对比写入证据包 | ⏳ | 现 `beats_baseline` 默认 fail-closed |
-| 状态看板 | ✅ | `docs/STATUS.md` |
+1. 正式注册带版本和 semantic hash 的 `strategy_profile`，初始状态为 `EXPERIMENTAL`。
+2. 在 Shadow/Paper 模式生成 append-only signal observation/event/projection。
+3. 用真实可用时点记录成交可能性和 5/10/20 日 outcome；无法成交保持 `NULL`，不得填零。
+4. 按月数、样本量、净成本、双基准、回撤和稳定性阈值复验。
+5. 只有 S 门通过后才允许申请 `ACTIVE_FOR_A_POOL`；任何晋级必须可审计、可撤销。
 
-### P1 — 文档与入口一致
+## P/L/O/G 联动条件
 
-- Agent/小白/研究三条入口不互相踩  
-- 路径、Lab 已上线状态、Token 要求与代码同步  
+研究结论不能脱离生产闭环单独晋级。最终 P8 还要求：
 
-### P2 — 任务持久化
+- P：当前身份的生产风险快照和约束结果可复算；
+- L：最新完成交易日的扫描→周期→风险→对账→日清清单全部 COMPLETE；
+- O：至少 7 份验证备份、严格恢复成功、5 个真实完成交易日 soak；
+- G：供应商链路有 TLS、审计 hash chain 有数据库外锚点，且实盘开关始终关闭。
 
-- ✅ 扫描：`scan_jobs` 表（`ab_screener/application/scan_jobs.py`）
-- ✅ Lab：`research_runs` 表（`ab_screener/research/store.py`）
-- ⏳ 进程崩溃后 Web 内存任务与 DB 完全对齐的 UX 文案
+## 可复述的一页结论
 
-### P3 — UI 隔离（已启动）
+最终研究报告首屏必须固定回答：
 
-- 侧栏标注「总览=A池 / 实验室=研究」  
-- Lab 顶栏展示研究模式与「非下单」说明  
+- 样本与数据时点是否充分；
+- 净成本 OOS/WF 是否通过；
+- 是否战胜随机与均线基线；
+- 成本、容量和参数扰动下是否稳定；
+- PBO/DSR/MinTRL 是否过门；
+- 裁决是“候选”“不建议”还是“证据不足”；
+- 下一步是什么，以及“不会自动进入 A 池/不会自动下单”。
 
-### P4 — CI 烟雾（稍后）
+## 权威入口
 
-- pytest + tsc + health/lab 烟雾
-
-### P5 — 机构级控制台升级（待执行）
-
-完整 Agent 可执行计划（指挥舱 / 方案库 / 监控预警 / 组合约束 / 复盘 / 平台硬化）：
-
-`docs/superpowers/plans/2026-08-11-institutional-console-upgrade.md`  
-
-## 每日研究工作流（推荐）
-
-```powershell
-cd <本项目根>
-Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
-$env:HTTP_PROXY=$env:HTTPS_PROXY=$env:ALL_PROXY=$null
-
-python research_status.py          # 先看数据与 Token
-python sync_daily.py               # 日常补最新交易日
-# 浏览器 http://127.0.0.1:8001/  → 扫描 → 只看 A 池 + 环境
-# 参数摸底（mode≠insufficient 时）：
-python run_optimize_plan.py A 200 15
-python research_status.py          # 确认仍是 degraded/full
-```
-
-## 何时可以说「参数可能有 edge」
-
-同时满足：
-
-1. `research_status` → `mode=full` 且 `can_claim_edge=true`  
-2. OOS 胜率 / PF / 回撤过过滤  
-3. WF 至少部分窗口 `wf_pass`  
-4. 与「扫描 A 池」逻辑一致的入场定义（无偷换标签）  
-
-否则只写：**摸底观察，样本不足或未严格样本外**。
-
-## 相关命令
-
-| 命令 | 作用 |
-|------|------|
-| `python research_status.py` | 研究就绪报告 |
-| `python sync_history.py` | 历史扩容 |
-| `python run_attribution.py` | 假突破归因（ENTRY v1） |
-| `python run_evidence_report.py` | 成本后 IS/OOS 证据包 |
-| `python run_optimize_plan.py A 600 10` | 自动窗 IS/OOS |
-| `python pipeline_seed.py A 600 10` | WF + 播种 + 擂台干跑 |
-| `GET /api/lab/research-status` | UI/Agent 读就绪状态 |
+- 研究状态：`GET /api/lab/research-status`
+- 当前 V2 七闸门：`GET /api/v2/readiness`
+- 总验收记录：[ACCEPTANCE-V2-REMEDIATION-FINAL.md](./ACCEPTANCE-V2-REMEDIATION-FINAL.md)
+- 任务事实源：`tasks/implementation_state.yaml`

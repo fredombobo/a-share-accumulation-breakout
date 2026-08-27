@@ -244,7 +244,7 @@ tasks:
   # ── P7 ──
   - id: V2-P7-API-UI
     title: OpenAPI、typed clients、控制台页面与 E2E
-    status: blocked
+    status: complete
     work_package: WP70
     phase: P7
     dependencies:
@@ -256,11 +256,16 @@ tasks:
       - feature Agent 不挂载共享 app、不改导航壳
       - 浏览器/390px/键盘/恢复 E2E
       - INSTITUTIONAL_CONSOLE_V2_ENABLED 默认 false 直至契约过
+    completion_note: "V2R-G 已接受；Playwright 4/4、Vitest 7/7、前端构建和 npm audit 通过。"
 
   # ── P8 ──
   - id: V2-P8-FINAL-ACCEPTANCE
     title: 七闸门总验收与证据索引
     status: blocked
+    verdict: BLOCKED
+    reviewed_at: "2026-08-27T11:05:00+08:00"
+    gate_results: {D: PASS, R: INSUFFICIENT, S: INSUFFICIENT, P: INSUFFICIENT, L: FAIL, O: FAIL, G: FAIL}
+    evidence: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
     work_package: WP80
     phase: P8
     dependencies:
