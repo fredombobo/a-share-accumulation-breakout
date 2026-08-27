@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ab_screener.api.deps import get_db_path
 from ab_screener.application.audit_service import list_audit_events
@@ -26,12 +26,20 @@ def _backup_root() -> str | None:
 
 @router.get("/health")
 def health(
+    request: Request,
     port: int = 8001,
     db_path: str = Depends(get_db_path),
 ) -> dict[str, Any]:
     """DB/WAL/磁盘/DAG/端口身份。backup_root 未配置 → BACKUP_ROOT_UNCONFIGURED。"""
     root = _backup_root()
-    return system_health(db_path, root, port=port)
+    config = getattr(request.app.state, "platform_config", {})
+    return system_health(
+        db_path,
+        root,
+        build_version=str(getattr(request.app.state, "build_version", "") or "unknown"),
+        config_hash=str(config.get("resolved_hash") or ""),
+        port=port,
+    )
 
 
 @router.get("/backups")

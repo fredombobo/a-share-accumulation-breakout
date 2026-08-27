@@ -9,13 +9,19 @@ flags:
   V2_EXECUTION_DUAL_RUN_ENABLED: true
   # parity 通过后才允许新核心写纸面账本
   V2_EXECUTION_WRITE_ENABLED: false
-  # 六形态插件 registry 完整后启用
+  # 生产扫描观察落库仍关闭；六形态契约可在控制台只读查看
   V2_STRATEGY_REGISTRY_ENABLED: false
   # 组合风控 observe→enforce（P5）
   V2_RISK_ENFORCEMENT_ENABLED: false
   # 自动 EOD DAG（P6）
   DAILY_SCHEDULER_ENABLED: false
-  # v2 控制台（P7）
-  INSTITUTIONAL_CONSOLE_V2_ENABLED: false
+  # v2 控制台已完成契约与质量门禁；不代表七闸门整体通过
+  INSTITUTIONAL_CONSOLE_V2_ENABLED: true
   # 硬断言：本项目永不真实下单
   LIVE_TRADING_ENABLED: false
+
+evidence:
+  # 管理者冻结的权威研究任务；失败也必须如实显示，不能改读任意最新 PASS。
+  authoritative_research_run_id: "0746a4108e15"
+  gate_evidence_dir: "runtime/v2/gates"
+  soak_evidence_dir: "runtime/v2/soak"

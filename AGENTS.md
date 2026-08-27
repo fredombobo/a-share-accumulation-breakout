@@ -1,7 +1,8 @@
 # accumulation_breakout — Grok 工作约定
 
-> 从 Hermes 迁移到 Grok 的 A 股「横盘吸筹→启动」选股系统。  
-> 根目录（本机）：`C:\Users\13818\accumulation_breakout`（以实际 clone 路径为准）
+> A 股「横盘吸筹→启动」研究与纸面交易系统。
+> 权威仓库（本机）：`E:\CODEX\Stock_selection\accumulation_breakout`；8001 固定属于
+> Breakout，8000 固定属于 AETF，禁止交叉部署前端产物或数据库。
 
 ## 系统概览
 
@@ -31,13 +32,13 @@ Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
 $env:HTTP_PROXY=$env:HTTPS_PROXY=$env:ALL_PROXY=$null
 $env:http_proxy=$env:https_proxy=$env:all_proxy=$null
 
-# Token：.env 或环境变量 TUSHARE_TOKEN
-cd C:\Users\13818\accumulation_breakout
-C:\Python314\python.exe research_status.py   # 研究就绪：数据深度 / 自动窗 / Token
-C:\Python314\python.exe easy_start.py
-C:\Python314\python.exe sync_daily.py
-C:\Python314\python.exe run_screener.py --top 15 --days 160 --workers 0
-C:\Python314\python.exe test_signals.py
+# Token：受忽略的 .env 或环境变量 TUSHARE_TOKEN，绝不提交明文
+cd E:\CODEX\Stock_selection\accumulation_breakout
+.\.venv312\Scripts\python.exe research_status.py --no-token-probe
+.\.venv312\Scripts\python.exe easy_start.py
+.\.venv312\Scripts\python.exe sync_daily.py
+.\.venv312\Scripts\python.exe run_screener.py --top 15 --days 160 --workers 0
+.\.venv312\Scripts\python.exe -m pytest -q
 ```
 
 Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend_app.py` :8001。开发前端 :3001 代理到 :8001；:8000 固定留给 AETF Alpha。
@@ -55,9 +56,9 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 
 ## 数据现状（迁移时快照）
 
-- DB：`runtime/stock_data.db`（~1GB，WAL）
-- 最新交易日：以 `store.max_trade_date('daily')` 为准（迁移审计时为 `20260731`）
-- scan_result：Top 20 已有（as_of 同最新扫描日）
+- DB：`runtime/stock_data.db`（当前生产快照约 16GB，WAL；具体身份以门禁指纹为准）
+- 最新交易日：只以 `store.max_trade_date('daily')` 与交易日历门禁为准，不在文档写死
+- Web 启动只校验 schema，不自动迁移；迁移仅针对经绝对路径确认的副本
 
 ## 输出规则（胜率优先 · 2026-08-03）
 
@@ -71,7 +72,7 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 - CLI：`python run_screener.py --top 15 --days 160 --workers 0`
 - 多核：`parallel_scan.py`（ProcessPool，默认 `SCAN_WORKERS=0`→cpu-1）；strict + relaxed 全市场并行，不再截断 800
 - 回测：`python backtest_signals.py`
-- 持仓：`runtime/portfolio.json` + `GET/POST /api/portfolio` + UI `/portfolio`
+- 持仓：纸面账本 `pt_*` 为唯一写事实源；`portfolio.json` 和 `/api/portfolio` 仅只读迁移兼容
 - 一键 UI：`.\start_ui.ps1` / `.\stop_ui.ps1`
 - 预筛加速：`prefilter_volume_parallel`（量能/近高点，多进程）
 - 指数环境：优先 `000300.SH`（`ensure_index_daily`），否则市场中位涨跌
@@ -106,3 +107,13 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 ## 相关 Grok skill
 
 `~/.grok/skills/a-share-accumulation-breakout/SKILL.md`
+
+## v2 统一入口与就绪度
+
+- 服务端配置：`configs/platform_v2.yaml`；业务 flag 只由服务端解析，本地存储只能保存 UI 偏好。
+- 身份接口：`GET /api/v2/platform/status`；必须返回
+  `product=accumulation_breakout`、端口 8001、build/config 与 `LIVE=false`。
+- 七闸门：`GET /api/v2/readiness`；浏览器不得传入门禁结果。dirty、身份漂移、缺证据均 fail-closed。
+- 权威研究任务当前固定为 `0746a4108e15`，结论 FAIL 时不得换读其它 PASS 或描述为已晋级。
+- 自动 DAG 只有 `DAILY_SCHEDULER_ENABLED=true` 才启动；五个真实完成交易日不足时保持关闭。
+- `runtime/v2/gates`、`runtime/v2/soak` 与真实数据库均是运行证据，不提交、不伪造。

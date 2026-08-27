@@ -1,6 +1,8 @@
 """v2 platform_config 测试：resolved hash、env overlay、硬门、未知 flag。"""
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
 from ab_screener.application.platform_config import (
@@ -48,3 +50,15 @@ def test_flag_enabled_unknown_raises():
 def test_all_default_flags_covered():
     r = load_resolved_config(env={})
     assert set(DEFAULT_FLAGS) == set(r["flags"])
+
+
+def test_resolved_hash_does_not_depend_on_checkout_path(tmp_path):
+    first = tmp_path / "a" / "platform.yaml"
+    second = tmp_path / "b" / "platform.yaml"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    shutil.copyfile("configs/platform_v2.yaml", first)
+    shutil.copyfile(first, second)
+    assert load_resolved_config(first, env={})["resolved_hash"] == load_resolved_config(
+        second, env={}
+    )["resolved_hash"]

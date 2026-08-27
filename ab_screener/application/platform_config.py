@@ -27,6 +27,12 @@ ALLOWED_ENV_KEYS = {
     "LIVE_TRADING_ENABLED",
 }
 
+ALLOWED_VALUE_ENV_KEYS = {
+    "V2_AUTHORITATIVE_RESEARCH_RUN_ID": "authoritative_research_run_id",
+    "V2_GATE_EVIDENCE_DIR": "gate_evidence_dir",
+    "V2_SOAK_EVIDENCE_DIR": "soak_evidence_dir",
+}
+
 # 布尔标志默认值（开发默认；发布默认由 config 文件提供）
 DEFAULT_FLAGS: dict[str, bool] = {
     "V2_PIT_READ_ENABLED": False,
@@ -38,6 +44,34 @@ DEFAULT_FLAGS: dict[str, bool] = {
     "INSTITUTIONAL_CONSOLE_V2_ENABLED": False,
     "LIVE_TRADING_ENABLED": False,
 }
+
+DEFAULT_EVIDENCE: dict[str, str] = {
+    "authoritative_research_run_id": "",
+    "gate_evidence_dir": "runtime/v2/gates",
+    "soak_evidence_dir": "runtime/v2/soak",
+}
+
+# These controls are safety invariants rather than optional features.  They are
+# reported by /platform/status and intentionally have no disabling flag.
+HARD_GATES: tuple[str, ...] = (
+    "FUNDS",
+    "QUANTITY",
+    "T_PLUS_ONE",
+    "NO_SHORT",
+    "POINT_IN_TIME",
+    "RECONCILIATION",
+    "LIVE_TRADING_DISABLED",
+)
+
+# Business endpoints protected by server-resolved flags.  Operational health,
+# platform status and readiness stay readable even when the console is off.
+_CONSOLE_PREFIXES = (
+    "/api/v2/desk",
+    "/api/v2/intelligence",
+    "/api/v2/research",
+    "/api/v2/review",
+    "/api/v2/paper",
+)
 
 
 class PlatformConfigError(RuntimeError):
@@ -61,7 +95,7 @@ def load_resolved_config(
     env: dict[str, str] | None = None,
     live_trading_override: bool | None = None,
 ) -> dict[str, Any]:
-    """生成不可变 resolved config。返回 {flags, source, resolved_hash, file_sha256}。
+    """生成不可变 resolved config。返回 flags/evidence/source/hash。
 
     - 硬门：LIVE_TRADING_ENABLED 解析为 true 时抛错（启动必须失败）。
     """
@@ -69,6 +103,7 @@ def load_resolved_config(
     cfg_file = config_file or DEFAULT_CONFIG_FILE
 
     flags: dict[str, bool] = dict(DEFAULT_FLAGS)
+    evidence: dict[str, str] = dict(DEFAULT_EVIDENCE)
     file_sha256 = ""
     if cfg_file.is_file():
         import yaml
@@ -81,6 +116,18 @@ def load_resolved_config(
             if key not in DEFAULT_FLAGS:
                 raise PlatformConfigError(f"config 文件含未知 flag: {key}")
             flags[key] = _parse_bool(value, key)
+        evidence_overrides = raw.get("evidence") or {}
+        if not isinstance(evidence_overrides, dict):
+            raise PlatformConfigError("platform_v2.yaml 的 evidence 必须是映射")
+        unknown_evidence = set(evidence_overrides) - set(DEFAULT_EVIDENCE)
+        if unknown_evidence:
+            raise PlatformConfigError(
+                f"config 文件含未知 evidence 配置: {sorted(unknown_evidence)}"
+            )
+        for key, value in evidence_overrides.items():
+            if not isinstance(value, str):
+                raise PlatformConfigError(f"evidence.{key} 必须是字符串")
+            evidence[key] = value.strip()
         file_sha256 = hashlib.sha256(cfg_file.read_bytes()).hexdigest()
     else:
         raise PlatformConfigError(f"默认配置文件缺失: {cfg_file}")
@@ -89,6 +136,9 @@ def load_resolved_config(
     for key in ALLOWED_ENV_KEYS:
         if key in env:
             flags[key] = _parse_bool(env[key], key)
+    for env_key, evidence_key in ALLOWED_VALUE_ENV_KEYS.items():
+        if env_key in env:
+            evidence[evidence_key] = str(env[env_key]).strip()
 
     # 显式命令行覆盖（例如测试）
     if live_trading_override is not None:
@@ -99,13 +149,23 @@ def load_resolved_config(
             "LIVE_TRADING_ENABLED 必须为 false；本项目不包含真实下单能力"
         )
 
-    resolved = {"flags": dict(flags), "source": str(cfg_file), "file_sha256": file_sha256}
+    resolved = {
+        "flags": dict(flags),
+        "evidence": dict(evidence),
+        "source": str(cfg_file),
+        "file_sha256": file_sha256,
+    }
     resolved["resolved_hash"] = resolved_hash(resolved)
     return resolved
 
 
 def resolved_hash(resolved: dict[str, Any]) -> str:
-    payload = {k: v for k, v in resolved.items() if k != "resolved_hash"}
+    # Checkout location is deployment metadata, not configuration semantics.
+    # Excluding it lets the same committed config retain one identity when a
+    # release candidate moves from an integration worktree to the saved repo.
+    payload = {
+        k: v for k, v in resolved.items() if k not in {"resolved_hash", "source"}
+    }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()[:16]
@@ -115,3 +175,14 @@ def flag_enabled(resolved: dict[str, Any], flag: str) -> bool:
     if flag not in DEFAULT_FLAGS:
         raise PlatformConfigError(f"未知 flag: {flag}")
     return bool((resolved.get("flags") or {}).get(flag, DEFAULT_FLAGS[flag]))
+
+
+def required_flags_for_path(path: str) -> tuple[str, ...]:
+    """Return server-side flags required for one v2 business path."""
+    if path in {"/api/v2/platform/status", "/api/v2/readiness"}:
+        return ()
+    if path.startswith(_CONSOLE_PREFIXES) or path.startswith(
+        ("/api/v2/strategies", "/api/v2/signals", "/api/v2/scan-profiles")
+    ):
+        return ("INSTITUTIONAL_CONSOLE_V2_ENABLED",)
+    return ()

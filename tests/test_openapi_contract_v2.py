@@ -7,6 +7,8 @@ from ab_screener.api.app_factory import include_v2_routers
 
 # v2 最小公共 API（计划 P7.1 表格子集：本阶段已交付）
 REQUIRED_V2_PATHS = {
+    "GET /api/v2/platform/status",
+    "GET /api/v2/readiness",
     "GET /api/v2/desk",
     "GET /api/v2/intelligence/search",
     "GET /api/v2/intelligence/stocks/{ts_code}",

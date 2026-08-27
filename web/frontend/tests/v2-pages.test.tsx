@@ -29,6 +29,7 @@ import { fetchSystemHealth, fetchAlerts, fetchBackups } from '../src/api/system'
 import { fetchNotes, fetchDecisions } from '../src/api/review'
 import { api } from '../src/api/client'
 import type { SystemHealth } from '../src/types/system'
+import { V2_BASE } from '../src/api/core'
 
 import Monitor from '../src/pages/v2/Monitor'
 import Review from '../src/pages/v2/Review'
@@ -50,6 +51,11 @@ const mockHealth = {
 
 beforeEach(() => {
   vi.clearAllMocks()
+})
+
+it('v2 API base is prefixed exactly once by request()', () => {
+  expect(V2_BASE).toBe('/v2')
+  expect(V2_BASE).not.toContain('/api/api')
 })
 
 describe('Monitor 页', () => {

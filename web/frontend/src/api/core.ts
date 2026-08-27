@@ -10,4 +10,6 @@ export {
   type ReqOpts,
 } from './client'
 
-export const V2_BASE = '/api/v2'
+// request() already prefixes every path with /api.  Keeping /api here produced
+// /api/api/v2/* and made all v2 pages silently fail behind mocked UI tests.
+export const V2_BASE = '/v2'

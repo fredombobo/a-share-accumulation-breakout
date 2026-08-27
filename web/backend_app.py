@@ -56,6 +56,7 @@ app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
 # P7.1 装配：v2 routers（与 legacy API 并存；重复 path 由 OpenAPI 测试断言为 0）。
 # 本文件已自带 legacy /api/scan 路由，故跳过 scan_router 避免重复 Operation ID。
 from ab_screener.api.app_factory import include_v2_routers
+from ab_screener.application.platform_config import flag_enabled
 
 include_v2_routers(app, include_scan_router=False)
 # G2 拆路由：只读杂项（health/setup-status/manifests/today/release-readiness/kline）
@@ -248,7 +249,9 @@ def _auto_settle_loop() -> None:
         _t.sleep(60)  # 每分钟轮询
 
 
-if _paper_enabled():
+if _paper_enabled() and flag_enabled(
+    app.state.platform_config, "DAILY_SCHEDULER_ENABLED"
+):
     threading.Thread(target=_auto_settle_loop, daemon=True, name="paper-auto-settle").start()
 
 

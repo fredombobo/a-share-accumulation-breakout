@@ -20,9 +20,13 @@ _DIST_SUFFIXES = (".js", ".css", ".html", ".json", ".png", ".svg", ".ico")
 
 
 def _file_fp(p: Path) -> str:
+    """Content identity independent of checkout path and file timestamps."""
     try:
-        st = p.stat()
-        return f"{p.name}:{st.st_size}:{int(st.st_mtime)}"
+        digest = hashlib.sha256()
+        with p.open("rb") as handle:
+            while block := handle.read(1 << 20):
+                digest.update(block)
+        return f"{p.name}:{p.stat().st_size}:{digest.hexdigest()}"
     except OSError:
         return f"{p.name}:missing"
 

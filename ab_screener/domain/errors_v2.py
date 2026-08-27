@@ -27,6 +27,7 @@ ERROR_CODES: dict[str, dict[str, Any]] = {
     "NOT_FOUND": {"message": "资源不存在", "retryable": False},
     "CONFLICT": {"message": "资源冲突", "retryable": False},
     "ALREADY_EXISTS": {"message": "资源已存在", "retryable": False},
+    "FEATURE_DISABLED": {"message": "该功能当前未启用", "retryable": False},
     # 研究/门禁
     "RESEARCH_MODE_NOT_FULL": {"message": "研究模式非 full，禁止 edge 话术", "retryable": False},
     "EVIDENCE_INSUFFICIENT": {"message": "证据不足", "retryable": False},

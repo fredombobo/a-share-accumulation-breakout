@@ -15,7 +15,7 @@ GATES = ("D", "R", "S", "P", "L", "O", "G")
 
 STATUS_BLOCKED = "BLOCKED"
 STATUS_ENGINEERING_READY_RESEARCH_BLOCKED = "ENGINEERING_READY_RESEARCH_BLOCKED"
-STATUS_OK = "OK"
+STATUS_PERSONAL_INSTITUTIONAL_READY = "PERSONAL_INSTITUTIONAL_READY"
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,12 @@ def evaluate_readiness(ri: ReadinessInput) -> dict[str, Any]:
     non_research_fail = any(not per_gate[g] for g in GATES if g != "R")
     research_fail_only = (not per_gate["R"]) and not non_research_fail
 
-    if research_fail_only:
+    # Identity outranks every gate verdict.  A dirty checkout or evidence from
+    # another code/config/data identity can never be described as engineering
+    # ready, even when R happens to be the only false business gate.
+    if not ri.worktree_clean or not ri.identity_matches:
+        status = STATUS_BLOCKED
+    elif research_fail_only:
         status = STATUS_ENGINEERING_READY_RESEARCH_BLOCKED
         reasons.append("仅研究闸门未通过（工程就绪、研究阻断）")
     elif blocked:
@@ -56,7 +61,7 @@ def evaluate_readiness(ri: ReadinessInput) -> dict[str, Any]:
         if not reasons:
             reasons.append(f"硬门失败: {', '.join(blocked)}")
     else:
-        status = STATUS_OK
+        status = STATUS_PERSONAL_INSTITUTIONAL_READY
         reasons.append("七闸门全部 PASS")
 
     return {
@@ -64,4 +69,9 @@ def evaluate_readiness(ri: ReadinessInput) -> dict[str, Any]:
         "reasons": reasons,
         "per_gate": per_gate,
         "blocked_gates": [g for g in GATES if not per_gate[g]],
+        "identity_blockers": [
+            code for code in ("WORKTREE_DIRTY" if not ri.worktree_clean else None,
+                              "IDENTITY_MISMATCH" if not ri.identity_matches else None)
+            if code is not None
+        ],
     }

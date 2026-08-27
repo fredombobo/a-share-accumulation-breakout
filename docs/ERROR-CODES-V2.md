@@ -18,6 +18,7 @@
 | NOT_FOUND | 资源不存在 | false |
 | CONFLICT | 资源冲突 | false |
 | ALREADY_EXISTS | 资源已存在 | false |
+| FEATURE_DISABLED | 该功能当前未启用 | false |
 | RESEARCH_MODE_NOT_FULL | 研究模式非 full，禁止 edge 话术 | false |
 | EVIDENCE_INSUFFICIENT | 证据不足 | false |
 | CONSTRAINT_VIOLATION | 组合约束违规 | false |
