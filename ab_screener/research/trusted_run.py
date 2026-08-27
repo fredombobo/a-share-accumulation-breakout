@@ -203,10 +203,7 @@ def execute_trusted_research(
 
     state = dict(checkpoint or {})
     portfolio_policy = trusted_portfolio_policy()
-    portfolio_identity = {
-        "version": portfolio_policy.version,
-        "config_hash": portfolio_policy.fingerprint(),
-    }
+    portfolio_identity = trusted_portfolio_identity()
     requested_portfolio = request.get("portfolio_model")
     if requested_portfolio is not None and requested_portfolio != portfolio_identity:
         raise ValueError("请求绑定的组合模型与当前权威配置不一致")
