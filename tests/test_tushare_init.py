@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import tushare_init
 
 
@@ -13,15 +15,27 @@ def test_project_env_is_authoritative_and_url_keeps_trailing_slash(
     env_file = tmp_path / ".env"
     env_file.write_text(
         "TUSHARE_TOKEN=file-token-value\n"
-        "TUSHARE_HTTP_URL=http://example.test/\n",
+        "TUSHARE_HTTP_URL=https://example.test/\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(tushare_init, "_ENV_PATH", env_file)
     monkeypatch.setenv("TUSHARE_TOKEN", "stale-process-token")
-    monkeypatch.setenv("TUSHARE_HTTP_URL", "http://stale.test")
+    monkeypatch.setenv("TUSHARE_HTTP_URL", "https://stale.test")
 
     assert tushare_init.resolve_token() == "file-token-value"
-    assert tushare_init.resolve_http_url() == "http://example.test/"
+    assert tushare_init.resolve_http_url() == "https://example.test/"
+
+
+def test_plaintext_gateway_is_rejected_without_network_access() -> None:
+    with pytest.raises(tushare_init.DataTransportSecurityError, match="https://"):
+        tushare_init.init_pro(token="test-token", http_url="http://example.test/")
+
+
+def test_gateway_url_must_not_embed_credentials() -> None:
+    with pytest.raises(tushare_init.DataTransportSecurityError, match="内嵌凭据"):
+        tushare_init.init_pro(
+            token="test-token", http_url="https://user:password@example.test/"
+        )
 
 
 def test_project_sources_use_tushare_init_as_the_only_entrypoint() -> None:
@@ -58,17 +72,35 @@ def test_gateway_query_retries_transient_non_json_response(monkeypatch) -> None:
             '"items":[["20260807",1]]}}'
         ),
     ])
-    calls: list[str] = []
+    calls: list[tuple[str, dict]] = []
 
-    def fake_post(url: str, **_kwargs):
-        calls.append(url)
+    def fake_post(url: str, **kwargs):
+        calls.append((url, kwargs))
         return next(responses)
 
     monkeypatch.setattr(tushare_init.crequests, "post", fake_post)
     monkeypatch.setattr(tushare_init.time, "sleep", lambda _seconds: None)
-    pro = tushare_init.init_pro(token="test-token", http_url="http://example.test/")
+    pro = tushare_init.init_pro(token="test-token", http_url="https://example.test/")
 
     result = pro.query("trade_cal")
 
     assert len(calls) == 2
+    assert all(call[0].startswith("https://") for call in calls)
+    assert all(call[1]["verify"] is True for call in calls)
+    assert all(call[1]["allow_redirects"] is False for call in calls)
     assert result.to_dict("records") == [{"cal_date": "20260807", "is_open": 1}]
+
+
+def test_gateway_redirect_is_rejected_to_prevent_tls_downgrade(monkeypatch) -> None:
+    class RedirectResponse:
+        text = ""
+        status_code = 302
+
+    monkeypatch.setattr(
+        tushare_init.crequests, "post", lambda _url, **_kwargs: RedirectResponse()
+    )
+    monkeypatch.setattr(tushare_init.time, "sleep", lambda _seconds: None)
+    pro = tushare_init.init_pro(token="test-token", http_url="https://example.test/")
+
+    with pytest.raises(RuntimeError, match="拒绝重定向"):
+        pro.query("trade_cal")

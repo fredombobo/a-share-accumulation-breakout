@@ -8,7 +8,9 @@ from starlette.testclient import TestClient
 
 from ab_screener.api.routers import legacy_misc
 from ab_screener.application.daily_manifest import create_daily_manifest, get_daily_manifest
+from ab_screener.data.migration_registry import apply_pending
 from ab_screener.data.migrations_v2 import run_v2_migrations
+from ab_screener.data.risk_repository import save_risk_snapshot
 from local_store import LocalStore
 from paper_trading.account import create_account
 from paper_trading.migrations import run_migrations
@@ -19,6 +21,8 @@ def _setup(db: Path, *, include_scan: bool = True) -> None:
     LocalStore(db_path=db)
     run_migrations(db)
     run_v2_migrations(db)
+    with sqlite3.connect(db) as conn:
+        apply_pending(conn)
     create_account(db, 1_000_000)
     with sqlite3.connect(db) as conn:
         if include_scan:
@@ -50,6 +54,13 @@ def _setup(db: Path, *, include_scan: bool = True) -> None:
             "INSERT INTO pt_daily_snapshot(account_id,trade_date,cash_fen,market_value_fen,"
             "total_asset_fen,positions_json) VALUES (1,'20260807',1000000,0,1000000,'[]')"
         )
+        save_risk_snapshot(
+            conn,
+            trade_date="20260807",
+            market_version="daily:20260807",
+            metrics={"status": "INSUFFICIENT", "reason": "现金账户无持仓"},
+            scenarios={},
+        )
 
 
 def test_complete_manifest_is_deterministic_idempotent_and_linked(tmp_path: Path) -> None:
@@ -66,6 +77,7 @@ def test_complete_manifest_is_deterministic_idempotent_and_linked(tmp_path: Path
     assert first["payload"]["signals"]["count"] == 1
     assert first["payload"]["paper"]["cycle_id"] == "CY-20260807"
     assert first["payload"]["reconciliation"]["result"] == "OK"
+    assert first["payload"]["risk_snapshot"]["market_version"] == "daily:20260807"
     assert get_daily_manifest(db, "20260807")["manifest_id"] == first["manifest_id"]
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM daily_run_manifests").fetchone()[0] == 1

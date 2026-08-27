@@ -95,6 +95,20 @@ def create_daily_manifest(db_path: str | Path, trade_date: str) -> dict[str, Any
             "FROM pt_daily_snapshot WHERE account_id=1 AND trade_date=?",
             (trade_date,),
         ).fetchone()
+        has_risk_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='risk_snapshots'"
+        ).fetchone()
+        risk_snapshot = (
+            conn.execute(
+                "SELECT snapshot_id,trade_date,account_id,market_version,rule_version,"
+                "config_version,metrics_json,scenarios_json,created_at FROM risk_snapshots"
+                " WHERE account_id=1 AND trade_date=?"
+                " ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (trade_date,),
+            ).fetchone()
+            if has_risk_table
+            else None
+        )
 
         blockers: list[str] = []
         if scan is None:
@@ -109,6 +123,8 @@ def create_daily_manifest(db_path: str | Path, trade_date: str) -> dict[str, Any
             blockers.append("RECONCILIATION_NOT_OK")
         if snapshot is None:
             blockers.append("MISSING_DAILY_SNAPSHOT")
+        if risk_snapshot is None:
+            blockers.append("MISSING_RISK_SNAPSHOT")
         if scan is not None and not scan["git_sha"]:
             blockers.append("MISSING_CODE_VERSION")
         if scan is not None and not scan["config_hash"]:
@@ -118,6 +134,7 @@ def create_daily_manifest(db_path: str | Path, trade_date: str) -> dict[str, Any
         cycle_payload = dict(cycle) if cycle is not None else None
         rec_payload = dict(reconciliation) if reconciliation is not None else None
         snapshot_payload = dict(snapshot) if snapshot is not None else None
+        risk_payload = dict(risk_snapshot) if risk_snapshot is not None else None
         status = "COMPLETE" if not blockers else "PARTIAL"
         payload: dict[str, Any] = {
             "schema": "daily-run-manifest-v1",
@@ -143,6 +160,16 @@ def create_daily_manifest(db_path: str | Path, trade_date: str) -> dict[str, Any
             "reconciliation": rec_payload,
             "snapshot": ({"account_id": snapshot_payload["account_id"],
                            "rows_sha256": _sha(snapshot_payload)} if snapshot_payload else None),
+            "risk_snapshot": (
+                {
+                    "snapshot_id": risk_payload["snapshot_id"],
+                    "market_version": risk_payload["market_version"],
+                    "rule_version": risk_payload["rule_version"],
+                    "config_version": risk_payload["config_version"],
+                    "rows_sha256": _sha(risk_payload),
+                }
+                if risk_payload else None
+            ),
         }
         digest = _sha(payload)
         manifest_id = f"DM-{trade_date}-{digest[:16]}"

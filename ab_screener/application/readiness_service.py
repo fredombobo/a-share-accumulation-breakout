@@ -235,8 +235,9 @@ def _operations_gate(
                 continue
             evidence_identity = evidence.get("identity") or {}
             if (
-                evidence_identity.get("code_version") != identity.get("git_sha")
-                or evidence_identity.get("config_hash") != identity.get("platform_config_hash")
+                evidence_identity.get("code_version") != identity.get("code_version")
+                or evidence_identity.get("platform_config_hash")
+                != identity.get("platform_config_hash")
             ):
                 mismatched_files.append(path.name)
                 continue

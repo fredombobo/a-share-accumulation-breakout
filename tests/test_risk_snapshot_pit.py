@@ -12,6 +12,10 @@ from ab_screener.data.risk_repository import (
     latest_risk_snapshot,
     save_risk_snapshot,
 )
+from ab_screener.local_store import LocalStore
+from paper_trading.account import commit_import, create_account
+from paper_trading.migrations import run_migrations
+from paper_trading.risk_adapter import build_portfolio_state
 
 
 @pytest.fixture()
@@ -73,3 +77,35 @@ def test_missing_table_fail_closed(tmp_path: Path):
                                metrics={}, scenarios={})
     finally:
         empty.close()
+
+
+def test_portfolio_state_does_not_read_future_close(tmp_path: Path) -> None:
+    """历史风险状态严格使用 as-of 价格，未来行情不能污染过去权益。"""
+    db = tmp_path / "paper.db"
+    LocalStore(db_path=db)
+    run_migrations(db)
+    with sqlite3.connect(db) as connection:
+        apply_pending(connection)
+    with sqlite3.connect(db) as connection:
+        connection.executemany(
+            "INSERT INTO daily (ts_code,trade_date,open,high,low,close,vol,amount)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            [
+                ("000001.SZ", "20260810", 10, 10, 10, 10, 1000, 10000),
+                ("000001.SZ", "20260820", 99, 99, 99, 99, 1000, 99000),
+            ],
+        )
+        connection.commit()
+    create_account(db, 1_000_000)
+    portfolio = tmp_path / "portfolio.json"
+    portfolio.write_text(
+        '{"positions":[{"ts_code":"000001.SZ","cost":8,"shares":100,'
+        '"opened_at":"2026-08-01T10:00:00+08:00"}]}',
+        encoding="utf-8",
+    )
+    commit_import(db, str(portfolio), as_of_date="20260809")
+
+    state = build_portfolio_state(db, today="20260810")
+
+    assert state.positions[0].latest_close_micro == 10_000_000
+    assert state.equity_fen == 1_000_000 + 100_000

@@ -89,7 +89,7 @@ def _ensure_env(interactive: bool) -> bool:
         else:
             ENV_PATH.write_text(
                 "TUSHARE_TOKEN=your_token_here\n"
-                "TUSHARE_HTTP_URL=http://a.sszhixia.cn/\n",
+                "TUSHARE_HTTP_URL=https://a.sszhixia.cn/\n",
                 encoding="utf-8",
             )
             print(f"[配置] 已创建 {ENV_PATH.name}")

@@ -59,7 +59,11 @@ def _risk_config() -> RiskConfig:
 
 
 def build_portfolio_state(db_path: str | Path, *, today: str) -> PortfolioState:
-    """从 pt DB 组装组合状态（含持仓/可卖/行业由 adapter 简化填空）。"""
+    """从 pt DB 组装指定交易日的组合状态。
+
+    历史日清只能读取 ``today`` 当日及之前的行情。这里禁止使用数据库全局最新价，
+    否则历史风险快照会被未来行情污染。
+    """
     db_path = Path(db_path)
     with sqlite3.connect(str(db_path)) as conn:
         cash_row = conn.execute(
@@ -72,7 +76,8 @@ def build_portfolio_state(db_path: str | Path, *, today: str) -> PortfolioState:
             (today,),
         ).fetchall()
         fresh_row = conn.execute(
-            "SELECT MAX(trade_date) FROM daily"
+            "SELECT MAX(trade_date) FROM daily WHERE trade_date<=?",
+            (today,),
         ).fetchone()
     cash_fen = int(cash_row[0]) if cash_row else 0
     positions = [
@@ -83,8 +88,9 @@ def build_portfolio_state(db_path: str | Path, *, today: str) -> PortfolioState:
     with sqlite3.connect(str(db_path)) as conn:
         for i, p in enumerate(positions):
             row = conn.execute(
-                "SELECT close FROM daily WHERE ts_code=? ORDER BY trade_date DESC LIMIT 1",
-                (p.ts_code,),
+                "SELECT close FROM daily WHERE ts_code=? AND trade_date<=?"
+                " ORDER BY trade_date DESC LIMIT 1",
+                (p.ts_code, today),
             ).fetchone()
             if row:
                 positions[i] = Position(

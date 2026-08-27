@@ -5,13 +5,23 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+from ab_screener.operations.backup import create_backup
+
+
+def _verified_backup(root: Path) -> Path:
+    source = root.parent / f"{root.name}-source.db"
+    with sqlite3.connect(source) as conn:
+        conn.execute("CREATE TABLE evidence(id INTEGER PRIMARY KEY, value TEXT)")
+        conn.execute("INSERT INTO evidence(value) VALUES ('ok')")
+    result = create_backup(source, root)
+    return Path(result["path"])
+
 
 def test_restore_backup_dryrun_exits_zero(tmp_path: Path) -> None:
     """DryRun 不实际恢复，必须 exit 0 且打印 DRY-RUN 与源/目标。"""
     backup_root = tmp_path / "backups"
     backup_root.mkdir()
-    fake_backup = backup_root / "backup_20260822_000000.db"
-    sqlite3.connect(fake_backup).close()
+    fake_backup = _verified_backup(backup_root)
 
     ps1 = (Path("scripts") / "restore_backup.ps1").resolve()
     r = subprocess.run(
@@ -29,8 +39,7 @@ def test_restore_backup_dryrun_without_restoreto_exits_zero(tmp_path: Path) -> N
     """DryRun 不传 RestoreTo 也必须成功（预览源备份，不要求目标）。"""
     backup_root = tmp_path / "backups2"
     backup_root.mkdir()
-    fake_backup = backup_root / "backup_20260822_000000.db"
-    sqlite3.connect(fake_backup).close()
+    fake_backup = _verified_backup(backup_root)
 
     ps1 = (Path("scripts") / "restore_backup.ps1").resolve()
     r = subprocess.run(
@@ -43,6 +52,6 @@ def test_restore_backup_dryrun_without_restoreto_exits_zero(tmp_path: Path) -> N
     assert "DRY-RUN" in out
     assert str(fake_backup.name) in out
     # RW-001：必须推导并打印绝对安全临时目标，且不等于生产库
-    assert "derived safe temp target:" in out
-    assert "restore_drill_" in out
-    assert "target != production db" in out
+    assert "restore target:" in out
+    assert "ab-restore-drill-" in out
+    assert "existing target and production overwrite are rejected" in out

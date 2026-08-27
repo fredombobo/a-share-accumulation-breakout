@@ -9,7 +9,7 @@ Tushare 唯一标准初始化入口（全项目只引用本文件）
 import os
 import tushare as ts
 pro = ts.pro_api(os.environ['TUSHARE_TOKEN'])
-pro._DataApi__http_url = 'http://a.sszhixia.cn/'
+pro._DataApi__http_url = 'https://a.sszhixia.cn/'
 ```
 
 其余模块统一：
@@ -38,6 +38,7 @@ import time
 import warnings
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 warnings.filterwarnings("ignore", message=r".*Eventlet is deprecated.*", category=DeprecationWarning)
 
@@ -63,8 +64,8 @@ from tushare.pro.client import DataApi
 # ═══════════════════════════════════════════════════════════
 # pro = ts.pro_api('<此 token>')
 DEFAULT_TOKEN = ""
-# pro._DataApi__http_url = 'http://a.sszhixia.cn/'
-DEFAULT_HTTP_URL = "http://a.sszhixia.cn/"
+# pro._DataApi__http_url = 'https://a.sszhixia.cn/'
+DEFAULT_HTTP_URL = "https://a.sszhixia.cn/"
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
@@ -89,10 +90,29 @@ def _resolve_token() -> str:
     return (os.environ.get("TUSHARE_TOKEN") or DEFAULT_TOKEN).strip()
 
 
+class DataTransportSecurityError(RuntimeError):
+    """供应商数据通道未满足 TLS 安全边界。"""
+
+
+def validate_http_url(raw: str) -> str:
+    """规范化数据网关地址，并拒绝明文、带凭据或无主机的 URL。"""
+    value = raw.strip().rstrip("/") + "/"
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() != "https":
+        raise DataTransportSecurityError(
+            "TUSHARE_HTTP_URL 必须使用 https://；不允许明文 HTTP 回退"
+        )
+    if not parsed.hostname:
+        raise DataTransportSecurityError("TUSHARE_HTTP_URL 缺少有效主机名")
+    if parsed.username or parsed.password:
+        raise DataTransportSecurityError("TUSHARE_HTTP_URL 不得内嵌凭据")
+    return value
+
+
 def _resolve_http_url() -> str:
     _load_dotenv()
     raw = (os.environ.get("TUSHARE_HTTP_URL") or DEFAULT_HTTP_URL).strip()
-    return raw.rstrip("/") + "/"
+    return validate_http_url(raw)
 
 
 def sanitize_error(error: object) -> str:
@@ -134,8 +154,14 @@ def _patch_dataapi_query_with_curl_cffi() -> None:
                     json=req_params,
                     impersonate="chrome",
                     timeout=timeout,
+                    verify=True,
+                    allow_redirects=False,
                 )
                 status_code = int(getattr(res, "status_code", 0) or 0)
+                if 300 <= status_code < 400:
+                    raise DataTransportSecurityError(
+                        f"数据网关拒绝重定向（HTTP {status_code}），防止 TLS 降级"
+                    )
                 if status_code >= 400:
                     raise RuntimeError(f"数据网关 HTTP {status_code}")
                 try:
@@ -169,11 +195,11 @@ def init_pro(token: str | None = None, http_url: str | None = None, timeout: int
     等价于::
 
         pro = ts.pro_api(token)
-        pro._DataApi__http_url = 'http://a.sszhixia.cn/'
+        pro._DataApi__http_url = 'https://a.sszhixia.cn/'
     """
     _patch_dataapi_query_with_curl_cffi()
     tok = (token or _resolve_token()).strip()
-    url = (http_url or _resolve_http_url()).strip().rstrip("/") + "/"
+    url = validate_http_url(http_url or _resolve_http_url())
 
     # ── 标准两行（勿在其他文件重复）──
     pro = ts.pro_api(tok, timeout=timeout)

@@ -16,7 +16,7 @@
 | 数据 | `data_fetch.py` / `local_store.py` / `sync_daily.py` | SQLite 增量 + Tushare 直连 |
 | 扫描 | `run_screener.py` | CLI 全市场扫描 → xlsx/md/charts |
 | Web | `web/backend_app.py` + `web/frontend` | FastAPI 8001 + React 3001 |
-| 客户端 | `tushare_init.py`（`tushare_http` 兼容转发） | `ts.pro_api` + `_DataApi__http_url=http://a.sszhixia.cn`（curl_cffi 发请求） |
+| 客户端 | `tushare_init.py`（`tushare_http` 兼容转发） | `ts.pro_api` + `_DataApi__http_url=https://a.sszhixia.cn`（curl_cffi + TLS 验证） |
 
 ## 运行前环境
 
@@ -46,7 +46,7 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 
 ## 硬约束（踩坑后写死）
 
-1. **Tushare 只从 `tushare_init.py` 取 pro**（`from tushare_init import pro`）。标准写法：`ts.pro_api(token)` + `pro._DataApi__http_url = "http://a.sszhixia.cn"`。底层必须 curl_cffi，禁止裸 requests 直连（TLS 指纹 → 10054）。
+1. **Tushare 只从 `tushare_init.py` 取 pro**（`from tushare_init import pro`）。标准写法：`ts.pro_api(token)` + `pro._DataApi__http_url = "https://a.sszhixia.cn"`。底层必须 curl_cffi 且开启证书验证；明文 HTTP 或重定向一律 fail-closed。
 2. **禁止全市场 fina_indicator 循环**；只对候选股 `sync_fina_for_codes`。
 3. **SQLite 每操作新连接**；upsert 用 `ON CONFLICT DO UPDATE`，禁止 `INSERT OR REPLACE`（会静默 NULL 列）。
 4. **sync 按交易日历 diff 补洞**，不要只看 MAX(trade_date)。

@@ -89,7 +89,7 @@ def collect_day_evidence(
         "collected_at": _now(),
         "identity": {
             "code_version": code_version,
-            "config_hash": config_hash,
+            "platform_config_hash": config_hash,
             "db": _db_identity(db_path),
         },
     }
@@ -114,11 +114,8 @@ def collect_day_evidence(
             if row:
                 manifest = {
                     "status": row[0], "sha256": row[1], "created_at": row[2],
+                    "code_version": row[3], "config_hash": row[4],
                 }
-                if row[3]:
-                    evidence["identity"]["code_version"] = row[3]
-                if row[4]:
-                    evidence["identity"]["config_hash"] = row[4]
                 evidence["manifest"] = manifest
         if "pt_reconciliation" in tables:
             row = conn.execute(

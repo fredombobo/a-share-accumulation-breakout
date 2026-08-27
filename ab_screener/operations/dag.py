@@ -17,7 +17,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -234,7 +234,11 @@ def _step_close_valuation(trade_date: str, *, ctx: dict[str, Any]) -> dict[str, 
 
 
 def _step_risk_pnl_snapshot(trade_date: str, *, ctx: dict[str, Any]) -> dict[str, Any]:
-    """快照 5：固化现金/市值/总资产/损益快照（幂等 upsert）。"""
+    """快照 5：固化损益快照和同一时点的不可变组合风险快照。"""
+    from ab_screener.application.portfolio_risk import build_portfolio_risk_report
+    from ab_screener.data.risk_repository import save_risk_snapshot
+    from paper_trading.risk_adapter import build_portfolio_state
+
     db = ctx["db_path"]
     mark = _mark_for_context(trade_date, ctx)
     with sqlite3.connect(db) as conn:
@@ -255,8 +259,91 @@ def _step_risk_pnl_snapshot(trade_date: str, *, ctx: dict[str, Any]) -> dict[str
              json.dumps(mark["holdings"], ensure_ascii=False)),
         )
         conn.commit()
+
+    state = build_portfolio_state(db, today=trade_date)
+    if state.equity_fen != int(mark["total_asset_fen"]):
+        raise DagStepError(
+            "RISK_VALUATION_MISMATCH",
+            "风险状态权益与日终估值不一致",
+            details={
+                "risk_equity_fen": state.equity_fen,
+                "mark_total_asset_fen": int(mark["total_asset_fen"]),
+            },
+        )
+    with sqlite3.connect(db) as conn:
+        equity_curve = [
+            int(row[0])
+            for row in conn.execute(
+                "SELECT total_asset_fen FROM pt_daily_snapshot"
+                " WHERE account_id=1 AND trade_date<=? ORDER BY trade_date",
+                (trade_date,),
+            ).fetchall()
+        ]
+        missing_capacity: list[str] = []
+        capacity_fen = 0
+        for holding in mark["holdings"]:
+            amounts = conn.execute(
+                "SELECT amount FROM daily WHERE ts_code=? AND trade_date<=?"
+                " AND amount IS NOT NULL AND amount>0"
+                " ORDER BY trade_date DESC LIMIT 20",
+                (holding["ts_code"], trade_date),
+            ).fetchall()
+            if not amounts:
+                missing_capacity.append(str(holding["ts_code"]))
+                continue
+            # Tushare daily.amount 单位为千元；按冻结 5% 参与率换算为分。
+            adv20_thousand_yuan = sum(
+                (Decimal(str(row[0])) for row in amounts), start=Decimal(0)
+            ) / Decimal(len(amounts))
+            capacity_fen += int(
+                (adv20_thousand_yuan * Decimal(1000) * Decimal(100)
+                 * Decimal("0.05")).to_integral_value(rounding=ROUND_FLOOR)
+            )
+
+    total_asset_fen = int(mark["total_asset_fen"])
+    position_weights = (
+        [float(Decimal(int(item["market_value_fen"])) / Decimal(total_asset_fen))
+         for item in mark["holdings"]]
+        if total_asset_fen > 0 else []
+    )
+    report = build_portfolio_risk_report(
+        state,
+        equity_curve=[float(value) for value in equity_curve],
+        position_weights=position_weights,
+        daily_capacity_fen=capacity_fen,
+    )
+    report["inputs"] = {
+        "trade_date": trade_date,
+        "market_version": f"daily:{trade_date}",
+        "equity_points": len(equity_curve),
+        "position_weights": position_weights,
+        "daily_capacity_fen": capacity_fen,
+        "capacity_missing_codes": missing_capacity,
+        "participation_bps": 500,
+        "amount_unit": "thousand_yuan",
+    }
+    component_statuses = [
+        str(report["metrics"].get("status") or "INSUFFICIENT"),
+        str(report["concentration"].get("status") or "INSUFFICIENT"),
+    ]
+    report["status"] = (
+        "OK"
+        if all(status == "OK" for status in component_statuses) and not missing_capacity
+        else "INSUFFICIENT"
+    )
+    scenarios = dict(report.pop("scenarios"))
+    with sqlite3.connect(db) as conn:
+        risk_snapshot_id = save_risk_snapshot(
+            conn,
+            trade_date=trade_date,
+            market_version=f"daily:{trade_date}",
+            metrics=report,
+            scenarios=scenarios,
+        )
     return {
         "snapshot_ok": True,
+        "risk_snapshot_id": risk_snapshot_id,
+        "risk_status": report["status"],
         "total_asset_fen": mark["total_asset_fen"],
         "unrealized_pnl_fen": mark["unrealized_pnl_fen"],
     }

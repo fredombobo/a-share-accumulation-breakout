@@ -99,3 +99,19 @@ def test_legacy_web_state_honours_injected_absolute_db_path():
 
     assert legacy_state._DB == Path(os.environ["AB_DB_PATH"])
     assert legacy_state._store.db_path == legacy_state._DB
+
+
+def test_local_store_default_path_honours_absolute_env(tmp_path, monkeypatch):
+    from ab_screener.local_store import default_db_path
+
+    expected = (tmp_path / "authoritative.db").resolve()
+    monkeypatch.setenv("AB_DB_PATH", str(expected))
+    assert default_db_path() == expected
+
+
+def test_local_store_default_path_rejects_relative_env(monkeypatch):
+    from ab_screener.local_store import default_db_path
+
+    monkeypatch.setenv("AB_DB_PATH", "runtime/ambiguous.db")
+    with pytest.raises(ValueError, match="必须是绝对路径"):
+        default_db_path()

@@ -39,8 +39,18 @@ def save_risk_snapshot(
             "risk_snapshots 表不存在：先运行 scripts/migrate_v2.py --apply（fail-closed）"
         )
     snapshot_id = hashlib.sha256(
-        json.dumps({"date": trade_date, "market": market_version, "metrics": metrics},
-                   sort_keys=True, ensure_ascii=False).encode("utf-8")
+        json.dumps(
+            {
+                "date": trade_date,
+                "market": market_version,
+                "rule": RISK_RULE_VERSION,
+                "config": RISK_CONFIG_VERSION,
+                "metrics": metrics,
+                "scenarios": scenarios,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode("utf-8")
     ).hexdigest()[:16]
     existing = conn.execute(
         "SELECT 1 FROM risk_snapshots WHERE snapshot_id=?", (snapshot_id,)
@@ -71,7 +81,9 @@ def latest_risk_snapshot(
     if trade_date:
         sql += " WHERE trade_date=?"
         params.append(trade_date)
-    row = conn.execute(sql + " ORDER BY created_at DESC LIMIT 1", params).fetchone()
+    row = conn.execute(
+        sql + " ORDER BY created_at DESC, rowid DESC LIMIT 1", params
+    ).fetchone()
     if row is None:
         return None
     return {

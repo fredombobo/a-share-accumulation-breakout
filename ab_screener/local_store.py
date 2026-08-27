@@ -35,6 +35,23 @@ _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 _DB_DIR = Path(__file__).resolve().parents[1] / "runtime"
 _DB_PATH = _DB_DIR / "stock_data.db"
+_BUILTIN_DB_PATH = _DB_PATH
+
+
+def default_db_path() -> Path:
+    """解析唯一默认数据库路径；显式 AB_DB_PATH 必须为绝对路径。"""
+    # Preserve the long-standing test/application injection seam.  A caller
+    # that deliberately replaces the module constant is more specific than a
+    # process-wide environment inherited from an assembled Web app.
+    if _DB_PATH != _BUILTIN_DB_PATH:
+        return Path(_DB_PATH).resolve()
+    configured = (os.environ.get("AB_DB_PATH") or "").strip()
+    if not configured:
+        return _DB_PATH
+    path = Path(configured)
+    if not path.is_absolute():
+        raise ValueError(f"AB_DB_PATH 必须是绝对路径: {configured!r}")
+    return path.resolve()
 
 
 def _bounded_fetch_dates(
@@ -212,7 +229,7 @@ _ALLOWED_TABLES = {
 
 class LocalStore:
     def __init__(self, db_path: str | Path | None = None):
-        self.db_path = Path(db_path or _DB_PATH)
+        self.db_path = Path(db_path) if db_path is not None else default_db_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
         # 阶段1：paper_trading 领域迁移（schema_version 幂等；延迟 import 防循环）

@@ -20,6 +20,7 @@ from ab_screener.operations.scheduler import SchedulerRunner
 from paper_trading.account import commit_import, create_account
 from paper_trading.migrations import run_migrations
 from paper_trading.orders import confirm_order, create_buy_draft
+from scripts.run_eod_v2 import EodOperatorError, run_eod
 from tests.paper_market_fixture import seed_fresh_neutral_benchmark
 
 TRADE_DATE = "20260807"
@@ -119,11 +120,16 @@ def test_closed_loop_full_eod_completes(closed_loop_db):
         dag_run = c.execute(
             "SELECT status FROM dag_runs WHERE trade_date=?", (TRADE_DATE,),
         ).fetchone()
+        risk = c.execute(
+            "SELECT market_version,rule_version,config_version FROM risk_snapshots"
+            " WHERE trade_date=?", (TRADE_DATE,),
+        ).fetchone()
     assert manifest[0] == "COMPLETE"
     assert cycle[0] == "DONE"
     assert rec[0] == "OK"
     assert fills >= 1
     assert dag_run[0] == "COMPLETED"
+    assert risk == ("daily:20260807", "risk-v2", "robust_personal_v2")
     # 审计链有效（DAG_RUN_START / DAG_RUN_FINISHED 等）
     from ab_screener.application.audit_service import verify_audit_chain
 
@@ -333,3 +339,46 @@ def test_outcome_backfill_uses_signal_date_fill_and_quote_available_at(
         10_123_457,
         "2026-08-14T16:05:00+08:00",
     )
+
+
+def test_eod_operator_closes_audits_and_collects_soak(closed_loop_db, tmp_path: Path):
+    payload = run_eod(
+        db_path=closed_loop_db,
+        trade_date=TRADE_DATE,
+        anchor_dir=tmp_path / "anchors",
+        signing_key_file=tmp_path / "audit-signing.key",
+        soak_dir=tmp_path / "soak",
+        initialize_signing_key=True,
+        create_daily_backup=False,
+        identity_override={
+            "code_version": "test-git-sha",
+            "db_fingerprint": "test-db",
+            "worktree_clean": True,
+        },
+        resolved_config_override={"resolved_hash": "platform-test"},
+    )
+
+    assert payload["status"] == "PASS"
+    assert payload["audit"]["chain_valid"] is True
+    assert payload["audit"]["anchor_valid"] is True
+    assert Path(payload["soak_evidence"]).is_file()
+    assert payload["soak"]["count"] == 1
+
+
+def test_eod_operator_rejects_stale_scan_identity(closed_loop_db, tmp_path: Path):
+    with pytest.raises(EodOperatorError, match="扫描不属于当前构建版本"):
+        run_eod(
+            db_path=closed_loop_db,
+            trade_date=TRADE_DATE,
+            anchor_dir=tmp_path / "anchors",
+            signing_key_file=tmp_path / "audit-signing.key",
+            soak_dir=tmp_path / "soak",
+            initialize_signing_key=True,
+            create_daily_backup=False,
+            identity_override={
+                "code_version": "other-build",
+                "db_fingerprint": "test-db",
+                "worktree_clean": True,
+            },
+            resolved_config_override={"resolved_hash": "platform-test"},
+        )

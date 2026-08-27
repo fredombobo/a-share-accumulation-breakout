@@ -189,7 +189,9 @@ def test_evidence_includes_identity_and_chain(db, tmp_path):
     assert data["trade_date"] == "20260818"
     assert data["collected_at"]
     assert data["identity"]["code_version"] == "git-x"
-    assert data["identity"]["config_hash"] == "cfg-x"
+    assert data["identity"]["platform_config_hash"] == "cfg-x"
+    assert data["manifest"]["code_version"] == "git-x"
+    assert data["manifest"]["config_hash"] == "cfg-x"
     assert data["dag"]["status"] == "COMPLETED"
     assert data["manifest"]["status"] == "COMPLETE"
     assert data["manifest"]["sha256"] == "sha256-20260818"

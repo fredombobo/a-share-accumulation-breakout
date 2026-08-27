@@ -11,6 +11,7 @@ from ab_screener.operations.backup import (
     backup_ok,
     create_backup,
     prune_old_backups,
+    restore_verified_backup,
 )
 from ab_screener.operations.health import system_health
 
@@ -31,11 +32,44 @@ def test_backup_created_verified(db: str, tmp_path: Path):
     root.mkdir()
     result = create_backup(db, root)
     assert Path(result["path"]).is_file()
+    assert Path(result["manifest_path"]).is_file()
     assert result["tables"] >= 1
     # 校验：备份可读且行数一致
     conn = sqlite3.connect(result["path"])
     assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
     conn.close()
+
+
+def test_compressed_backup_restores_and_matches_all_tables(db: str, tmp_path: Path):
+    root = tmp_path / "compressed"
+    root.mkdir()
+    result = create_backup(db, root, compressed=True)
+    assert result["path"].endswith(".db.gz")
+
+    target = tmp_path / "restored.db"
+    restored = restore_verified_backup(result["path"], target)
+
+    assert restored["status"] == "PASS"
+    assert restored["table_hashes_match"] is True
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
+
+
+def test_restore_rejects_existing_target_and_tampered_archive(db: str, tmp_path: Path):
+    root = tmp_path / "tamper"
+    root.mkdir()
+    result = create_backup(db, root, compressed=True)
+    existing = tmp_path / "existing.db"
+    existing.write_bytes(b"do-not-overwrite")
+    with pytest.raises(BackupError, match="拒绝覆盖"):
+        restore_verified_backup(result["path"], existing)
+    assert existing.read_bytes() == b"do-not-overwrite"
+
+    archive = Path(result["path"])
+    with archive.open("ab") as handle:
+        handle.write(b"tamper")
+    with pytest.raises(BackupError, match="篡改"):
+        restore_verified_backup(archive, tmp_path / "new-target.db")
 
 
 def test_backup_atomic_and_prune_keeps_unique(db: str, tmp_path: Path):

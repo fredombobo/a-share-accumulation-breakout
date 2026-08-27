@@ -5,7 +5,7 @@ Tushare 兼容层 —— 请改用 tushare_init
 
     import tushare as ts
     pro = ts.pro_api(TOKEN)
-    pro._DataApi__http_url = 'http://a.sszhixia.cn'
+    pro._DataApi__http_url = 'https://a.sszhixia.cn'
 
 新代码::
 

@@ -149,10 +149,11 @@ def test_same_scan_run_with_changed_bars_appends_new_input_revision(db_path, mon
     )
 
 
-def test_signal_persistence_flag_gated_off_is_noop(db_path):
-    """生产默认 V2_STRATEGY_REGISTRY_ENABLED=false：persist_scan_signals 为 no-op。"""
+def test_signal_persistence_flag_gated_off_is_noop(db_path, monkeypatch):
+    """显式关闭 V2_STRATEGY_REGISTRY_ENABLED 时持久化必须为 no-op。"""
     from ab_screener.api.routers import legacy_scan
 
+    monkeypatch.setenv("V2_STRATEGY_REGISTRY_ENABLED", "false")
     result = legacy_scan.persist_scan_signals(
         db_path, scan_run_id="RUN-001", candidate_codes=["000001.SZ"],
         strategy_version="v1", bars_reader=lambda code: _bars(),
