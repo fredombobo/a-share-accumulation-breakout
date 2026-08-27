@@ -206,22 +206,51 @@ def _db_fingerprint(db_path: str | Path) -> str:
 
 
 def _seed_sample_dates(db_path: str | Path, seed: int, n: int = PARITY_DAYS) -> list[str]:
-    """固定种子抽取 n 个 PIT 已覆盖的历史交易日（daily_history 与 legacy daily 交集）。
+    """固定种子抽取 n 个拥有共同标的的高覆盖交易日。
 
-    影子 parity 只比较「两个读取路径都存在」的日期；PIT 覆盖不足由
-    coverage/shortfall 字段单独暴露，避免把 PIT 缺口误当成字段不一致。
+    不能分别随机日期再找标的：历史 PIT 可能包含多个互不相交的稀疏回填分区，
+    那种做法会在明明存在完整 20×5 窗口时得到 0 个标的。这里先取覆盖率最高
+    的候选日期，再寻找至少 20 个共同标的的五日组合。
     """
     with _connect(db_path) as conn:
-        legacy = {r[0] for r in conn.execute(
-            "SELECT DISTINCT trade_date FROM daily").fetchall()}
-        pit_dates = {r[0] for r in conn.execute(
-            "SELECT DISTINCT trade_date FROM daily_history").fetchall()}
-    common = sorted(legacy & pit_dates)
-    if not common:
+        candidate_rows = conn.execute(
+            "SELECT h.trade_date,COUNT(DISTINCT h.ts_code) AS covered"
+            " FROM daily_history h JOIN daily d"
+            " ON d.ts_code=h.ts_code AND d.trade_date=h.trade_date"
+            " GROUP BY h.trade_date HAVING covered>=?"
+            " ORDER BY covered DESC,h.trade_date DESC LIMIT 40",
+            (PARITY_CODES,),
+        ).fetchall()
+        candidates = [str(row[0]) for row in candidate_rows]
+        coverage: dict[str, set[str]] = {}
+        for trade_date in candidates:
+            coverage[trade_date] = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT DISTINCT h.ts_code FROM daily_history h JOIN daily d"
+                    " ON d.ts_code=h.ts_code AND d.trade_date=h.trade_date"
+                    " WHERE h.trade_date=?",
+                    (trade_date,),
+                ).fetchall()
+            }
+    if len(candidates) < n:
         return []
     rng = random.Random(seed)
-    rng.shuffle(common)
-    return sorted(common[:n])
+    rng.shuffle(candidates)
+    for start in candidates:
+        selected = [start]
+        shared_codes = set(coverage[start])
+        for candidate in candidates:
+            if candidate == start:
+                continue
+            intersection = shared_codes & coverage[candidate]
+            if len(intersection) < PARITY_CODES:
+                continue
+            selected.append(candidate)
+            shared_codes = intersection
+            if len(selected) == n:
+                return sorted(selected)
+    return []
 
 
 def shadow_parity(
@@ -334,9 +363,10 @@ def _sample_codes_covered(
     legacy_codes = {r[0] for r in rows}
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT DISTINCT ts_code FROM daily_history"
-            f" WHERE trade_date IN ({ph})",
-            (*sample_dates,),
+            "SELECT ts_code FROM daily_history"
+            f" WHERE trade_date IN ({ph}) GROUP BY ts_code"
+            " HAVING COUNT(DISTINCT trade_date)=?",
+            (*sample_dates, len(sample_dates)),
         ).fetchall()
     pit_codes = {r[0] for r in rows}
     covered = sorted(legacy_codes & pit_codes)

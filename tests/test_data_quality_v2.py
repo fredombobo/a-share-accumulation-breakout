@@ -273,3 +273,57 @@ def test_shadow_parity_insufficient_when_default_sample_too_small(tmp_path: Path
     report = shadow_parity(path, seed=7, decision_at="2026-08-11T00:00:00+08:00")
     assert report["result"] == "INSUFFICIENT"
     assert "样本不足" in report["reason"]
+
+
+def test_shadow_parity_default_sampling_finds_dense_window_among_sparse_dates(db: str):
+    """默认采样应找到真实 20×5 交集，不被互不相交的稀疏 PIT 日期干扰。"""
+    from ab_screener.data.pit_writer import write_plain
+
+    _seed_full_parity(db)
+    conn = sqlite3.connect(db)
+    try:
+        for day_index, trade_date in enumerate(
+            ["20260810", "20260811", "20260812", "20260813", "20260814"]
+        ):
+            rows: list[dict] = []
+            for code_index in range(20):
+                code = f"{300000 + day_index * 100 + code_index:06d}.SZ"
+                price = 20.0 + day_index + code_index / 100
+                conn.execute(
+                    "INSERT INTO daily(ts_code,trade_date,open,high,low,close,vol,amount)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (code, trade_date, price, price + 0.2, price - 0.2,
+                     price + 0.1, 1000.0, 1e7),
+                )
+                rows.append(
+                    {
+                        "ts_code": code,
+                        "trade_date": trade_date,
+                        "open": price,
+                        "high": price + 0.2,
+                        "low": price - 0.2,
+                        "close": price + 0.1,
+                        "vol": 1000.0,
+                        "amount": 1e7,
+                    }
+                )
+            write_plain(
+                conn,
+                "daily",
+                rows,
+                source="tushare",
+                available_at=f"2026-08-{10 + day_index:02d}T16:00:00+08:00",
+                partition_key=trade_date,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = shadow_parity(
+        db,
+        seed=7,
+        decision_at="2026-08-20T00:00:00+08:00",
+    )
+    assert report["result"] == "PASS"
+    assert report["samples_checked"] == 100
+    assert report["pairs_compared"] == 600
