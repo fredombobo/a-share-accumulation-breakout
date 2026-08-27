@@ -29,6 +29,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from ab_screener.data.market_sync_writer import reconcile_market_partition
+
 _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 _DB_DIR = Path(__file__).resolve().parents[1] / "runtime"
@@ -74,6 +76,42 @@ def _missing_dates_in_lookback(
     return [date for date in window if date not in existing_dates]
 
 
+def _completed_open_dates(
+    open_dates: list[str],
+    *,
+    now: datetime | None = None,
+) -> list[str]:
+    """Exclude an in-progress Shanghai trading day from close-data sync."""
+    current = now or datetime.now(_SHANGHAI_TZ)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=_SHANGHAI_TZ)
+    else:
+        current = current.astimezone(_SHANGHAI_TZ)
+    dates = sorted({str(value)[:8] for value in open_dates if value})
+    today = current.strftime("%Y%m%d")
+    if dates and dates[-1] == today and (current.hour, current.minute) < (16, 15):
+        return dates[:-1]
+    return dates
+
+
+def _reconciliation_targets(
+    open_dates: list[str],
+    existing_dates: set[str],
+    *,
+    lookback: int,
+    force: bool,
+    recent: int = 5,
+) -> tuple[list[str], list[str]]:
+    """Return requested missing dates and source-reconciled target dates."""
+    window_size = min(max(0, int(lookback)), len(open_dates))
+    window = open_dates[-window_size:] if window_size else []
+    missing = window if force else [date for date in window if date not in existing_dates]
+    recent_count = min(max(0, int(recent)), len(window))
+    recent_dates = window[-recent_count:] if recent_count else []
+    targets = sorted(set(missing) | set(recent_dates))
+    return missing, targets
+
+
 def _sync_benchmark_index(
     store: LocalStore,
     pro: Any,
@@ -82,12 +120,14 @@ def _sync_benchmark_index(
     benchmark_code: str = "000300.SH",
     max_attempts: int = 3,
     retry_delay: float = 0.5,
+    reconcile_days: int = 5,
 ) -> dict[str, Any]:
     """Incrementally persist the benchmark used by research and data gates.
 
     Benchmark rows share the canonical ``daily`` table, but retain their
     provider endpoint in ``source`` so release evidence can distinguish index
-    data from stock quotations. Existing dates are never fetched again.
+    data from stock quotations. Missing dates and the latest completed dates
+    are reconciled so provider revisions cannot silently diverge from PIT.
     """
     existing = store.load_daily(ts_codes=[benchmark_code])
     existing_dates = (
@@ -96,16 +136,25 @@ def _sync_benchmark_index(
         else set()
     )
     missing_dates = [date for date in open_dates if date not in existing_dates]
-    if not missing_dates:
-        return {"dates": [], "rows": 0}
+    recent_count = min(max(0, reconcile_days), len(open_dates))
+    recent_dates = open_dates[-recent_count:] if recent_count else []
+    checked_dates = sorted(set(missing_dates) | set(recent_dates))
+    if not checked_dates:
+        return {
+            "dates": [],
+            "checked_dates": [],
+            "failed_dates": [],
+            "rows": 0,
+            "appended_revisions": 0,
+        }
 
     attempts = max(1, int(max_attempts))
     for attempt in range(1, attempts + 1):
         try:
             frame = pro.index_daily(
                 ts_code=benchmark_code,
-                start_date=min(missing_dates),
-                end_date=max(missing_dates),
+                start_date=min(checked_dates),
+                end_date=max(checked_dates),
             )
             break
         except Exception:
@@ -113,21 +162,43 @@ def _sync_benchmark_index(
                 raise
             sleep(max(0.0, retry_delay) * attempt)
     if frame is None or frame.empty:
-        return {"dates": missing_dates, "rows": 0}
+        return {
+            "dates": missing_dates,
+            "checked_dates": checked_dates,
+            "failed_dates": checked_dates,
+            "rows": 0,
+            "appended_revisions": 0,
+        }
 
     frame = frame.copy()
     frame["trade_date"] = frame["trade_date"].astype(str)
-    frame = frame.loc[frame["trade_date"].isin(set(missing_dates))]
-    if frame.empty:
-        return {"dates": missing_dates, "rows": 0}
-
-    now_iso = datetime.now(_SHANGHAI_TZ).isoformat(timespec="seconds")
-    frame["ingested_at"] = now_iso
-    frame["available_at"] = now_iso
-    frame["source"] = "tushare_index_daily"
-    frame["revision"] = 1
-    frame["is_legacy"] = 0
-    return {"dates": missing_dates, "rows": store.upsert_daily(frame)}
+    frame = frame.loc[frame["trade_date"].isin(set(checked_dates))]
+    available_at = datetime.now(_SHANGHAI_TZ).isoformat(timespec="seconds")
+    rows = 0
+    appended_revisions = 0
+    failed_dates: list[str] = []
+    for trade_date in checked_dates:
+        partition = frame.loc[frame["trade_date"] == trade_date]
+        if partition.empty:
+            failed_dates.append(trade_date)
+            continue
+        result = reconcile_market_partition(
+            store.db_path,
+            "daily",
+            partition,
+            trade_date=trade_date,
+            available_at=available_at,
+            source="tushare_index_daily",
+        )
+        rows += int(result["canonical_updated"])
+        appended_revisions += int(result["appended_revisions"])
+    return {
+        "dates": missing_dates,
+        "checked_dates": checked_dates,
+        "failed_dates": failed_dates,
+        "rows": rows,
+        "appended_revisions": appended_revisions,
+    }
 
 
 # 允许的表名白名单（防注入）
@@ -652,7 +723,7 @@ def sync_from_tushare(
     from tushare_init import pro, sanitize_error
 
     store = LocalStore()
-    now = datetime.now()
+    now = datetime.now(_SHANGHAI_TZ)
 
     # ── 交易日历（覆盖到今天的开市日） ──
     cal_start = (now - timedelta(days=days_back * 2)).strftime("%Y%m%d")
@@ -677,6 +748,9 @@ def sync_from_tushare(
     except Exception:  # noqa: BLE001
         pass  # 日历落库失败不阻断行情同步
 
+    # 日线/资金流是收盘数据。16:15 前的当日仍在形成中，禁止写入或标成完成。
+    open_dates = _completed_open_dates(open_dates, now=now)
+
     # ── stock_basic ──
     if verbose:
         print("[sync] 刷新股票列表…")
@@ -697,19 +771,22 @@ def sync_from_tushare(
 
     # ── daily / daily_basic 增量（对比库内 DISTINCT 日期求差集，中间空洞也补） ──
     db_daily = set(store.distinct_dates("daily"))
-    if force:
-        new_dates = open_dates[-min(days_back, len(open_dates)):]
-    else:
-        new_dates = [d for d in open_dates if d not in db_daily]
-    # 若库已全，保持最近 days_back 窗口不回退
-    if not new_dates and not db_daily:
-        new_dates = open_dates[-min(days_back, len(open_dates)):]
+    new_dates, daily_targets = _reconciliation_targets(
+        open_dates,
+        db_daily,
+        lookback=days_back,
+        force=force,
+    )
     if verbose:
-        print(f"[sync] daily: 库内 {len(db_daily)} 日，需拉 {len(new_dates)} 个交易日（含空洞补缺）")
+        print(
+            f"[sync] daily: 库内 {len(db_daily)} 日，新增/补洞 {len(new_dates)} 日，"
+            f"源端复核 {len(daily_targets)} 日"
+        )
 
     daily_rows = dbbasic_rows = mf_rows = 0
+    daily_revisions = dbbasic_revisions = mf_revisions = 0
     failed_daily: list[str] = []
-    if new_dates:
+    if daily_targets:
         def fetch_daily_bundle(d: str) -> tuple[str, tuple[pd.DataFrame, pd.DataFrame, str | None]]:
             try:
                 dd = pro.daily(trade_date=d)
@@ -718,61 +795,76 @@ def sync_from_tushare(
             except Exception as e:  # noqa: BLE001
                 return d, (pd.DataFrame(), pd.DataFrame(), sanitize_error(e)[:160])
 
-        bundles = _bounded_fetch_dates(new_dates, fetch_daily_bundle, workers=fetch_workers)
-        daily_batch: list[pd.DataFrame] = []
-        basic_batch: list[pd.DataFrame] = []
+        bundles = _bounded_fetch_dates(
+            daily_targets, fetch_daily_bundle, workers=fetch_workers
+        )
         for i, (d, bundle) in enumerate(bundles):
             dd, db, error = bundle
             if error:
                 failed_daily.append(d)
-                print(f"  [warn] {d} 同步失败: {error}")
+                if verbose:
+                    print(f"  [warn] {d} 同步失败: {error}")
                 continue
-            if not dd.empty:
-                # 新同步数据填真实抓取完成时间 + 来源标记（旧数据标 legacy_backfill）
-                now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-                dd = dd.copy()
-                dd["ingested_at"] = now_iso
-                dd["available_at"] = now_iso
-                dd["source"] = "tushare"
-                dd["revision"] = 1
-                dd["is_legacy"] = 0
-                daily_batch.append(dd)
-            if not db.empty:
-                basic_batch.append(db)
-            if len(daily_batch) >= 10:
-                daily_rows += store.upsert_daily(pd.concat(daily_batch, ignore_index=True))
-                daily_batch.clear()
-            if len(basic_batch) >= 10:
-                dbbasic_rows += store.upsert_daily_basic(pd.concat(basic_batch, ignore_index=True))
-                basic_batch.clear()
+            if dd is None or dd.empty or db is None or db.empty:
+                failed_daily.append(d)
+                if verbose:
+                    missing = []
+                    if dd is None or dd.empty:
+                        missing.append("daily")
+                    if db is None or db.empty:
+                        missing.append("daily_basic")
+                    print(f"  [warn] {d} 数据源返回空: {','.join(missing)}")
+                continue
+            available_at = datetime.now(_SHANGHAI_TZ).isoformat(timespec="seconds")
+            daily_result = reconcile_market_partition(
+                store.db_path,
+                "daily",
+                dd,
+                trade_date=d,
+                available_at=available_at,
+                source="tushare",
+            )
+            basic_result = reconcile_market_partition(
+                store.db_path,
+                "daily_basic",
+                db,
+                trade_date=d,
+                available_at=available_at,
+                source="tushare_daily_basic",
+            )
+            daily_rows += int(daily_result["canonical_updated"])
+            dbbasic_rows += int(basic_result["canonical_updated"])
+            daily_revisions += int(daily_result["appended_revisions"])
+            dbbasic_revisions += int(basic_result["appended_revisions"])
             if verbose and (i + 1) % 10 == 0:
-                print(f"  ...已同步 {i+1}/{len(new_dates)} 日")
-        if daily_batch:
-            daily_rows += store.upsert_daily(pd.concat(daily_batch, ignore_index=True))
-        if basic_batch:
-            dbbasic_rows += store.upsert_daily_basic(pd.concat(basic_batch, ignore_index=True))
+                print(f"  ...已同步 {i+1}/{len(daily_targets)} 日")
 
     benchmark_result = _sync_benchmark_index(store, pro, open_dates)
     if verbose:
         print(
             "[sync] benchmark 000300.SH: "
-            f"requested={len(benchmark_result['dates'])} "
-            f"written={benchmark_result['rows']}"
+            f"missing={len(benchmark_result['dates'])} "
+            f"checked={len(benchmark_result['checked_dates'])} "
+            f"written={benchmark_result['rows']} "
+            f"failed={len(benchmark_result['failed_dates'])}"
         )
 
     # ── moneyflow 增量（同样对比 DISTINCT 日期求差集补洞） ──
     mf_lookback = moneyflow_days or days_back
     db_mf = set(store.distinct_dates("moneyflow"))
-    if force:
-        mf_dates = open_dates[-min(mf_lookback, len(open_dates)):]
-    else:
-        mf_dates = _missing_dates_in_lookback(
-            open_dates, db_mf, lookback=mf_lookback
-        )
+    mf_dates, moneyflow_targets = _reconciliation_targets(
+        open_dates,
+        db_mf,
+        lookback=mf_lookback,
+        force=force,
+    )
     if verbose:
-        print(f"[sync] moneyflow: 库内 {len(db_mf)} 日，需拉 {len(mf_dates)} 个交易日（含空洞补缺）")
+        print(
+            f"[sync] moneyflow: 库内 {len(db_mf)} 日，新增/补洞 {len(mf_dates)} 日，"
+            f"源端复核 {len(moneyflow_targets)} 日"
+        )
     failed_moneyflow: list[str] = []
-    if mf_dates:
+    if moneyflow_targets:
         def fetch_moneyflow(d: str) -> tuple[str, tuple[pd.DataFrame, str | None]]:
             try:
                 m = pro.moneyflow(trade_date=d)
@@ -781,30 +873,43 @@ def sync_from_tushare(
                 return d, (pd.DataFrame(), sanitize_error(e)[:160])
 
         moneyflow_bundles = _bounded_fetch_dates(
-            mf_dates, fetch_moneyflow, workers=fetch_workers
+            moneyflow_targets, fetch_moneyflow, workers=fetch_workers
         )
-        moneyflow_batch: list[pd.DataFrame] = []
         for i, (d, bundle) in enumerate(moneyflow_bundles):
             m, error = bundle
             if error:
                 failed_moneyflow.append(d)
-                print(f"  [warn] {d} moneyflow 同步失败: {error}")
+                if verbose:
+                    print(f"  [warn] {d} moneyflow 同步失败: {error}")
                 continue
-            if not m.empty:
-                moneyflow_batch.append(m)
-            if len(moneyflow_batch) >= 10:
-                mf_rows += store.upsert_moneyflow(pd.concat(moneyflow_batch, ignore_index=True))
-                moneyflow_batch.clear()
+            if m is None or m.empty:
+                failed_moneyflow.append(d)
+                if verbose:
+                    print(f"  [warn] {d} moneyflow 数据源返回空")
+                continue
+            available_at = datetime.now(_SHANGHAI_TZ).isoformat(timespec="seconds")
+            moneyflow_result = reconcile_market_partition(
+                store.db_path,
+                "moneyflow",
+                m,
+                trade_date=d,
+                available_at=available_at,
+                source="tushare_moneyflow",
+            )
+            mf_rows += int(moneyflow_result["canonical_updated"])
+            mf_revisions += int(moneyflow_result["appended_revisions"])
             if verbose and (i + 1) % 5 == 0:
-                print(f"  ...资金流已同步 {i+1}/{len(mf_dates)} 日")
-        if moneyflow_batch:
-            mf_rows += store.upsert_moneyflow(pd.concat(moneyflow_batch, ignore_index=True))
+                print(f"  ...资金流已同步 {i+1}/{len(moneyflow_targets)} 日")
 
     return {
         "daily_dates": new_dates,
+        "daily_checked_dates": daily_targets,
         "benchmark_dates": benchmark_result["dates"],
+        "benchmark_checked_dates": benchmark_result["checked_dates"],
         "moneyflow_dates": mf_dates,
-        "failed_daily_dates": failed_daily,
+        "moneyflow_checked_dates": moneyflow_targets,
+        "failed_daily_dates": sorted(set(failed_daily)),
+        "failed_benchmark_dates": benchmark_result["failed_dates"],
         "failed_moneyflow_dates": failed_moneyflow,
         "rows": {
             "daily": daily_rows,
@@ -812,6 +917,12 @@ def sync_from_tushare(
             "benchmark": benchmark_result["rows"],
             "moneyflow": mf_rows,
             "fina": 0,
+        },
+        "appended_revisions": {
+            "daily": daily_revisions,
+            "daily_basic": dbbasic_revisions,
+            "benchmark": benchmark_result["appended_revisions"],
+            "moneyflow": mf_revisions,
         },
         "latest_daily": store.max_trade_date("daily"),
         "latest_moneyflow": store.max_trade_date("moneyflow"),

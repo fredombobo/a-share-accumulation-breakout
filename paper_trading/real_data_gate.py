@@ -308,6 +308,29 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
     ).fetchone()[0]
     if no_meta:
         issues.append(f"{no_meta} 行缺元数据（available_at/source）")
+    # 最新完成交易日必须同时存在 canonical projection 与 PIT append-only
+    # history，且逐标的内容一致；否则开启 PIT 读会产生双路径漂移。
+    latest_pit_partitions: dict[str, dict] = {}
+    try:
+        from ab_screener.data.market_sync_writer import market_partition_pit_status
+
+        for dataset in ("daily", "daily_basic", "moneyflow"):
+            status = market_partition_pit_status(
+                db_path,
+                dataset,
+                str(local_max or ""),
+            )
+            latest_pit_partitions[dataset] = status
+            if not status["passed"]:
+                issues.append(
+                    f"{dataset}/{local_max} canonical/PIT 不一致: "
+                    f"缺历史 {status['missing_history']}、孤立历史 "
+                    f"{status['orphan_history']}、内容差异 "
+                    f"{status['content_mismatches']}、元数据差异 "
+                    f"{status['metadata_mismatches']}"
+                )
+    except Exception as exc:  # noqa: BLE001
+        issues.append(f"最新分区 PIT 完整性检查失败: {sanitize_error(exc)}")
     # 7) 固定种子抽样比对（按日期批量拉取，避免 100 次串行 API）。
     print("[gate] 4/7 执行固定种子行情比对", file=sys.stderr)
     seed_codes: list[str] = []
@@ -451,6 +474,7 @@ def run_gate(db_path: str | Path, days: int = 730, report_dir: str | Path | None
         "source_latest_completed_trade_date": last_open,
         "benchmark_code": "000300.SH",
         "benchmark_latest_trade_date": benchmark_as_of,
+        "latest_pit_partitions": latest_pit_partitions,
         "generated_at": _now(),
         "code_version": _code_version(),
         "config_hash": _config_hash(),

@@ -8,18 +8,25 @@ local_store._upsert 主键-only df 不抛错 —— 离线骨架测试（B14）
 集成阶段执行方式：
     C:\\Python314\\python.exe -m unittest tests.test_local_store
 """
+import sqlite3
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import closing
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from ab_screener.data.migration_registry import apply_pending
 from local_store import (
     LocalStore,
     _bounded_fetch_dates,
+    _completed_open_dates,
     _missing_dates_in_lookback,
+    _reconciliation_targets,
     _sync_benchmark_index,
 )
 
@@ -52,11 +59,52 @@ class BoundedHistoryFetchTest(unittest.TestCase):
             ["20260103"],
         )
 
+    def test_current_open_day_is_not_complete_before_close_cutoff(self) -> None:
+        dates = ["20260826", "20260827"]
+        tz = ZoneInfo("Asia/Shanghai")
+        self.assertEqual(
+            _completed_open_dates(
+                dates,
+                now=datetime(2026, 8, 27, 16, 14, tzinfo=tz),
+            ),
+            ["20260826"],
+        )
+        self.assertEqual(
+            _completed_open_dates(
+                dates,
+                now=datetime(2026, 8, 27, 16, 15, tzinfo=tz),
+            ),
+            dates,
+        )
+
+    def test_reconciliation_includes_gaps_and_last_five_completed_days(self) -> None:
+        dates = [f"202608{day:02d}" for day in range(1, 8)]
+        missing, targets = _reconciliation_targets(
+            dates,
+            set(dates) - {"20260802"},
+            lookback=7,
+            force=False,
+        )
+        self.assertEqual(missing, ["20260802"])
+        self.assertEqual(
+            targets,
+            [
+                "20260802",
+                "20260803",
+                "20260804",
+                "20260805",
+                "20260806",
+                "20260807",
+            ],
+        )
+
 
 class UpsertPrimaryKeyOnlyTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.store = LocalStore(db_path=Path(self._tmp.name) / "test.db")
+        with closing(sqlite3.connect(self.store.db_path)) as conn:
+            apply_pending(conn)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -110,11 +158,12 @@ class UpsertPrimaryKeyOnlyTest(unittest.TestCase):
             ) -> pd.DataFrame:
                 self.calls.append((ts_code, start_date, end_date))
                 return pd.DataFrame({
-                    "ts_code": ["000300.SH", "000300.SH"],
-                    "trade_date": ["20260810", "20260811"],
-                    "open": [10.1, 10.2], "high": [10.3, 10.4],
-                    "low": [10.0, 10.1], "close": [10.2, 10.3],
-                    "vol": [100.0, 100.0], "amount": [1000.0, 1000.0],
+                    "ts_code": ["000300.SH", "000300.SH", "000300.SH"],
+                    "trade_date": ["20260807", "20260810", "20260811"],
+                    "open": [10.0, 10.1, 10.2], "high": [10.2, 10.3, 10.4],
+                    "low": [9.9, 10.0, 10.1], "close": [10.1, 10.2, 10.3],
+                    "vol": [100.0, 100.0, 100.0],
+                    "amount": [1000.0, 1000.0, 1000.0],
                 })
 
         pro = FakePro()
@@ -128,9 +177,19 @@ class UpsertPrimaryKeyOnlyTest(unittest.TestCase):
         rows = self.store.load_daily(ts_codes=["000300.SH"])
         latest = rows.loc[rows["trade_date"] == "20260811"].iloc[0]
         self.assertEqual(first["dates"], ["20260810", "20260811"])
-        self.assertEqual(first["rows"], 2)
-        self.assertEqual(second, {"dates": [], "rows": 0})
-        self.assertEqual(pro.calls, [("000300.SH", "20260810", "20260811")])
+        self.assertEqual(first["checked_dates"], ["20260807", "20260810", "20260811"])
+        self.assertEqual(first["failed_dates"], [])
+        self.assertEqual(first["rows"], 3)
+        self.assertEqual(second["dates"], [])
+        self.assertEqual(second["checked_dates"], ["20260807", "20260810", "20260811"])
+        self.assertEqual(second["rows"], 0)
+        self.assertEqual(
+            pro.calls,
+            [
+                ("000300.SH", "20260807", "20260811"),
+                ("000300.SH", "20260807", "20260811"),
+            ],
+        )
         self.assertEqual(latest["source"], "tushare_index_daily")
         self.assertTrue(str(latest["available_at"]).endswith("+08:00"))
 
@@ -166,7 +225,10 @@ class UpsertPrimaryKeyOnlyTest(unittest.TestCase):
         )
 
         self.assertEqual(pro.calls, 2)
-        self.assertEqual(result, {"dates": ["20260811"], "rows": 1})
+        self.assertEqual(result["dates"], ["20260811"])
+        self.assertEqual(result["checked_dates"], ["20260811"])
+        self.assertEqual(result["failed_dates"], [])
+        self.assertEqual(result["rows"], 1)
 
 
 if __name__ == "__main__":

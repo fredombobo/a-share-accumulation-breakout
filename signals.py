@@ -5,4 +5,8 @@
 import ab_screener.signals as _m
 from ab_screener.signals import *
 
+# See local_store.py: make the public compatibility contract statically
+# discoverable while preserving the complete runtime re-export below.
+detect_accumulation_breakout = _m.detect_accumulation_breakout
+
 globals().update({k: v for k, v in vars(_m).items() if not k.startswith("__")})

@@ -15,7 +15,7 @@ import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, wait
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -162,9 +162,12 @@ def param_id(strategy: str, params: dict) -> str:
     return hashlib.md5(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def grid_combos(strategy: str, grid: dict | None = None) -> list[dict]:
+def grid_combos(
+    strategy: str,
+    grid: dict[str, list[Any]] | None = None,
+) -> list[dict[str, Any]]:
     """展开网格为参数组合列表。"""
-    g = grid or GRID_BENCH
+    g = grid if grid is not None else cast(dict[str, list[Any]], GRID_BENCH)
     keys = sorted(g.keys())
     out = []
     for vals in itertools.product(*[g[k] for k in keys]):

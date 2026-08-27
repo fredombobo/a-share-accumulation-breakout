@@ -5,4 +5,9 @@
 import ab_screener.local_store as _m
 from ab_screener.local_store import *
 
+# Static aliases keep the compatibility facade visible to Mypy when
+# ``follow_imports=skip`` is enabled.  The dynamic export below remains for
+# legacy callers that import private helper names.
+LocalStore = _m.LocalStore
+
 globals().update({k: v for k, v in vars(_m).items() if not k.startswith("__")})
