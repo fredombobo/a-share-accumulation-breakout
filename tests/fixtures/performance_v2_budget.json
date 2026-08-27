@@ -1,0 +1,19 @@
+{
+  "profile": "hermetic-unit-scale-v1",
+  "scope": "Deterministic CI guard; production P8 evidence must re-run against the fixed real database snapshot.",
+  "samples": {
+    "hot": 20,
+    "cold": 5
+  },
+  "thresholds_ms": {
+    "health_hot_p95": 200,
+    "desk_hot_p95": 500,
+    "overview_hot_p95": 500,
+    "overview_cold_p95": 2500,
+    "positions_100_p95": 500,
+    "orders_1000_page_p95": 500
+  },
+  "thresholds_bytes": {
+    "overview_100": 307200
+  }
+}

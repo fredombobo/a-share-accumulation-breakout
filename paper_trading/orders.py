@@ -823,8 +823,13 @@ def list_orders(
     state: str | None = None,
     ts_code: str | None = None,
     limit: int = 50,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
     db_path = Path(db_path)
+    # Domain query permits one look-ahead row so the API can calculate
+    # ``has_more`` without an extra COUNT(*).  Public pages remain capped at 500.
+    bounded_limit = max(1, min(int(limit), 501))
+    bounded_offset = max(0, int(offset))
     sql = (
         "SELECT order_id, source, ts_code, side, qty, state, reserve_fen, reject_reason,"
         " signal_trade_date, eligible_trade_date, created_at FROM pt_order WHERE 1=1"
@@ -836,8 +841,8 @@ def list_orders(
     if ts_code:
         sql += " AND ts_code=?"
         params.append(ts_code)
-    sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
-    params.append(limit)
+    sql += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
+    params.extend((bounded_limit, bounded_offset))
     with tx(db_path, immediate=False) as conn:
         rows = conn.execute(sql, params).fetchall()
     return [

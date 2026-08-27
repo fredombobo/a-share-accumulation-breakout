@@ -196,12 +196,31 @@ def _latest_gate_status() -> dict:
 
 
 @router.get("/api/paper/orders")
-def paper_orders(state: str | None = None, ts_code: str | None = None, limit: int = 50):
+def paper_orders(
+    state: str | None = None,
+    ts_code: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
     """查询订单：按状态/标的过滤。"""
     from paper_trading.orders import list_orders
 
     try:
-        return {"orders": list_orders(_DB, state=state, ts_code=ts_code, limit=limit)}
+        bounded_limit = max(1, min(int(limit), 500))
+        bounded_offset = max(0, int(offset))
+        orders = list_orders(
+            _DB,
+            state=state,
+            ts_code=ts_code,
+            limit=bounded_limit + 1,
+            offset=bounded_offset,
+        )
+        return {
+            "orders": orders[:bounded_limit],
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "has_more": len(orders) > bounded_limit,
+        }
     except Exception as e:  # noqa: BLE001
         _paper_err(e)
 

@@ -22,6 +22,12 @@ from signals import detect_accumulation_breakout
 
 router = APIRouter(tags=["legacy"])
 
+# Overview is a decision list, not a detail endpoint.  Ten recent bars are
+# enough for the card sparkline and keep a 100-candidate response below the
+# institutional 300 KiB budget.  Full history remains available from
+# /api/stock/{ts_code}.
+_OVERVIEW_KLINE_DAYS = 10
+
 def _kline_series_for(code: str, limit: int | None = None, start: str | None = None) -> list[dict]:
     # SQL 层直接取最近 limit 个交易日，避免全量 K 线拖慢总览。
     # start 由调用方预计算（distinct_dates 全表扫描较贵，不应在循环内重复调用）。
@@ -279,10 +285,11 @@ def overview(pool: str = "A"):
     if need_recalc:
         sig_map.update(_sig_for_many(need_recalc))
 
-    # 日期窗口只算一次（distinct_dates 全表扫描较贵，避免在循环内重复）
+    # 日期窗口只算一次（distinct_dates 全表扫描较贵，避免在循环内重复）。
+    # 总览只传迷你图窗口；详情页负责完整 K 线。
     kline_start = None
     try:
-        kline_start = _store.distinct_dates("daily", limit=60)[0]
+        kline_start = _store.distinct_dates("daily", limit=_OVERVIEW_KLINE_DAYS)[0]
     except Exception:  # noqa: BLE001
         kline_start = None
 
@@ -353,8 +360,10 @@ def overview(pool: str = "A"):
             "tradeable": card["tradeable"],
             "trade": card,
             # 总览为轻量列表：不返回 fina（财务详情走 /api/stock/{ts_code}），
-            # kline 只返回最近 60 条供迷你图，避免 30 个候选全量 K 线 + 财务拖慢响应
-            "kline": kline_by_code.get(code) or _kline_series_for(code, limit=60, start=kline_start),
+            # kline 只返回最近 10 条供迷你图，避免 100 个候选突破 300 KiB。
+            "kline": kline_by_code.get(code) or _kline_series_for(
+                code, limit=_OVERVIEW_KLINE_DAYS, start=kline_start
+            ),
             "box_high": sig.get("box_high"),
             "box_low": sig.get("box_low"),
             "ma5": sig.get("ma5"),
