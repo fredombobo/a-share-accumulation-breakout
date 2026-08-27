@@ -79,7 +79,23 @@ def _clean(value: Any) -> Any:
 
 
 def _payload(row: dict[str, Any], dataset: str) -> dict[str, Any]:
-    return {column: _clean(row.get(column)) for column in _DATA_COLUMNS[dataset]}
+    payload: dict[str, float | None] = {}
+    for column in _DATA_COLUMNS[dataset]:
+        value = _clean(row.get(column))
+        if value is None:
+            payload[column] = None
+            continue
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{dataset}.{column} 不是有效数值: {value!r}"
+            ) from exc
+        if math.isnan(numeric) or math.isinf(numeric):
+            payload[column] = None
+        else:
+            payload[column] = 0.0 if numeric == 0 else numeric
+    return payload
 
 
 def _effective_at(trade_date: str) -> str:

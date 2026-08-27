@@ -381,7 +381,14 @@ def test_incremental_sync_reconciles_recent_source_without_duplicate_revisions(
     assert second["daily_dates"] == []
     assert second["daily_checked_dates"] == dates
     assert second["rows"]["daily"] == 0
-    assert second["appended_revisions"]["daily"] == 0
+    assert second["rows"]["daily_basic"] == 0
+    assert second["rows"]["moneyflow"] == 0
+    assert second["appended_revisions"] == {
+        "daily": 0,
+        "daily_basic": 0,
+        "benchmark": 0,
+        "moneyflow": 0,
+    }
     with sqlite3.connect(market_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM daily_history").fetchone()[0] == 6
         assert conn.execute("SELECT COUNT(*) FROM daily_basic_history").fetchone()[0] == 3
