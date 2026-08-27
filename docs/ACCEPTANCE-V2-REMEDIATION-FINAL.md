@@ -26,7 +26,7 @@
 |---|---|---|
 | D 数据/PIT | **PASS** | 当前构建真实数据门禁 PASS；969 个完成交易日，本地/源端/沪深300最新日 20260827；100 对源端抽样 0 差异；三类最新 PIT 分区全部零漂移。 |
 | R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828f` 完整完成且可复算；OOS 组合净收益 8.49%、PF 1.223、最大回撤 9.18%，但 PBO 31.25%、DSR 46.36%、MinTRL 覆盖 18.8%、嵌套窗仅 1/5 正收益，`candidate_eligible=false`。 |
-| S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=52`、5 类策略、`signal_outcomes=0`。观察日期尚未达到 5/10/20 日成熟线，禁止伪造 outcome。 |
+| S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=78`、5 类策略、`signal_outcomes=0`。观察日期尚未达到 5/10/20 日成熟线，禁止伪造 outcome。 |
 | P 组合/风险 | **PASS** | 最新交易日风险快照 `955681b4321b58f6` 已固化，行情/规则/配置版本齐全；统计状态如实为 INSUFFICIENT（权益序列不足 30 点）。 |
 | L 账本/日清 | **PASS** | 扫描 `791dd2969683`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `21c6a38f74ac...`。 |
 | O 运维/恢复 | **FAIL** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；但可验证备份仅 5/7，当前身份 soak 1/5，均未达到成熟线。 |
@@ -121,7 +121,7 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 ## 5. 剩余工作（不能伪造）
 
-1. 等 52 条 SHADOW 观察自然达到 5/10/20 日并产生真实 outcome；不足长期阈值前 S 保持
+1. 等现有 78 条 SHADOW 观察自然达到 5/10/20 日并产生真实 outcome；不足长期阈值前 S 保持
    INSUFFICIENT，所有插件继续 EXPERIMENTAL。
 2. 再新增 2 个真实恢复点达到验证备份 7/7；严格恢复本身已 PASS。
 3. 再积累 4 个不同真实完成交易日达到 soak 5/5；不得用历史回填或多次同日运行冒充。

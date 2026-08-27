@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-28T03:39:20+08:00"
+updated_at: "2026-08-28T03:40:52+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -290,7 +290,7 @@ v2_remediation_20260823:
     daily_manifest_status: COMPLETE
     daily_manifest_sha256: "21c6a38f74ac7f910f9901579b96aebad8a5bb3a293989352176558766ac549f"
     reconciliation: OK
-    signal_observations: 52
+    signal_observations: 78
     signal_outcomes: 0
     verified_backups: "5/7"
     restore_rto: "PASS 1789.798/1800 sec"
