@@ -5,9 +5,31 @@ import json
 import threading
 from pathlib import Path
 
+import scan_job_runner
 from ab_screener.application.scan_jobs import FAILED, ScanJobStore
 from local_store import LocalStore
-from scan_job_runner import _write_json
+from scan_job_runner import _configure_console_encoding, _write_json
+
+
+class _FakeStream:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    def reconfigure(self, **kwargs: str) -> None:
+        self.calls.append(kwargs)
+
+
+def test_scan_runner_forces_utf8_before_emoji_logging(monkeypatch) -> None:
+    stdout = _FakeStream()
+    stderr = _FakeStream()
+    monkeypatch.setattr(scan_job_runner.sys, "stdout", stdout)
+    monkeypatch.setattr(scan_job_runner.sys, "stderr", stderr)
+
+    _configure_console_encoding()
+
+    expected = [{"encoding": "utf-8", "errors": "backslashreplace"}]
+    assert stdout.calls == expected
+    assert stderr.calls == expected
 
 
 def test_progress_write_waits_for_a_windows_reader_to_release(tmp_path: Path) -> None:

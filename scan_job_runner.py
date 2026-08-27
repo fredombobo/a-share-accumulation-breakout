@@ -28,6 +28,19 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 
+def _configure_console_encoding() -> None:
+    """Make scan logging safe when Windows inherits a GBK console/DEVNULL stream."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (OSError, ValueError):
+                # Closed or host-managed streams are harmless because progress
+                # and terminal errors are persisted to UTF-8 JSON files.
+                continue
+
+
 def _write_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -46,6 +59,7 @@ def _write_json(path: Path, obj: dict) -> None:
 
 
 def main() -> int:
+    _configure_console_encoding()
     p = argparse.ArgumentParser()
     p.add_argument("--task-id", required=True)
     p.add_argument("--top", type=int, default=20)
