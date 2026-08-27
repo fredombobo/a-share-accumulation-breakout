@@ -1,10 +1,10 @@
 version: 1
-updated_at: "2026-08-28T03:02:46+08:00"
+updated_at: "2026-08-28T03:33:08+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
   P7.1 组合会计、P7.2 冻结 PIT 研究读取与 P7.3 正式晋级硬门均已完成；
-  当前权威研究 v2auth20260828e 诚实 FAIL/NO_CANDIDATE。D/P/L/G 的上一生产身份证据为 PASS，
+  当前权威研究 v2auth20260828f 诚实 FAIL/NO_CANDIDATE。D/P/L/G 的上一生产身份证据为 PASS，
   R/O=FAIL、S=INSUFFICIENT；当前代码与平台配置重新绑定运行证据前 P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
@@ -242,9 +242,9 @@ tasks:
     plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
     note: >
       ROBUST_PERSONAL_V2 最终硬门、PBO/DSR 横截面尺度/5窗嵌套选择/2x成本/参数邻域已完成。
-      v2auth20260828e 以新代码身份完整运行并诚实 FAIL；未创建研究候选。
+      v2auth20260828f 以最终 UI 修复代码身份完整运行并诚实 FAIL；未创建研究候选。
     completed_evidence:
-      - "代码 2031bdc70b61；组合 research-portfolio-v2.1.0 / c2770dc24fd37c4b；PIT faf588403e3db351"
+      - "代码 d5707c22c645；组合 research-portfolio-v2.1.0 / c2770dc24fd37c4b；PIT faf588403e3db351"
       - "OOS 组合净收益 8.493586%、PF 1.22260136、最大回撤 9.182442%，1x/2x 成本均完整结算"
       - "PBO=0.3125、DSR=0.463596、MinTRL coverage=0.188、嵌套正收益窗=1/5，最终 FAIL/NO_CANDIDATE"
       - "参数邻域 7/7 覆盖且全部优于 MA20/60；2x 候选 +4.843727%、主基线 -19.064983%"
@@ -278,7 +278,7 @@ v2_remediation_20260823:
   blocked:
     - V2R-P8
   research:
-    authoritative_task_id: "v2auth20260828e"
+    authoritative_task_id: "v2auth20260828f"
     current_identity_verdict: FAIL
     historical_verdict: FAIL
     candidate_eligible: false
@@ -297,12 +297,12 @@ v2_remediation_20260823:
     live_trading_enabled: false
   quality_snapshot:
     strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 928 offline tests, frontend build"
-    pytest: "928 passed in 210.69s"
+    pytest: "928 passed in 214.34s"
     pit_data: "70 passed"
     full_ruff: PASS
     full_mypy: "PASS: strict configured source set"
     architecture_strict: PASS
-    frontend_test: "7 passed"
-    playwright: "4 passed"
+    frontend_test: "20 passed"
+    playwright: "13 live routes + lab conclusion passed"
     frontend_build: PASS
     npm_audit: "0 vulnerabilities"

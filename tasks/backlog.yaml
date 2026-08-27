@@ -310,7 +310,7 @@ tasks:
       - 旧报告不覆盖；修复后以新代码身份重新预登记
     completion_note: >
       formal-evidence-v2.0.0 与 formal-promotion-gate-v2.0.0 已接入；严格质量门 928 tests PASS。
-      新权威运行 v2auth20260828e 完整产出并诚实 FAIL：PBO=0.3125、DSR=0.463596、
+      最终权威运行 v2auth20260828f 完整产出并诚实 FAIL：PBO=0.3125、DSR=0.463596、
       MinTRL coverage=0.188、嵌套正收益窗=1/5；数据库/报告均 candidate_eligible=false。
 
   # ── P8 ──

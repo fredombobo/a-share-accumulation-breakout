@@ -4,7 +4,7 @@
 
 项目：`accumulation_breakout`（AB-Screener · 横盘吸筹突破）
 
-当前发布候选源码身份：`2031bdc70b61`；平台配置：`a958f710d75ce51d`
+当前发布候选源码身份：`d5707c22c645`；平台配置：`f1ac706946c44937`
 
 运行入口：`http://127.0.0.1:8001/`
 最终裁决：**BLOCKED**
@@ -25,7 +25,7 @@
 | 闸门 | 结果 | 现场证据与阻断 |
 |---|---|---|
 | D 数据/PIT | **PASS** | 当前构建真实数据门禁 PASS；969 个完成交易日，本地/源端/沪深300最新日 20260827；100 对源端抽样 0 差异；三类最新 PIT 分区全部零漂移。 |
-| R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828e` 完整完成且可复算；OOS 组合净收益 8.49%、PF 1.223、最大回撤 9.18%，但 PBO 31.25%、DSR 46.36%、MinTRL 覆盖 18.8%、嵌套窗仅 1/5 正收益，`candidate_eligible=false`。 |
+| R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828f` 完整完成且可复算；OOS 组合净收益 8.49%、PF 1.223、最大回撤 9.18%，但 PBO 31.25%、DSR 46.36%、MinTRL 覆盖 18.8%、嵌套窗仅 1/5 正收益，`candidate_eligible=false`。 |
 | S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=52`、5 类策略、`signal_outcomes=0`。观察日期尚未达到 5/10/20 日成熟线，禁止伪造 outcome。 |
 | P 组合/风险 | **PASS** | 最新交易日风险快照 `955681b4321b58f6` 已固化，行情/规则/配置版本齐全；统计状态如实为 INSUFFICIENT（权益序列不足 30 点）。 |
 | L 账本/日清 | **PASS** | 扫描 `eaf90d4808c6`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `5541d057079a...`。 |
@@ -84,6 +84,14 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 - 新增无 SDK 依赖的统一文本脱敏，在供应商异常、扫描子进程 JSON、持久任务和 API 返回四个边界使用。
 - 已清理该失败任务数据库字段及两个运行时 JSON；保留失败状态和诊断语义，不删除失败记录。
 
+### 3.6 实时 UI 白屏与错误标题纠错
+
+- 修复 `/api/v2/strategies` 返回 registry 包装对象、前端却按数组读取导致的
+  `map is not a function` 白屏；异常响应现在显示可理解错误。
+- 为九个 V2 路由补齐独立顶栏标题，不再全部误显示“选股总览”。
+- 真实 8001 上逐一点击 13 个侧栏入口，并点击“实验已完成 · 查看结论”；全部路由与结论区域
+  可见，纸面交易免责声明存在，浏览器无 console error、page error 或失败响应。
+
 ## 4. 质量证据
 
 权威运行时：`E:/CODEX/Stock_selection/accumulation_breakout/.venv312/Scripts/python.exe`
@@ -92,10 +100,11 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 | 检查 | 结果 |
 |---|---|
 | `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、928 个离线测试、前端构建全绿 |
-| 全收集 `python -m pytest -q` | **928 passed in 210.69s** |
+| 全收集 `python -m pytest -q` | **928 passed in 214.34s** |
 | PIT/数据专项 | **70 passed** |
 | Vitest | **7 passed** |
 | Playwright | 首轮 1/4（暴露崩溃）；修复后 **4/4 passed** |
+| 当前 8001 实时 UI | **13/13 路由 + 实验结论 PASS**；六形态白屏回归已覆盖 |
 | npm audit | **0 vulnerabilities** |
 | Vite production build | 700 modules；主包 gzip 75.90KB |
 | ECharts 独立 chunk | 687.38KB / gzip 230.08KB，性能警告，非本轮功能阻断 |
