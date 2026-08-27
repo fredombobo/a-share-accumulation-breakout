@@ -1,8 +1,12 @@
 """P6.3 备份/恢复/健康测试：online backup、原子命名、保留策略、健康聚合。"""
 from __future__ import annotations
 
+import gzip
+import shutil
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -12,6 +16,7 @@ from ab_screener.operations.backup import (
     create_backup,
     prune_old_backups,
     restore_verified_backup,
+    resume_verified_restore,
 )
 from ab_screener.operations.health import system_health
 
@@ -71,6 +76,51 @@ def test_restore_rejects_existing_target_and_tampered_archive(db: str, tmp_path:
         handle.write(b"tamper")
     with pytest.raises(BackupError, match="篡改"):
         restore_verified_backup(archive, tmp_path / "new-target.db")
+
+
+def test_interrupted_restore_can_resume_only_after_full_verification(
+    db: str, tmp_path: Path
+):
+    root = tmp_path / "resume"
+    root.mkdir()
+    result = create_backup(db, root, compressed=True)
+    target = tmp_path / "resumed.db"
+    partial = tmp_path / ".resumed.db.fixednonce.partial"
+    with gzip.open(result["path"], "rb") as source, partial.open("wb") as destination:
+        shutil.copyfileobj(source, destination)
+
+    restored = resume_verified_restore(
+        result["path"],
+        partial,
+        target,
+        started_at=datetime.now(ZoneInfo("Asia/Shanghai")) - timedelta(seconds=2),
+    )
+
+    assert restored["status"] == "PASS"
+    assert restored["resumed"] is True
+    assert restored["logical_sha256_match"] is True
+    assert restored["duration_sec"] >= 2
+    assert target.is_file()
+    assert not partial.exists()
+    with sqlite3.connect(target) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 3
+
+
+def test_interrupted_restore_rejects_wrong_candidate_without_moving_it(
+    db: str, tmp_path: Path
+):
+    root = tmp_path / "resume-invalid"
+    root.mkdir()
+    result = create_backup(db, root, compressed=True)
+    target = tmp_path / "resumed.db"
+    partial = tmp_path / ".resumed.db.fixednonce.partial"
+    partial.write_bytes(b"not-a-database")
+
+    with pytest.raises(BackupError, match="不是有效 SQLite"):
+        resume_verified_restore(result["path"], partial, target)
+
+    assert partial.read_bytes() == b"not-a-database"
+    assert not target.exists()
 
 
 def test_backup_atomic_and_prune_keeps_unique(db: str, tmp_path: Path):

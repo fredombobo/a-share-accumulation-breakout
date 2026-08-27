@@ -333,6 +333,94 @@ def restore_verified_backup(
         }
     finally:
         tmp.unlink(missing_ok=True)
+        for suffix in ("-shm", "-wal"):
+            Path(str(tmp) + suffix).unlink(missing_ok=True)
+
+
+def resume_verified_restore(
+    backup_path: str | Path,
+    partial_path: str | Path,
+    restore_to: str | Path,
+    *,
+    started_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Safely finish an interrupted restore without decompressing a second copy.
+
+    The candidate must use this target's private ``.<name>.<nonce>.partial``
+    convention, live beside the new target, contain no uncheckpointed WAL, and
+    match the verified backup's full logical SHA-256.  A failed verification
+    leaves the candidate in place for investigation and never creates the target.
+    """
+    backup = Path(backup_path).resolve()
+    partial = Path(partial_path).resolve()
+    target = Path(restore_to).resolve()
+    manifest = _read_manifest(_manifest_path(backup))
+    if manifest is None:
+        raise BackupError("备份清单无效或文件已被篡改")
+    if target.exists():
+        raise BackupError(f"恢复目标已存在，拒绝覆盖: {target}")
+    if not target.parent.is_dir():
+        raise BackupError(f"恢复目标目录不存在: {target.parent}")
+    if not partial.is_file():
+        raise BackupError(f"中断恢复候选不存在: {partial}")
+    expected_prefix = f".{target.name}."
+    if (
+        partial.parent != target.parent
+        or not partial.name.startswith(expected_prefix)
+        or not partial.name.endswith(".partial")
+    ):
+        raise BackupError("中断恢复候选不属于指定恢复目标")
+    if backup in {partial, target}:
+        raise BackupError("恢复目标或候选不得与备份源相同")
+    wal = Path(str(partial) + "-wal")
+    if wal.is_file() and wal.stat().st_size:
+        raise BackupError("中断恢复候选包含未归并 WAL，拒绝续验")
+
+    monotonic_started = time.monotonic()
+    actual_sha256 = _sha256_file(backup)
+    if actual_sha256 != manifest.get("archive_sha256"):
+        raise BackupError("备份文件 SHA-256 与清单不一致")
+    try:
+        checks = _database_checks(partial)
+    except sqlite3.DatabaseError as exc:
+        raise BackupError("中断恢复候选不是有效 SQLite 数据库") from exc
+    if not checks["ok"]:
+        raise BackupError(f"恢复库完整性校验失败: {checks}")
+    logical_sha256 = _sha256_file(partial)
+    if logical_sha256 != manifest.get("logical_sha256"):
+        raise BackupError("恢复库逻辑 SHA-256 与备份清单不一致")
+
+    if started_at is None:
+        elapsed = time.monotonic() - monotonic_started
+    else:
+        normalized = started_at
+        if normalized.tzinfo is None:
+            normalized = normalized.replace(tzinfo=_TZ)
+        elapsed = (datetime.now(_TZ) - normalized.astimezone(_TZ)).total_seconds()
+        if elapsed < 0:
+            raise BackupError("恢复开始时间晚于当前时间")
+    duration = round(elapsed, 3)
+    partial.replace(target)
+    for suffix in ("-shm", "-wal"):
+        Path(str(partial) + suffix).unlink(missing_ok=True)
+    return {
+        "status": "PASS",
+        "backup_path": str(backup),
+        "manifest_path": str(_manifest_path(backup)),
+        "restore_path": str(target),
+        "archive_sha256": actual_sha256,
+        "integrity": "ok",
+        "foreign_key_violations": 0,
+        "logical_sha256": logical_sha256,
+        "logical_sha256_match": True,
+        "table_hashes_match": True,
+        "duration_sec": duration,
+        "rto_target_sec": 1800,
+        "rto_pass": duration <= 1800,
+        "restored_at": _now(),
+        "resumed": True,
+        "resume_source": str(partial),
+    }
 
 
 def prune_old_backups(backup_root: str | Path, keep: int = KEEP_BACKUPS) -> list[str]:

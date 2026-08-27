@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,7 @@ from ab_screener.operations.backup import (
     BackupError,
     latest_backup,
     restore_verified_backup,
+    resume_verified_restore,
 )
 
 
@@ -21,6 +23,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="v2 verified backup restore drill")
     parser.add_argument("--backup-root", required=True)
     parser.add_argument("--restore-to")
+    parser.add_argument(
+        "--resume-partial",
+        help="续验同一目标目录中由中断恢复留下的 .partial 候选",
+    )
+    parser.add_argument(
+        "--started-at",
+        help="首次恢复开始时间（ISO 8601），用于完整 RTO 计时",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--report")
     args = parser.parse_args(argv)
@@ -36,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
             "manifest": latest["manifest_path"],
             "archive_format": latest["archive_format"],
             "restore_to": args.restore_to,
+            "resume_partial": args.resume_partial,
             "checks": [
                 "manifest_sha256",
                 "archive_sha256",
@@ -50,8 +61,19 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: --restore-to is required for actual restore", file=sys.stderr)
             return 2
         try:
-            payload = restore_verified_backup(latest["path"], args.restore_to)
-        except BackupError as exc:
+            if args.resume_partial:
+                started_at = (
+                    datetime.fromisoformat(args.started_at) if args.started_at else None
+                )
+                payload = resume_verified_restore(
+                    latest["path"],
+                    args.resume_partial,
+                    args.restore_to,
+                    started_at=started_at,
+                )
+            else:
+                payload = restore_verified_backup(latest["path"], args.restore_to)
+        except (BackupError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
     if args.report:

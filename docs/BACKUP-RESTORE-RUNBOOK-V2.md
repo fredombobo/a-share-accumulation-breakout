@@ -42,6 +42,21 @@ powershell -ExecutionPolicy Bypass -File scripts\restore_backup.ps1 `
 - 恢复后自动执行归档 SHA-256、解压后逻辑库 SHA-256、`integrity_check` 和外键复验；
   任一不符即删除 partial 文件并非零退出。
 - 计时输出供 RTO 记录（目标 ≤1800s）。
+- 若进程在解压完成后被意外中断，可用 Python 入口续验同一目标的私有候选文件；候选必须
+  位于目标同目录、名称符合 `.<target>.<nonce>.partial`、无未归并 WAL，且通过与原备份相同的
+  归档哈希、完整性、外键和逻辑库哈希检查后才会原子改名：
+
+```text
+.venv312\Scripts\python.exe scripts\restore_backup_v2.py `
+  --backup-root E:\ab-backups `
+  --restore-to E:\ab-restore-drill\stock_data.db `
+  --resume-partial E:\ab-restore-drill\.<target>.<nonce>.partial `
+  --started-at 2026-08-27T23:48:13+08:00 `
+  --report runtime\v2\restore_report.json
+```
+
+  `--started-at` 必须使用首次恢复启动时间，RTO 包含解压、中断和续验的完整墙钟时间；不得以
+  续验命令启动时间重新计时。验证失败时保留候选供调查，且不会创建或覆盖目标。
 
 ## 4. 系统健康（`ab_screener/operations/health.py`）
 
@@ -81,3 +96,4 @@ powershell -ExecutionPolicy Bypass -File scripts\restore_backup.ps1 `
 | 备份/清单 hash 不符 | 拒绝计数和恢复，丢弃新临时产物；保留上一份 last good |
 | 唯一备份将删除 | `prune_old_backups` 显式保护（len<=1 时停止） |
 | 恢复后完整性失败 | partial 自动删除；生产库从未被覆盖，无需回滚 |
+| 恢复进程被终止且 partial 完整 | 使用 `--resume-partial` 全量续验；保留首次启动时间计入 RTO |
