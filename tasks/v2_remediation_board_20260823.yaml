@@ -26,6 +26,13 @@ wave_2_srn_summary:
   candidate_eligible: false
   newly_released_tasks: [V2R-O2]
   still_blocked_tasks: [V2R-Q2, V2R-G, V2R-P8]
+wave_3_reviewed_at: "2026-08-27T08:10:00+08:00"
+wave_3_progress:
+  accepted: [V2R-O2, V2R-Q2]
+  ready: [V2R-G]
+  blocked: [V2R-P8]
+  operations_soak: INSUFFICIENT
+  research_verdict: FAIL
 manager_role: "Codex primary agent: dispatch, scope review, independent verification, rejection/rework, P8 verdict"
 
 authority:
@@ -254,7 +261,10 @@ tasks:
 
   V2R-O2:
     title: "持久 EOD DAG、故障恢复、审计链与五日 soak 启动"
-    status: ready
+    status: accepted
+    accepted_commit: "535407b573bec9a2f5038e5675a41ad24f62199d"
+    manager_correction_commit: "1953bf3"
+    gate_note: "工程实现和故障注入已接受；O-12 五个真实完成交易日仍为 INSUFFICIENT"
     released_at: "2026-08-24T08:20:00+08:00"
     release_reason: "V2R-S 管理者终验通过；其余依赖已在 Wave 1 接受"
     base_commit: "011f76cfdbc7b3e044a20b45e77cb6d1fb113256"
@@ -336,7 +346,9 @@ tasks:
 
   V2R-Q2:
     title: "集成后 Ruff/Mypy/测试债务清零"
-    status: blocked
+    status: accepted
+    accepted_commit: "3d9e2537745b62cb084f3d95bddd9ed8095fbbca"
+    manager_review: "docs/handoffs/V2R-Q2.md"
     wave: 3
     agent_role: quality-sweep-agent
     dependencies: [V2R-A, V2R-D, V2R-X, V2R-F, V2R-O1, V2R-S, V2R-O2, V2R-N]
@@ -349,7 +361,9 @@ tasks:
 
   V2R-G:
     title: "共享入口、服务端 flags、readiness、台账和最终构建收口"
-    status: blocked
+    status: ready
+    released_at: "2026-08-27T08:10:00+08:00"
+    release_reason: "V2R-Q2 全量质量门禁通过；权威研究 FAIL 保持为 readiness 输入而非依赖阻塞"
     wave: 3
     agent_role: integration-governance-agent
     dependencies: [V2R-Q2, V2R-R]

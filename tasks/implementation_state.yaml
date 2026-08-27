@@ -1,11 +1,11 @@
 version: 1
-updated_at: "2026-08-24T08:20:00+08:00"
+updated_at: "2026-08-27T08:10:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
-  V2 remediation Wave 1 已接受；第二波已提交的 V2R-S/V2R-R/V2R-N
-  经管理者纠错后接受。可信研究任务 0746a4108e15 结论为 FAIL 且不得晋级。
-  V2R-O2 现已解锁；Q2/G/P8 仍阻塞。Do not claim PERSONAL_INSTITUTIONAL_READY.
+  V2 remediation 的 O2 工程实现与 Q2 质量清零已由管理者接受，G 已解锁。
+  权威研究任务 0746a4108e15 结论仍为 FAIL 且不得晋级；O-12 五个真实完成交易日
+  仍为 INSUFFICIENT。P8 继续阻塞。Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
 live_trading_enabled: false
@@ -13,7 +13,7 @@ protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
 ready_now:
-  - V2R-O2
+  - V2R-G
 tasks:
   NINE_POINT_CLOSED_LOOP:
     status: complete
@@ -219,21 +219,23 @@ v2_remediation_20260823:
     - V2R-S
     - V2R-R
     - V2R-N
-  ready:
     - V2R-O2
-  blocked:
     - V2R-Q2
+  ready:
     - V2R-G
+  blocked:
     - V2R-P8
   research:
     authoritative_task_id: "0746a4108e15"
     verdict: FAIL
     candidate_eligible: false
   quality_snapshot:
-    pytest: "825 passed, 8 warnings"
-    wave_2_changed_files_ruff: PASS
-    wave_2_relevant_mypy: PASS
+    pytest: "879 passed, 0 failed, no warning summary"
+    performance: "3 passed, 876 deselected"
+    fault_injection: "18 passed, 861 deselected"
+    full_ruff: PASS
+    full_mypy: "PASS: 239 source files"
     architecture_strict: PASS
+    frontend_test: "6 passed"
     frontend_build: PASS
-    full_ruff: "BLOCKED: 88 errors assigned to V2R-Q2 after O2"
-    quality_script_mypy: "BLOCKED: 9 baseline errors assigned to V2R-Q2 after O2"
+    npm_audit: "0 vulnerabilities"
