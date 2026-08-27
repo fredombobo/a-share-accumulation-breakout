@@ -466,25 +466,20 @@ def lab_optimize(req: LabOptimizeRequest):
 
     from ab_screener.research.trusted_run import (
         COST_VERSION,
-        dataset_fingerprint,
         input_fingerprint,
+        prepare_trusted_pit_snapshot,
         trusted_portfolio_identity,
     )
-    from optimizer import research_universe
 
     request_data["portfolio_model"] = trusted_portfolio_identity()
-    universe = research_universe(
-        max(20, min(int(request_data.get("max_codes") or 200), 4500)), include_delisted=True
+    max_codes = max(20, min(int(request_data.get("max_codes") or 200), 4500))
+    pit_snapshot = prepare_trusted_pit_snapshot(
+        _store.db_path,
+        windows=windows,
+        max_codes=max_codes,
     )
-    starts = [str(windows["is_start"]), str(windows["oos_start"])]
-    starts.extend(
-        str(row.get("train_start"))
-        for row in windows.get("wf_windows") or []
-        if isinstance(row, dict) and row.get("train_start")
-    )
-    dataset_version = dataset_fingerprint(
-        _store.db_path, start=min(starts), end=str(windows["oos_end"]), codes=universe
-    )
+    request_data["pit_snapshot"] = pit_snapshot.identity()
+    dataset_version = pit_snapshot.dataset_fingerprint
     persisted_request = {**request_data, "_windows": windows}
     input_hash = input_fingerprint(
         request_data,

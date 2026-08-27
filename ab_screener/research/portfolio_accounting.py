@@ -23,7 +23,12 @@ import yaml
 from ab_screener.domain.execution.fees import FeeParams
 from ab_screener.domain.execution.fill_model import FillRequest, compute_fill
 from ab_screener.domain.execution.market_rules import floor_to_lot, slipped_price_micro
-from ab_screener.domain.execution.models import FillV2, Quote
+from ab_screener.domain.execution.models import (
+    EXECUTION_MODEL_VERSION,
+    FEE_VERSION,
+    FillV2,
+    Quote,
+)
 from ab_screener.domain.instrument import is_a_share_stock
 from paper_trading.rules import InstrumentRule, default_rule
 
@@ -74,6 +79,8 @@ class PortfolioPolicy:
 
     def fingerprint(self) -> str:
         payload = {key: getattr(self, key) for key in self.__dataclass_fields__}
+        payload["execution_model_version"] = EXECUTION_MODEL_VERSION
+        payload["fee_version"] = FEE_VERSION
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()[:16]
@@ -293,6 +300,8 @@ def simulate_portfolio(
     result = {
         "portfolio_model_version": policy.version,
         "portfolio_config_hash": policy.fingerprint(),
+        "portfolio_execution_model_version": EXECUTION_MODEL_VERSION,
+        "portfolio_fee_version": FEE_VERSION,
         "portfolio_status": "PASS" if not positions else "INCOMPLETE_OPEN_POSITIONS",
         "portfolio_initial_equity_fen": policy.initial_cash_fen,
         "portfolio_final_equity_fen": final_equity,
@@ -344,6 +353,8 @@ def portfolio_gate_metrics(result: Mapping[str, Any]) -> dict[str, Any]:
         "slippage_cost": round(int(result.get("portfolio_slippage_fen") or 0) / 100, 2),
         "portfolio_model_version": result.get("portfolio_model_version"),
         "portfolio_config_hash": result.get("portfolio_config_hash"),
+        "portfolio_execution_model_version": result.get("portfolio_execution_model_version"),
+        "portfolio_fee_version": result.get("portfolio_fee_version"),
         "portfolio_status": result.get("portfolio_status"),
         "portfolio_equity_sha256": result.get("portfolio_equity_sha256"),
         "portfolio_max_gross_exposure_bps": result.get("portfolio_max_gross_exposure_bps"),
@@ -363,7 +374,7 @@ def _normalize_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
         exit_date = _date(row.get("exit_date"))
         if not code or not signal_date or not entry_date or not exit_date:
             raise PortfolioAccountingError("成交候选缺少代码或信号/成交/退出日期")
-        if not signal_date < entry_date <= exit_date:
+        if not signal_date < entry_date < exit_date:
             raise PortfolioAccountingError(f"时间顺序非法: {code} {signal_date}/{entry_date}/{exit_date}")
         key = (code, entry_date, "")
         if key in seen:
@@ -417,6 +428,7 @@ def _build_market_index(
             pre_close_micro=(
                 _price_micro(pre_close) if pre_close is not None and not pd.isna(pre_close) else None
             ),
+            available_at=str(record.get("available_at") or ""),
         )
     calendar = sorted({date for _, date in bars})
     return bars, calendar
@@ -465,6 +477,7 @@ def _process_exits(
                 vol=actual.vol,
                 amount_fen=actual.amount_fen,
                 pre_close_micro=actual.pre_close_micro,
+                available_at=actual.available_at,
             )
         rule = rules[position.ts_code]
         fill = compute_fill(
@@ -524,8 +537,11 @@ def _buy_fill(
                 fees=_fee_params(rule),
             ),
         )
-    buy_price = slipped_price_micro(quote.open_micro, "BUY", quote, rule.slippage_bps)
-    rough_qty = floor_to_lot(budget_fen * 10_000 // buy_price, rule.lot_size)
+    if quote.open_micro <= 0:
+        rough_qty = rule.lot_size
+    else:
+        buy_price = slipped_price_micro(quote.open_micro, "BUY", quote, rule.slippage_bps)
+        rough_qty = floor_to_lot(budget_fen * 10_000 // buy_price, rule.lot_size)
     return compute_fill(
         quote,
         FillRequest(
@@ -670,6 +686,8 @@ def _empty_result(policy: PortfolioPolicy) -> dict[str, Any]:
     return {
         "portfolio_model_version": policy.version,
         "portfolio_config_hash": policy.fingerprint(),
+        "portfolio_execution_model_version": EXECUTION_MODEL_VERSION,
+        "portfolio_fee_version": FEE_VERSION,
         "portfolio_status": "EMPTY",
         "portfolio_initial_equity_fen": policy.initial_cash_fen,
         "portfolio_final_equity_fen": policy.initial_cash_fen,

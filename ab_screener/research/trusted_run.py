@@ -7,6 +7,7 @@ import json
 import math
 import sqlite3
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,13 @@ from ab_screener.domain.costs import (
 )
 from ab_screener.domain.entry_registry import active_definition_id as _active_entry_definition_id
 from ab_screener.domain.entry_registry import report_entry_fingerprint
+from ab_screener.domain.execution.models import EXECUTION_MODEL_VERSION, FEE_VERSION
 from ab_screener.research.baselines import ma_cross_baseline, random_baseline_trades
+from ab_screener.research.pit_reader import (
+    ResearchPitSnapshot,
+    build_research_pit_snapshot,
+    latest_research_cutoff,
+)
 from ab_screener.research.portfolio_accounting import (
     PortfolioPolicy,
     load_portfolio_policy,
@@ -59,6 +66,8 @@ def trusted_portfolio_identity() -> dict[str, str]:
     return {
         "version": policy.version,
         "config_hash": policy.fingerprint(),
+        "execution_model_version": EXECUTION_MODEL_VERSION,
+        "fee_version": FEE_VERSION,
     }
 
 
@@ -134,6 +143,48 @@ def _wf_tuples(windows: dict[str, Any]) -> list[tuple[str, str, str, str]]:
     return result
 
 
+def prepare_trusted_pit_snapshot(
+    db_path: str | Path,
+    *,
+    windows: dict[str, Any],
+    max_codes: int,
+    decision_at: str | None = None,
+) -> ResearchPitSnapshot:
+    """Build the single PIT snapshot shared by IS/OOS/WF/baselines."""
+    starts = [str(windows["is_start"]), str(windows["oos_start"])]
+    ends = [str(windows["is_end"]), str(windows["oos_end"])]
+    for train_start, train_end, test_start, test_end in _wf_tuples(windows):
+        starts.extend((train_start, test_start))
+        ends.extend((train_end, test_end))
+    resolved_path = str(Path(db_path).resolve())
+    cutoff = decision_at or latest_research_cutoff(resolved_path)
+    return _prepare_trusted_pit_snapshot_cached(
+        resolved_path,
+        min(starts),
+        max(ends),
+        max_codes,
+        cutoff,
+    )
+
+
+@lru_cache(maxsize=1)
+def _prepare_trusted_pit_snapshot_cached(
+    db_path: str,
+    study_start: str,
+    study_end: str,
+    max_codes: int,
+    decision_at: str,
+) -> ResearchPitSnapshot:
+    """Reuse one immutable snapshot between preregistration and its worker."""
+    return build_research_pit_snapshot(
+        db_path,
+        study_start=study_start,
+        study_end=study_end,
+        max_codes=max_codes,
+        decision_at=decision_at,
+    )
+
+
 def execute_trusted_research(
     *,
     research_run_id: str,
@@ -163,7 +214,26 @@ def execute_trusted_research(
     run_mode = str(request.get("mode") or "grid")
     max_codes = max(20, min(int(request.get("max_codes") or 200), 4500))
     step = max(1, min(int(request.get("step") or 10), 60))
-    universe = research_universe(max_codes, include_delisted=True)
+    requested_pit = request.get("pit_snapshot")
+    research_snapshot: ResearchPitSnapshot | None = None
+    pit_identity: dict[str, Any] | None = None
+    if requested_pit is not None:
+        if not isinstance(requested_pit, dict) or not requested_pit.get("decision_at"):
+            raise ValueError("请求缺少有效的 PIT knowledge cutoff")
+        research_snapshot = prepare_trusted_pit_snapshot(
+            db_path,
+            windows=windows,
+            max_codes=max_codes,
+            decision_at=str(requested_pit["decision_at"]),
+        )
+        pit_identity = research_snapshot.identity()
+        if requested_pit != pit_identity:
+            raise ValueError("请求绑定的 PIT 快照与当前可复算结果不一致")
+        if dataset_version != research_snapshot.dataset_fingerprint:
+            raise ValueError("预登记数据版本与 PIT 快照指纹不一致")
+        universe = list(research_snapshot.universe)
+    else:
+        universe = research_universe(max_codes, include_delisted=True)
 
     def ensure_not_cancelled() -> None:
         if cancel_check is not None and cancel_check():
@@ -197,6 +267,7 @@ def execute_trusted_research(
             ),
             cancel_check=cancel_check,
             portfolio_policy=portfolio_policy,
+            research_snapshot=research_snapshot,
         )
         state["is_all"] = _clean(result["is"].to_dict("records") if not result["is"].empty else [])
         state["oos_all"] = _clean(result["oos"].to_dict("records") if not result["oos"].empty else [])
@@ -230,6 +301,7 @@ def execute_trusted_research(
                 ),
                 cancel_check=cancel_check,
                 portfolio_policy=portfolio_policy,
+                research_snapshot=research_snapshot,
             )
             if not wf_df.empty:
                 wf_rows = _clean(wf_df.iloc[0].get("wf_detail") or [])
@@ -244,11 +316,20 @@ def execute_trusted_research(
             hold_days = int(primary_is.get("exit_window") or 10)
             requested_trades = int(primary_oos.get("oos_net_n_trades") or 40)
             load_start = (pd.to_datetime(windows["oos_start"]) - pd.Timedelta(days=365)).strftime("%Y%m%d")
-            from local_store import LocalStore
+            if research_snapshot is not None:
+                daily = research_snapshot.load_daily(
+                    ts_codes=universe,
+                    start=load_start,
+                    end=windows["oos_end"],
+                )
+            else:
+                from local_store import LocalStore
 
-            daily = LocalStore(db_path).load_daily(
-                ts_codes=universe, start=load_start, end=windows["oos_end"]
-            )
+                daily = LocalStore(db_path).load_daily(
+                    ts_codes=universe,
+                    start=load_start,
+                    end=windows["oos_end"],
+                )
             baseline_rows = {
                 "random": random_baseline_trades(
                     daily,
@@ -289,6 +370,7 @@ def execute_trusted_research(
         baselines=state.get("baselines") or {},
         anti_overfit=anti_overfit,
         portfolio_model=portfolio_identity if requested_portfolio is not None else None,
+        pit_snapshot=pit_identity if requested_pit is not None else None,
     )
     state["gate"] = gate
     state["anti_overfit"] = anti_overfit
@@ -303,8 +385,10 @@ def execute_trusted_research(
             "cost": COST_VERSION,
             "entry": report_entry_fingerprint(_active_entry_definition_id()),
             "portfolio": portfolio_identity["config_hash"],
+            "pit_reader": pit_identity.get("version") if pit_identity else None,
         },
         "portfolio_model": portfolio_identity,
+        "point_in_time": pit_identity,
         "sample": {"universe_size": len(universe), "windows": windows, "step": step},
         "cost_assumptions": COST_ASSUMPTIONS,
         "primary_is": primary_is,
@@ -344,6 +428,7 @@ def execute_trusted_research(
                 step=step,
                 max_codes=max_codes,
                 portfolio_policy=portfolio_policy,
+                research_snapshot=research_snapshot,
             )
             portfolio = bt.get("portfolio") or {}
             if portfolio.get("portfolio_status") != "PASS":

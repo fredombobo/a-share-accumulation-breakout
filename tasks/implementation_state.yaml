@@ -1,10 +1,10 @@
 version: 1
-updated_at: "2026-08-28T01:15:00+08:00"
+updated_at: "2026-08-28T02:21:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
-  三波工程交付、恢复续验和凭据脱敏纠错已完成；当前 D/P/L/G=PASS，
-  R/O=FAIL，S=INSUFFICIENT。P8 继续 BLOCKED；
+  P7.1 组合会计与 P7.2 冻结 PIT 研究读取已完成；当前旧权威研究仍为 FAIL，
+  D/P/L/G=PASS，R/O=FAIL，S=INSUFFICIENT。新权威研究与运维成熟度完成前 P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
@@ -216,13 +216,21 @@ tasks:
       - "组合状态、配置 hash、权益 SHA-256 固化；未平仓/缺报价/重复持仓 fail-closed"
       - "严格质量门 PASS：Ruff、Mypy、strict architecture、903 offline tests、frontend build"
   V2-P7.2-RESEARCH-PIT-READER:
-    status: in_progress
+    status: complete
     started_at: "2026-08-28T02:03:00+08:00"
+    completed_at: "2026-08-28T02:21:00+08:00"
     work_package: WP75
     dependencies:
       - V2-P7.1-PORTFOLIO-BACKTEST
     plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
-    note: "组合会计已通过；正在把可信研究切到冻结 knowledge cutoff 的 available_at <= decision_at PIT 修订读取。"
+    note: "可信研究已切到预登记 knowledge cutoff 的 available_at <= decision_at PIT 修订与历史生命周期宇宙；旧报告未覆盖。"
+    completed_evidence:
+      - "research-pit-reader-v2.0.0：最大可见 revision、content_hash/source 校验、缺 PIT/未知宇宙 fail-closed"
+      - "grid、OOS、三窗 WF、随机/MA 基线、正式统计与 Lab worker 复用同一冻结快照；身份绑定 cutoff/宇宙 SHA/数据指纹"
+      - "生产库只读 600 标的快照：538566 rows、964 交易日、dataset=faf588403e3db351、universe=bb41c6775f61c7ac480607860e17edf573b856290487141a3da1abc4b92533a3"
+      - "T+1 边界纠错：禁止次日开盘买入后同日卖出；20 标的小样本 10 候选、7 买7卖、0 未平仓、组合 PASS"
+      - "执行血缘 v2.1.1：滑点按实际成交价差逐笔拆解、不二次乘费率；组合配置 hash=8457421182d765e6"
+      - "严格质量门 PASS：Ruff、Mypy、strict architecture、916 offline tests、frontend build"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80

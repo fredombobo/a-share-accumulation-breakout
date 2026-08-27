@@ -26,6 +26,7 @@ from config import (
 from optimizer import run_grid
 
 if TYPE_CHECKING:
+    from ab_screener.research.pit_reader import ResearchPitSnapshot
     from ab_screener.research.portfolio_accounting import PortfolioPolicy
 
 WF_WINDOWS = [
@@ -70,6 +71,7 @@ def eval_combo(
     signal_kwargs: dict | None = None,
     costs: dict | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    research_snapshot: ResearchPitSnapshot | None = None,
 ) -> dict:
     """对单个参数组合在指定区间回测，返回统计行。"""
     df = run_grid(
@@ -84,6 +86,7 @@ def eval_combo(
         signal_kwargs=signal_kwargs,
         costs=costs,
         portfolio_policy=portfolio_policy,
+        research_snapshot=research_snapshot,
     )
     if df.empty:
         return {"n_trades": 0}
@@ -106,6 +109,7 @@ def run_is_oos(
     costs: dict | None = None,
     cancel_check=None,
     portfolio_policy: PortfolioPolicy | None = None,
+    research_snapshot: ResearchPitSnapshot | None = None,
 ) -> dict:
     """完整流程：IS 网格 → 过滤（胜率≥30%、DD≤25%）→ Top N → OOS 验证。
 
@@ -133,6 +137,7 @@ def run_is_oos(
             signal_kwargs=signal_kwargs,
             costs=costs,
             portfolio_policy=portfolio_policy,
+            research_snapshot=research_snapshot,
         )
         is_df = pd.DataFrame([{**combo, **is_row}]) if is_row.get("n_trades") else pd.DataFrame()
         oos = eval_combo(
@@ -146,6 +151,7 @@ def run_is_oos(
             signal_kwargs=signal_kwargs,
             costs=costs,
             portfolio_policy=portfolio_policy,
+            research_snapshot=research_snapshot,
         )
         oos_df = pd.DataFrame(
             [
@@ -184,6 +190,7 @@ def run_is_oos(
         signal_kwargs=signal_kwargs,
         costs=costs,
         portfolio_policy=portfolio_policy,
+        research_snapshot=research_snapshot,
     )
     if is_df.empty:
         return {"is": is_df, "oos": pd.DataFrame(), "msg": "样本内无有效组合", "mode": "grid"}
@@ -213,6 +220,7 @@ def run_is_oos(
             signal_kwargs=signal_kwargs,
             costs=costs,
             portfolio_policy=portfolio_policy,
+            research_snapshot=research_snapshot,
         )
         oos_rows.append(
             {
@@ -246,6 +254,7 @@ def wf_recheck(
     signal_kwargs: dict | None = None,
     costs: dict | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    research_snapshot: ResearchPitSnapshot | None = None,
 ) -> pd.DataFrame:
     """对 Top 组合做 3 窗口滚动复核，附 wf_pass 判定。windows 可覆盖（降级时传短窗）。"""
     wf_windows = windows or WF_WINDOWS
@@ -267,6 +276,7 @@ def wf_recheck(
                 signal_kwargs=signal_kwargs,
                 costs=costs,
                 portfolio_policy=portfolio_policy,
+                research_snapshot=research_snapshot,
             )
             completed_evaluations += 1
             if progress_cb:
@@ -281,6 +291,7 @@ def wf_recheck(
                 signal_kwargs=signal_kwargs,
                 costs=costs,
                 portfolio_policy=portfolio_policy,
+                research_snapshot=research_snapshot,
             )
             completed_evaluations += 1
             if progress_cb:

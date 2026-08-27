@@ -18,6 +18,7 @@ from ab_screener.domain.entry_registry import report_entry_fingerprint
 from config import BT_MIN_TRADES
 
 if TYPE_CHECKING:
+    from ab_screener.research.pit_reader import ResearchPitSnapshot
     from ab_screener.research.portfolio_accounting import PortfolioPolicy
 
 
@@ -53,6 +54,7 @@ def run_single_backtest(
     cancel_check=None,
     progress_cb=None,
     portfolio_policy: PortfolioPolicy | None = None,
+    research_snapshot: ResearchPitSnapshot | None = None,
 ) -> dict[str, Any]:
     """对单组参数在 [start, end] 区间回放，返回逐笔明细与指标。
 
@@ -71,15 +73,22 @@ def run_single_backtest(
 
     if progress_cb:
         progress_cb("加载宇宙与行情…", 2)
-    codes = research_universe(max_codes, include_delisted=True)
-    store = LocalStore()
-    cal = store.distinct_dates("daily")
+    load_start = (pd.to_datetime(start) - pd.Timedelta(days=365)).strftime("%Y%m%d")
+    if research_snapshot is not None:
+        codes = list(research_snapshot.universe)
+        if max_codes is not None:
+            codes = codes[:max_codes]
+        big = research_snapshot.load_daily(ts_codes=codes, start=load_start, end=end)
+        cal = sorted(big["trade_date"].astype(str).unique().tolist())
+    else:
+        store = LocalStore()
+        codes = research_universe(max_codes, include_delisted=True)
+        cal = store.distinct_dates("daily")
+        big = store.load_daily(ts_codes=codes, start=load_start, end=end)
     sample_days = [d for d in cal if start <= d <= end][:: max(1, step)]
     if not sample_days:
         return {"error": "窗口内无采样日"}
 
-    load_start = (pd.to_datetime(start) - pd.Timedelta(days=365)).strftime("%Y%m%d")
-    big = store.load_daily(ts_codes=codes, start=load_start, end=end)
     if big.empty:
         return {"error": "无行情数据，请先同步"}
 

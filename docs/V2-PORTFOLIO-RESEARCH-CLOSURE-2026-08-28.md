@@ -76,3 +76,63 @@
 - 严格质量门：Ruff、Mypy、strict architecture、903 个离线测试、前端生产构建全部通过。
 - 旧权威报告保持不变；新报告尚未生成，R 门仍为 `FAIL`。
 - 运维备份证据已推进到 `5/7`，Soak 仍为 `1/5`，不得提前宣布最终就绪。
+
+## 8. P7.2 PIT 研究读取实施方案
+
+`available_at` 表示本机真实获得该修订的时刻；历史回填数据不会伪装成历史当日已可用。
+权威研究因此冻结一个预登记的 `knowledge_cutoff_at`，只读取
+`available_at <= knowledge_cutoff_at` 的最大 revision；策略本身仍只用信号日及以前 K 线，
+并在下一交易日开盘成交。报告必须同时披露知识截止点和模拟决策/成交时点，不能混称。
+
+影响文件：
+
+- 新增 `ab_screener/research/pit_reader.py`：批量 PIT 修订、历史生命周期宇宙、覆盖核对、快照 hash。
+- `optimizer.py`、`walkforward.py`、`backtest_engine.py` 接收冻结研究快照，不再自行读取 `daily` 投影。
+- `trusted_run.py`、真实研究脚本与 Lab 启动接口把 PIT 版本、截止点、宇宙 hash 和数据 hash 纳入输入身份。
+- 新增 `tests/test_research_pit_reader.py`，覆盖修订边界、未来修订不可见、当前宇宙不得回填、缺记录/篡改 fail-closed。
+
+验收：
+
+1. 截止点前后读取同一业务键分别得到旧/新 revision。
+2. `daily` 中在截止点可见的业务键若无 PIT 历史，整次研究拒绝启动。
+3. 股票宇宙来自 `instrument_lifecycle_history` 在截止点可见的修订，并按研究窗口生命周期相交过滤。
+4. 网格、OOS、WF、双基线和正式统计只消费同一个冻结快照。
+5. 新研究身份包含 PIT reader 版本、截止点、宇宙 SHA-256、数据 SHA-256；旧缓存不得复用。
+6. 当前旧报告保持 `FAIL`，完成新预登记运行前不改 `configs/platform_v2.yaml` 的权威 ID。
+
+## 9. P7.2 生产复算发现的 T+1 边界纠错
+
+PIT 小样本复算发现：当信号位于研究窗倒数第二个交易日时，旧 `trade_sim` 会把次日开盘
+买入和同日收盘退出同时记为完成交易。该路径不满足 A 股股票买入后下一交易日才可卖，且
+会令组合账留下无法执行的未平仓。因此必须在新权威研究前修正，旧报告继续保持不可变。
+
+影响文件：
+
+- `trade_sim.py`：止损/目标最早从买入后的下一交易日检查；需要次日开盘的退出在缺少次日
+  行情时返回未完成，不再回退到确认日收盘。
+- `ab_screener/research/portfolio_accounting.py`：候选必须满足
+  `signal_date < entry_date < exit_date`，作为第二层 fail-closed 防线。
+- `tests/test_bench_volume.py`、`tests/test_research_portfolio_accounting.py`：覆盖买入日触发止损、
+  研究窗末端仅有买入日、同日退出候选三类边界。
+
+验收：
+
+1. 买入日内低点即使触及止损，也不能产生同日卖出；最早在下一交易日执行。
+2. 研究窗只剩买入日时，该信号不是完成交易，不进入收益、PF 或组合成交统计。
+3. 组合会计收到同日退出候选时明确拒绝，不能静默留下仓位。
+4. 修正后的权威研究使用新代码、执行模型与组合配置 hash 重新预登记；旧报告不覆盖。
+
+## 10. P7.2 完成证据
+
+- PIT reader：`research-pit-reader-v2.0.0`；knowledge cutoff 固定为带 `+08:00` 时区的
+  `decision_at`，同一业务键只取该时点可见的最大 revision。
+- 生产数据库只读复算：600 标的、538,566 行、964 个交易日；宇宙 SHA-256
+  `bb41c6775f61c7ac480607860e17edf573b856290487141a3da1abc4b92533a3`，数据指纹
+  `faf588403e3db351`。
+- T+1 边界样本已纠正：20 标的 OOS 小样本为 10 个完成候选，组合 7 买 7 卖、0 未平仓，
+  `portfolio_status=PASS`。
+- 执行血缘升级为 `v2.1.1`；滑点报告按实际成交价差计算，现金仍只受成交价一次影响；
+  组合配置 hash 为 `8457421182d765e6`。
+- 严格质量门通过：Ruff、Mypy、strict architecture、916 个离线测试、前端生产构建。
+- 旧权威研究 `v2auth20260828b` 仍为 `FAIL` 且未覆盖；下一步必须以本次新 build 重新预登记，
+  不得降低 PF、回撤、WF、双基线、DSR 或 MinTRL 门槛。

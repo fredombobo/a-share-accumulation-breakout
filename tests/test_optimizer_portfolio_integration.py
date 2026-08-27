@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 import optimizer
+from ab_screener.research.pit_reader import ResearchPitSnapshot
 from ab_screener.research.portfolio_accounting import PortfolioPolicy
 
 
@@ -66,12 +67,9 @@ def test_grid_promotes_portfolio_metrics_and_keeps_trade_diagnostics(monkeypatch
         "stop_pct": 0.07,
     }
 
-    class FakeStore:
-        def distinct_dates(self, _table: str) -> list[str]:
-            return sorted(market["trade_date"].unique().tolist())
-
-        def load_daily(self, **_kwargs) -> pd.DataFrame:
-            return market.copy()
+    class ProjectionMustNotBeRead:
+        def __init__(self) -> None:
+            raise AssertionError("PIT 研究不得实例化 current daily 投影仓库")
 
     def fake_worker(payload: tuple) -> dict[str, list[dict]]:
         received_combo = payload[7][0]
@@ -83,7 +81,7 @@ def test_grid_promotes_portfolio_metrics_and_keeps_trade_diagnostics(monkeypatch
             ]
         }
 
-    monkeypatch.setattr("local_store.LocalStore", FakeStore)
+    monkeypatch.setattr("local_store.LocalStore", ProjectionMustNotBeRead)
     monkeypatch.setattr("parallel_scan.resolve_workers", lambda _workers: 1)
     monkeypatch.setattr(
         optimizer, "research_universe", lambda *_args, **_kwargs: list(market["ts_code"].unique())
@@ -98,6 +96,15 @@ def test_grid_promotes_portfolio_metrics_and_keeps_trade_diagnostics(monkeypatch
         step=1,
         grid={key: [value] for key, value in combo.items() if key != "strategy"},
         portfolio_policy=PortfolioPolicy(),
+        research_snapshot=ResearchPitSnapshot(
+            decision_at="2026-08-10T16:00:00+08:00",
+            data_start="20250801",
+            data_end="20260804",
+            universe=tuple(sorted(market["ts_code"].unique().tolist())),
+            universe_sha256="a" * 64,
+            dataset_fingerprint="b" * 16,
+            daily=market,
+        ),
     )
 
     row = result.iloc[0]

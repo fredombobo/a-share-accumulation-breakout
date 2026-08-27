@@ -1,10 +1,11 @@
 """v2 执行域模型：金额整数分、价格整数微元、拒绝浮点账务输入。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal
 
-EXECUTION_MODEL_VERSION = "v2.1.0"
+EXECUTION_MODEL_VERSION = "v2.1.1"
 FEE_VERSION = "v2-fixed-2026-08-18"
 TICK_MICRO = 10_000  # A 股最小变动 0.01 元 = 10000 微元
 
@@ -39,15 +40,17 @@ class Quote:
     high_micro: int
     low_micro: int
     close_micro: int
-    vol: int          # 股
-    amount_fen: int   # 成交额（分）
+    vol: int  # 股
+    amount_fen: int  # 成交额（分）
     pre_close_micro: int | None = None
     available_at: str = ""  # +08:00（PIT）
 
     def __post_init__(self) -> None:
         for name, value in (
-            ("open_micro", self.open_micro), ("high_micro", self.high_micro),
-            ("low_micro", self.low_micro), ("close_micro", self.close_micro),
+            ("open_micro", self.open_micro),
+            ("high_micro", self.high_micro),
+            ("low_micro", self.low_micro),
+            ("close_micro", self.close_micro),
         ):
             require_int_micro(value, name=name)
         require_int_fen(self.amount_fen, name="amount_fen")

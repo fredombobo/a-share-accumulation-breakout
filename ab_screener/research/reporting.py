@@ -72,6 +72,7 @@ def render_trusted_report(report: dict[str, Any]) -> str:
             f"- 代码版本：`{versions.get('code')}`",
             f"- 成本版本：`{versions.get('cost')}`",
             f"- 组合账户版本：`{_json(report.get('portfolio_model'))}`",
+            f"- PIT 知识快照：`{_json(report.get('point_in_time'))}`",
             "",
             "## 成本口径",
             "",

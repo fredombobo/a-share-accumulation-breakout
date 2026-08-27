@@ -1,4 +1,5 @@
 """P2.1 金额精确性测试：整数分逐项复算、与旧核心 dual-run 对比、费用版本拒绝。"""
+
 from __future__ import annotations
 
 import pytest
@@ -59,17 +60,33 @@ def test_dual_run_parity_with_legacy_core():
     from ab_screener.domain.costs import apply_slippage, commission_for, other_fee_for
     from ab_screener.domain.execution.models import Quote
 
-    q = Quote(ts_code="000001.SZ", trade_date="20260810",
-              open_micro=10_000_000, high_micro=10_500_000, low_micro=9_800_000,
-              close_micro=10_200_000, vol=1_000_000, amount_fen=10_000_000,
-              pre_close_micro=9_900_000)
-    v2_fill = compute_fill(q, FillRequest(ts_code="000001.SZ", side="BUY",
-                                          trade_date="20260810", input_hash="parity",
-                                          cash_available_fen=2_000_000_00))
+    q = Quote(
+        ts_code="000001.SZ",
+        trade_date="20260810",
+        open_micro=10_000_000,
+        high_micro=10_500_000,
+        low_micro=9_800_000,
+        close_micro=10_200_000,
+        vol=1_000_000,
+        amount_fen=10_000_000,
+        pre_close_micro=9_900_000,
+    )
+    v2_fill = compute_fill(
+        q,
+        FillRequest(
+            ts_code="000001.SZ",
+            side="BUY",
+            trade_date="20260810",
+            input_hash="parity",
+            cash_available_fen=2_000_000_00,
+        ),
+    )
 
     # 旧核心买入原语（同一开盘价）
     legacy_px = apply_slippage(10.0, side="buy", high=10.5, low=9.8)
     assert v2_fill.price_micro == int(round(legacy_px * 1_000_000))
+    actual_slippage_fen = abs(v2_fill.price_micro - q.open_micro) * v2_fill.qty // 10_000
+    assert v2_fill.fees.slippage_fen == actual_slippage_fen
 
     # 同数量下的费用对比
     legacy_notional = legacy_px * v2_fill.qty
@@ -80,18 +97,21 @@ def test_dual_run_parity_with_legacy_core():
 
     result = compare_round_trip(
         v2_fill.to_dict(),
-        {"qty": v2_fill.qty, "price": legacy_px, "commission": legacy_comm_fen / 100,
-         "stamp_tax": 0.0, "other_fee": legacy_other_fen / 100},
+        {
+            "qty": v2_fill.qty,
+            "price": legacy_px,
+            "commission": legacy_comm_fen / 100,
+            "stamp_tax": 0.0,
+            "other_fee": legacy_other_fen / 100,
+        },
     )
     assert result["parity"] is True, result["diffs"]
 
 
 def test_fifo_realized_pnl_exact_fen():
     lots = [
-        Lot(lot_id="L1", ts_code="000001.SZ", qty=200, cost_price_micro=10_000_000,
-            sellable_date="20260811"),
-        Lot(lot_id="L2", ts_code="000001.SZ", qty=100, cost_price_micro=9_500_000,
-            sellable_date="20260811"),
+        Lot(lot_id="L1", ts_code="000001.SZ", qty=200, cost_price_micro=10_000_000, sellable_date="20260811"),
+        Lot(lot_id="L2", ts_code="000001.SZ", qty=100, cost_price_micro=9_500_000, sellable_date="20260811"),
     ]
     result = consume_fifo_lots(lots, 300, sell_price_micro=11_000_000)
     # (11-10)*200 + (11-9.5)*100 = 200 + 150 = 350 元 = 35000 分

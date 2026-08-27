@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ab_screener.domain.execution.models import EXECUTION_MODEL_VERSION, FEE_VERSION
+from ab_screener.research.trusted_run import trusted_portfolio_identity
 from ab_screener.research.validation import evaluate_personal_anti_overfit, evaluate_trusted_gate
 
 
@@ -65,11 +67,18 @@ def test_full_net_oos_wf_and_both_baselines_can_pass() -> None:
 
 
 def test_bound_portfolio_model_requires_matching_complete_accounting() -> None:
-    model = {"version": "research-portfolio-v2.0.0", "config_hash": "abc123"}
+    model = {
+        "version": "research-portfolio-v2.0.0",
+        "config_hash": "abc123",
+        "execution_model_version": EXECUTION_MODEL_VERSION,
+        "fee_version": FEE_VERSION,
+    }
     oos = {
         **_oos(),
         "oos_portfolio_model_version": model["version"],
         "oos_portfolio_config_hash": model["config_hash"],
+        "oos_portfolio_execution_model_version": model["execution_model_version"],
+        "oos_portfolio_fee_version": model["fee_version"],
         "oos_portfolio_status": "PASS",
     }
     wf = [
@@ -85,6 +94,8 @@ def test_bound_portfolio_model_requires_matching_complete_accounting() -> None:
             **row,
             "portfolio_model_version": model["version"],
             "portfolio_config_hash": model["config_hash"],
+            "portfolio_execution_model_version": model["execution_model_version"],
+            "portfolio_fee_version": model["fee_version"],
             "portfolio_status": "PASS",
         }
         for key, row in _baselines().items()
@@ -130,6 +141,50 @@ def test_bound_portfolio_model_missing_evidence_is_insufficient() -> None:
     )
 
     assert result["verdict"] == "INSUFFICIENT_EVIDENCE"
+
+
+def test_trusted_portfolio_identity_binds_execution_and_fee_versions() -> None:
+    identity = trusted_portfolio_identity()
+
+    assert identity["execution_model_version"] == EXECUTION_MODEL_VERSION
+    assert identity["fee_version"] == FEE_VERSION
+    assert len(identity["config_hash"]) == 16
+
+
+def test_bound_pit_snapshot_is_part_of_trusted_gate_identity() -> None:
+    pit = {
+        "version": "research-pit-reader-v2.0.0",
+        "decision_at": "2026-08-27T22:46:45+08:00",
+        "data_start": "20220801",
+        "data_end": "20260731",
+        "universe_size": 600,
+        "universe_sha256": "a" * 64,
+        "dataset_fingerprint": "b" * 16,
+    }
+    passed = evaluate_trusted_gate(
+        research_mode="full",
+        automatic_window=True,
+        run_mode="grid",
+        oos=_oos(),
+        wf_windows=_wf(),
+        baselines=_baselines(),
+        anti_overfit=_anti_overfit(),
+        pit_snapshot=pit,
+    )
+    assert passed["verdict"] == "PASS"
+
+    invalid = {**pit, "universe_sha256": "short"}
+    failed = evaluate_trusted_gate(
+        research_mode="full",
+        automatic_window=True,
+        run_mode="grid",
+        oos=_oos(),
+        wf_windows=_wf(),
+        baselines=_baselines(),
+        anti_overfit=_anti_overfit(),
+        pit_snapshot=invalid,
+    )
+    assert failed["verdict"] == "FAIL"
 
 
 def test_manual_or_single_runs_are_insufficient_evidence() -> None:

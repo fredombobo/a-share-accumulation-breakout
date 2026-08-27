@@ -277,7 +277,7 @@ tasks:
 
   - id: V2-P7.2-RESEARCH-PIT-READER
     title: 可信研究按 decision_at 读取 PIT 行情与 as-of 宇宙
-    status: ready
+    status: complete
     work_package: WP75
     phase: P7
     dependencies:
@@ -289,6 +289,9 @@ tasks:
       - as-of 宇宙不使用当前成分回填历史
       - 修订边界和缺 PIT 数据均 fail-closed
       - 新权威研究重新预登记且不降低门禁阈值
+    completion_note: >
+      research-pit-reader-v2.0.0 已接入 grid、OOS、WF、双基线、正式统计和 Lab；
+      生产只读快照与 T+1 边界复算通过，严格质量门 916 tests PASS。新权威研究待本提交后重新预登记。
 
   # ── P8 ──
   - id: V2-P8-FINAL-ACCEPTANCE

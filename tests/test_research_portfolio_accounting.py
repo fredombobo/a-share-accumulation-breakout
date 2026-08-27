@@ -96,6 +96,20 @@ def test_zero_volume_buy_is_rejected_without_changing_cash() -> None:
     assert result["portfolio_rejection_reasons"]["NO_VOLUME"] == 1
 
 
+def test_suspended_zero_quote_buy_is_rejected_without_exception() -> None:
+    market = _market()
+    mask = (market["ts_code"] == "000001.SZ") & (market["trade_date"] == "20260804")
+    market.loc[mask, ["open", "high", "low", "vol"]] = 0
+    result = simulate_portfolio(
+        [_trade("000001.SZ")],
+        market,
+        policy=PortfolioPolicy(),
+    )
+
+    assert result["portfolio_n_entries"] == 0
+    assert result["portfolio_rejection_reasons"]["NO_QUOTE"] == 1
+
+
 def test_suspension_carries_last_close_and_delays_exit() -> None:
     market = _market()
     market = market[
@@ -120,6 +134,15 @@ def test_duplicate_candidate_fails_closed() -> None:
     trade = _trade("000001.SZ")
     with pytest.raises(PortfolioAccountingError, match="重复成交候选"):
         simulate_portfolio([trade, dict(trade)], _market(), policy=PortfolioPolicy())
+
+
+def test_same_day_entry_and_exit_candidate_fails_closed() -> None:
+    trade = {
+        **_trade("000001.SZ"),
+        "exit_date": "20260804",
+    }
+    with pytest.raises(PortfolioAccountingError, match="时间顺序非法"):
+        simulate_portfolio([trade], _market(), policy=PortfolioPolicy())
 
 
 def test_policy_rejects_impossible_risk_budget() -> None:

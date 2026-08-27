@@ -1,4 +1,5 @@
 """标杆量引擎 + 双模式模拟器 单元测试（真值表驱动，离线纯构造数据）"""
+
 from __future__ import annotations
 
 import os
@@ -26,15 +27,17 @@ def mk_df(vols, pcts=None, closes=None, opens=None, highs=None, lows=None):
     n = len(vols)
     closes = closes or [10.0] * n
     pcts = pcts or [1.0] * n
-    return pd.DataFrame({
-        "date": [f"202601{i//28+1:02d}{i%28+1:02d}" for i in range(n)],
-        "open": opens or closes,
-        "high": highs or [c * 1.01 for c in closes],
-        "low": lows or [c * 0.99 for c in closes],
-        "close": closes,
-        "vol": vols,
-        "pct_chg": pcts,
-    })
+    return pd.DataFrame(
+        {
+            "date": [f"202601{i // 28 + 1:02d}{i % 28 + 1:02d}" for i in range(n)],
+            "open": opens or closes,
+            "high": highs or [c * 1.01 for c in closes],
+            "low": lows or [c * 0.99 for c in closes],
+            "close": closes,
+            "vol": vols,
+            "pct_chg": pcts,
+        }
+    )
 
 
 class TestBuildSeq(unittest.TestCase):
@@ -79,7 +82,7 @@ class TestQuadrant(unittest.TestCase):
     def test_truth_table(self):
         self.assertEqual(classify_holding_day(300, 2.0, 400), PUSH)
         self.assertEqual(classify_holding_day(300, -1.0, 400), WASH)
-        self.assertEqual(classify_holding_day(400, 2.0, 400), DIST)   # >= 标杆即出货
+        self.assertEqual(classify_holding_day(400, 2.0, 400), DIST)  # >= 标杆即出货
         self.assertEqual(classify_holding_day(500, -3.0, 400), DIST)  # 出货不看阴阳
 
 
@@ -122,37 +125,81 @@ class TestTradeSimFixed(unittest.TestCase):
 
     def _bars(self, lows, highs, closes, opens=None):
         n = len(closes)
-        return pd.DataFrame({
-            "open": opens or closes, "high": highs, "low": lows,
-            "close": closes, "vol": [100] * n,
-        })
+        return pd.DataFrame(
+            {
+                "open": opens or closes,
+                "high": highs,
+                "low": lows,
+                "close": closes,
+                "vol": [100] * n,
+            }
+        )
 
     def test_stop_first(self):
-        bars = self._bars(
-            lows=[9.9] * 6 + [9.2], highs=[10.5] * 7,
-            closes=[10.0] * 7, opens=[10.0] * 6 + [10.0])
-        r = simulate_trade(bars, entry_i=5, mode="fixed",
-                           params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15})
+        bars = self._bars(lows=[9.9] * 7 + [9.2], highs=[10.5] * 8, closes=[10.0] * 8, opens=[10.0] * 8)
+        r = simulate_trade(
+            bars, entry_i=5, mode="fixed", params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15}
+        )
         self.assertEqual(r["exit"], "stop")
         self.assertAlmostEqual(r["ret"], -0.07, places=4)
 
     def test_target_hit(self):
-        bars = self._bars(
-            lows=[9.9] * 7, highs=[10.5] * 6 + [11.3],
-            closes=[10.0] * 7, opens=[10.0] * 7)
-        r = simulate_trade(bars, entry_i=5, mode="fixed",
-                           params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15})
+        bars = self._bars(lows=[9.9] * 8, highs=[10.5] * 7 + [11.3], closes=[10.0] * 8, opens=[10.0] * 8)
+        r = simulate_trade(
+            bars, entry_i=5, mode="fixed", params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 15}
+        )
         self.assertEqual(r["exit"], "target")
         self.assertAlmostEqual(r["ret"], 0.12, places=4)
 
     def test_time_exit(self):
-        bars = self._bars(
-            lows=[9.9] * 8, highs=[10.5] * 8,
-            closes=[10.0] * 8, opens=[10.0] * 8)
-        r = simulate_trade(bars, entry_i=5, mode="fixed",
-                           params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 3})
+        bars = self._bars(lows=[9.9] * 8, highs=[10.5] * 8, closes=[10.0] * 8, opens=[10.0] * 8)
+        r = simulate_trade(
+            bars, entry_i=5, mode="fixed", params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 3}
+        )
         self.assertEqual(r["exit"], "time")
         self.assertAlmostEqual(r["ret"], 0.0, places=4)
+
+    def test_entry_day_stop_is_not_sellable_until_next_trade_day(self):
+        bars = self._bars(
+            lows=[9.9] * 6 + [9.0, 9.9],
+            highs=[10.5] * 8,
+            closes=[10.0] * 8,
+            opens=[10.0] * 8,
+        )
+        r = simulate_trade(
+            bars,
+            entry_i=5,
+            mode="fixed",
+            params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 3},
+        )
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["exit"], "time")
+        self.assertEqual(r["entry_index"], 6)
+        self.assertEqual(r["exit_index"], 7)
+
+    def test_window_with_only_entry_bar_is_not_a_completed_trade(self):
+        bars = self._bars(
+            lows=[9.9] * 7,
+            highs=[10.5] * 7,
+            closes=[10.0] * 7,
+            opens=[10.0] * 7,
+        )
+        bars["pct_chg"] = 0.0
+        fixed = simulate_trade(
+            bars,
+            entry_i=5,
+            mode="fixed",
+            params={"stop_pct": 0.07, "target_pct": 0.12, "max_hold": 3},
+        )
+        bench = simulate_trade(
+            bars,
+            entry_i=5,
+            mode="bench",
+            params={"bench_vol": 100, "stop_pct": 0.07, "max_hold": 3},
+        )
+        self.assertFalse(fixed["ok"])
+        self.assertFalse(bench["ok"])
+        self.assertEqual(bench["reason"], "NO_T1_EXIT_BAR")
 
 
 class TestTradeSimBench(unittest.TestCase):
@@ -164,13 +211,19 @@ class TestTradeSimBench(unittest.TestCase):
         opens[15] = 10.8  # bench 出场次日开盘
         closes = [10.0] * n
         closes[15] = 10.8
-        bars = pd.DataFrame({
-            "open": opens, "high": [c * 1.01 for c in closes],
-            "low": [c * 0.99 for c in closes], "close": closes,
-            "vol": vols, "pct_chg": [1.0] * n,
-        })
-        r = simulate_trade(bars, entry_i=10, mode="bench",
-                           params={"bench_vol": 400, "stop_pct": 0.07, "max_hold": 30})
+        bars = pd.DataFrame(
+            {
+                "open": opens,
+                "high": [c * 1.01 for c in closes],
+                "low": [c * 0.99 for c in closes],
+                "close": closes,
+                "vol": vols,
+                "pct_chg": [1.0] * n,
+            }
+        )
+        r = simulate_trade(
+            bars, entry_i=10, mode="bench", params={"bench_vol": 400, "stop_pct": 0.07, "max_hold": 30}
+        )
         self.assertTrue(r["ok"])
         self.assertEqual(r["exit"], "bench")
         self.assertAlmostEqual(r["exit_price"], 10.8, places=4)
@@ -183,12 +236,19 @@ class TestTradeSimBench(unittest.TestCase):
         closes = [10.0] * n
         lows = [c * 0.99 for c in closes]
         lows[12] = 9.2  # j=12 跌破 -7% 止损（入场 10.0）
-        bars = pd.DataFrame({
-            "open": closes, "high": [c * 1.01 for c in closes], "low": lows,
-            "close": closes, "vol": vols, "pct_chg": [1.0] * n,
-        })
-        r = simulate_trade(bars, entry_i=10, mode="bench",
-                           params={"bench_vol": 400, "stop_pct": 0.07, "max_hold": 30})
+        bars = pd.DataFrame(
+            {
+                "open": closes,
+                "high": [c * 1.01 for c in closes],
+                "low": lows,
+                "close": closes,
+                "vol": vols,
+                "pct_chg": [1.0] * n,
+            }
+        )
+        r = simulate_trade(
+            bars, entry_i=10, mode="bench", params={"bench_vol": 400, "stop_pct": 0.07, "max_hold": 30}
+        )
         self.assertEqual(r["exit"], "stop")
         self.assertAlmostEqual(r["ret"], -0.07, places=4)
 

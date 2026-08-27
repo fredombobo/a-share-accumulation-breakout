@@ -1,4 +1,5 @@
 """v2 费用引擎：整数分精确计算（佣金最低值/印花税/其他费/滑点）。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -71,7 +72,7 @@ def compute_fees(
     *,
     slippage_notional_fen: int,
 ) -> FeeBreakdown:
-    """费用拆解：买入无印花税；滑点按滑点后名义额单独拆解。"""
+    """费用拆解；slippage_notional_fen 是用于按费率估算滑点的参考名义金额。"""
     commission = commission_fen(notional_fen, params)
     stamp = stamp_tax_fen(notional_fen, params) if side == "SELL" else 0
     other = other_fee_fen(notional_fen, params)

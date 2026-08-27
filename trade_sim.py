@@ -9,6 +9,7 @@
   entry_i = **信号日**索引；成交价 = 下一交易日开盘（无 open 用 close）。
   见 ab_screener.domain.entry_definition。
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -51,24 +52,49 @@ def simulate_trade(
         max_hold = p.get("max_hold", MAX_HOLD_DAYS)
         stop = entry * (1 - stop_pct)
         target = entry * (1 + target_pct)
-        for j in range(entry_i + 1, min(len(bars), entry_i + 1 + max_hold)):
+        # A 股股票 T+1：execution_i 是买入日，最早只能在下一交易日卖出。
+        for j in range(execution_i + 1, min(len(bars), entry_i + 1 + max_hold)):
             row = bars.iloc[j]
             lo, hi, cl = float(row["low"]), float(row["high"]), float(row["close"])
             if lo <= stop:  # 先止损再止盈（保守）
                 ret = stop / entry - 1
-                return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "stop",
-                        "win": ret > 0, "entry": entry, "exit_price": stop,
-                        "entry_index": execution_i, "exit_index": j}
+                return {
+                    "ok": True,
+                    "ret": ret,
+                    "days": j - entry_i,
+                    "exit": "stop",
+                    "win": ret > 0,
+                    "entry": entry,
+                    "exit_price": stop,
+                    "entry_index": execution_i,
+                    "exit_index": j,
+                }
             if hi >= target:
                 ret = target / entry - 1
-                return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "target",
-                        "win": True, "entry": entry, "exit_price": target,
-                        "entry_index": execution_i, "exit_index": j}
+                return {
+                    "ok": True,
+                    "ret": ret,
+                    "days": j - entry_i,
+                    "exit": "target",
+                    "win": True,
+                    "entry": entry,
+                    "exit_price": target,
+                    "entry_index": execution_i,
+                    "exit_index": j,
+                }
             if j == min(len(bars), entry_i + 1 + max_hold) - 1:
                 ret = cl / entry - 1
-                return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "time",
-                        "win": ret > 0, "entry": entry, "exit_price": cl,
-                        "entry_index": execution_i, "exit_index": j}
+                return {
+                    "ok": True,
+                    "ret": ret,
+                    "days": j - entry_i,
+                    "exit": "time",
+                    "win": ret > 0,
+                    "entry": entry,
+                    "exit_price": cl,
+                    "entry_index": execution_i,
+                    "exit_index": j,
+                }
         return {"ok": False}
 
     if mode == "bench":
@@ -79,7 +105,9 @@ def simulate_trade(
         max_hold = p.get("max_hold", BENCH_MAX_HOLD_DAYS)
         stop = entry * (1 - stop_pct)
         ev = bench_exit_events(
-            bars, entry_i, bench_vol,
+            bars,
+            entry_i,
+            bench_vol,
             exit_window=p.get("exit_window", BENCH_EXIT_WINDOW),
             strong_reset=p.get("strong_reset", BENCH_STRONG_RESET),
             max_hold=max_hold,
@@ -87,31 +115,52 @@ def simulate_trade(
         exit_j, exit_type = ev["exit_j"], ev["exit_type"]
         peak = entry
         max_dd = 0.0
-        for j in range(entry_i + 1, exit_j + 1):
+        # 买入日内即使触发止损也不可卖出；从下一交易日起检查卖出条件。
+        for j in range(execution_i + 1, exit_j + 1):
             row = bars.iloc[j]
             lo, cl = float(row["low"]), float(row["close"])
             if lo <= stop:  # 止损优先（保守）
                 ret = stop / entry - 1
-                return {"ok": True, "ret": ret, "days": j - entry_i, "exit": "stop",
-                        "win": False, "entry": entry, "exit_price": stop,
-                        "max_dd": round(max_dd, 4),
-                        "entry_index": execution_i, "exit_index": j}
+                return {
+                    "ok": True,
+                    "ret": ret,
+                    "days": j - entry_i,
+                    "exit": "stop",
+                    "win": False,
+                    "entry": entry,
+                    "exit_price": stop,
+                    "max_dd": round(max_dd, 4),
+                    "entry_index": execution_i,
+                    "exit_index": j,
+                }
             peak = max(peak, float(row["high"]))
             max_dd = max(max_dd, 1 - cl / peak)
-        # bench 出场：信号确认于 exit_j 收盘，次日开盘卖出；无次日则当日收盘
+        # bench 出场：信号确认于 exit_j 收盘，必须次日开盘卖出；禁止无次日时
+        # 回退到确认日收盘。time 出场也必须至少晚于买入日。
         if exit_type == "bench" and exit_j + 1 < len(bars):
             op = bars.iloc[exit_j + 1].get("open")
             px = float(op) if op and not pd.isna(op) else float(bars.iloc[exit_j + 1]["close"])
             days = exit_j + 1 - entry_i
+            exit_index = exit_j + 1
         else:
+            if exit_type == "bench" or exit_j <= execution_i:
+                return {"ok": False, "reason": "NO_T1_EXIT_BAR"}
             px = float(bars.iloc[exit_j]["close"])
             days = exit_j - entry_i
+            exit_index = exit_j
         ret = px / entry - 1
-        return {"ok": True, "ret": ret, "days": days, "exit": exit_type,
-                "win": ret > 0, "entry": entry, "exit_price": px,
-                "max_dd": round(max_dd, 4),
-                "entry_index": execution_i,
-                "exit_index": exit_j + 1 if exit_type == "bench" and exit_j + 1 < len(bars) else exit_j}
+        return {
+            "ok": True,
+            "ret": ret,
+            "days": days,
+            "exit": exit_type,
+            "win": ret > 0,
+            "entry": entry,
+            "exit_price": px,
+            "max_dd": round(max_dd, 4),
+            "entry_index": execution_i,
+            "exit_index": exit_index,
+        }
 
     raise ValueError(f"未知 mode: {mode}")
 

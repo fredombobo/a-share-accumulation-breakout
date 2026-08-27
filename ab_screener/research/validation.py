@@ -227,6 +227,7 @@ def evaluate_trusted_gate(
     baselines: dict[str, Any],
     anti_overfit: dict[str, Any] | None = None,
     portfolio_model: dict[str, str] | None = None,
+    pit_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return PASS/FAIL/INSUFFICIENT_EVIDENCE for one frozen IS winner.
 
@@ -344,9 +345,16 @@ def evaluate_trusted_gate(
     if portfolio_model is not None:
         expected_version = portfolio_model.get("version")
         expected_hash = portfolio_model.get("config_hash")
+        expected_execution = portfolio_model.get("execution_model_version")
+        expected_fee = portfolio_model.get("fee_version")
+        if not all((expected_version, expected_hash, expected_execution, expected_fee)):
+            portfolio_evidence_complete = False
+            reasons.append("组合账户模型身份不完整")
         oos_values = (
             oos.get("oos_portfolio_model_version"),
             oos.get("oos_portfolio_config_hash"),
+            oos.get("oos_portfolio_execution_model_version"),
+            oos.get("oos_portfolio_fee_version"),
             oos.get("oos_portfolio_status"),
         )
         if any(value is None for value in oos_values):
@@ -356,13 +364,15 @@ def evaluate_trusted_gate(
             oos_portfolio_check = _check(
                 "oos_portfolio_accounting",
                 "OOS 共享账户与每日盯市",
-                oos_values == (expected_version, expected_hash, "PASS"),
+                oos_values == (expected_version, expected_hash, expected_execution, expected_fee, "PASS"),
                 {
                     "version": oos_values[0],
                     "config_hash": oos_values[1],
-                    "status": oos_values[2],
+                    "execution_model_version": oos_values[2],
+                    "fee_version": oos_values[3],
+                    "status": oos_values[4],
                 },
-                "版本/配置一致且完整平仓",
+                "组合/执行/费用版本与配置一致且完整平仓",
             )
             checks.append(oos_portfolio_check)
             if not oos_portfolio_check["passed"]:
@@ -391,6 +401,10 @@ def evaluate_trusted_gate(
             values = (
                 baseline_row.get("portfolio_model_version") if isinstance(baseline_row, dict) else None,
                 baseline_row.get("portfolio_config_hash") if isinstance(baseline_row, dict) else None,
+                baseline_row.get("portfolio_execution_model_version")
+                if isinstance(baseline_row, dict)
+                else None,
+                baseline_row.get("portfolio_fee_version") if isinstance(baseline_row, dict) else None,
                 baseline_row.get("portfolio_status") if isinstance(baseline_row, dict) else None,
             )
             if any(value is None for value in values):
@@ -400,13 +414,48 @@ def evaluate_trusted_gate(
             baseline_portfolio_check = _check(
                 f"{key}_portfolio_accounting",
                 f"{label}共享账户完整结算",
-                values == (expected_version, expected_hash, "PASS"),
-                {"version": values[0], "config_hash": values[1], "status": values[2]},
-                "版本/配置一致且完整平仓",
+                values == (expected_version, expected_hash, expected_execution, expected_fee, "PASS"),
+                {
+                    "version": values[0],
+                    "config_hash": values[1],
+                    "execution_model_version": values[2],
+                    "fee_version": values[3],
+                    "status": values[4],
+                },
+                "组合/执行/费用版本与配置一致且完整平仓",
             )
             checks.append(baseline_portfolio_check)
             if not baseline_portfolio_check["passed"]:
                 reasons.append(f"{label}组合账户未按权威版本完整结算")
+
+    pit_evidence_complete = True
+    if pit_snapshot is not None:
+        required_pit_fields = (
+            "version",
+            "decision_at",
+            "data_start",
+            "data_end",
+            "universe_size",
+            "universe_sha256",
+            "dataset_fingerprint",
+        )
+        pit_evidence_complete = all(pit_snapshot.get(key) for key in required_pit_fields)
+        if not pit_evidence_complete:
+            reasons.append("PIT 研究快照身份不完整")
+        else:
+            pit_check = _check(
+                "point_in_time_snapshot",
+                "冻结 PIT 修订与历史生命周期宇宙",
+                pit_snapshot.get("version") == "research-pit-reader-v2.0.0"
+                and str(pit_snapshot.get("decision_at")).endswith("+08:00")
+                and len(str(pit_snapshot.get("universe_sha256"))) == 64
+                and len(str(pit_snapshot.get("dataset_fingerprint"))) == 16,
+                pit_snapshot,
+                "版本固定、+08:00 截止点、宇宙/数据 hash 完整",
+            )
+            checks.append(pit_check)
+            if not pit_check["passed"]:
+                reasons.append("PIT 研究快照版本或指纹非法")
 
     anti_complete = (
         isinstance(anti_overfit, dict)
@@ -427,6 +476,7 @@ def evaluate_trusted_gate(
         and baseline_complete
         and anti_complete
         and portfolio_evidence_complete
+        and pit_evidence_complete
     )
     if not evidence_complete:
         verdict = "INSUFFICIENT_EVIDENCE"

@@ -30,9 +30,9 @@ from ab_screener.research.registry import (
 from ab_screener.research.store import ResearchRunStore
 from ab_screener.research.trusted_run import (
     COST_VERSION,
-    dataset_fingerprint,
     execute_trusted_research,
     input_fingerprint,
+    prepare_trusted_pit_snapshot,
     trusted_portfolio_identity,
 )
 from research_windows import recommend_research_plan
@@ -51,7 +51,6 @@ def main() -> int:
     args = parser.parse_args()
 
     from build_version import build_version
-    from optimizer import research_universe
 
     db_path = Path(args.db).resolve()
     os.environ["AB_DB_PATH"] = str(db_path)
@@ -82,26 +81,21 @@ def main() -> int:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    max_codes = max(20, min(args.max_codes, 4500))
+    pit_snapshot = prepare_trusted_pit_snapshot(
+        db_path,
+        windows=windows,
+        max_codes=max_codes,
+    )
     request = {
         "strategy": args.strategy,
         "mode": "grid",
-        "max_codes": args.max_codes,
+        "max_codes": max_codes,
         "step": args.step,
         "portfolio_model": trusted_portfolio_identity(),
+        "pit_snapshot": pit_snapshot.identity(),
     }
-    universe = research_universe(args.max_codes, include_delisted=True)
-    starts = [str(windows["is_start"]), str(windows["oos_start"])]
-    starts.extend(
-        str(row["train_start"])
-        for row in windows["wf_windows"]
-        if isinstance(row, dict) and row.get("train_start")
-    )
-    dataset_version = dataset_fingerprint(
-        db_path,
-        start=min(starts),
-        end=str(windows["oos_end"]),
-        codes=universe,
-    )
+    dataset_version = pit_snapshot.dataset_fingerprint
     code_version = build_version()
     input_hash = input_fingerprint(
         request,

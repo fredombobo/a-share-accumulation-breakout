@@ -16,7 +16,7 @@ import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, wait
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
@@ -32,6 +32,9 @@ from ab_screener.research.portfolio_accounting import (
 )
 from config import BT_MIN_TRADES, GRID_BENCH
 from trade_sim import simulate_trade, summarize
+
+if TYPE_CHECKING:
+    from ab_screener.research.pit_reader import ResearchPitSnapshot
 
 _MIN_CODES_FOR_POOL = 100
 
@@ -422,6 +425,7 @@ def run_grid(
     signal_kwargs: dict | None = None,
     costs: dict | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    research_snapshot: ResearchPitSnapshot | None = None,
 ) -> pd.DataFrame:
     """网格优化主入口。返回每组参数一行统计的 DataFrame（按 profit_factor 降序）。
 
@@ -432,13 +436,22 @@ def run_grid(
     from local_store import LocalStore
     from parallel_scan import resolve_workers
 
-    store = LocalStore()
     if _is_cancelled(cancel_check):
         raise ResearchCancelled("用户取消")
-    codes = research_universe(max_codes, include_delisted=True)
-
-    # 交易日历用全库（检测窗口需要回测区间之前的日期索引），区间内按 step 采样
-    cal = store.distinct_dates("daily")
+    # 加载区间前置扩展：箱体/建仓序列判定需要窗口前 horizon 日数据
+    load_start = (pd.to_datetime(start) - pd.Timedelta(days=365)).strftime("%Y%m%d")
+    if research_snapshot is not None:
+        codes = list(research_snapshot.universe)
+        if max_codes is not None:
+            codes = codes[:max_codes]
+        big = research_snapshot.load_daily(ts_codes=codes, start=load_start, end=end)
+        cal = sorted(big["trade_date"].astype(str).unique().tolist())
+    else:
+        store = LocalStore()
+        codes = research_universe(max_codes, include_delisted=True)
+        # 兼容探索路径；权威研究必须显式传入冻结 PIT 快照。
+        cal = store.distinct_dates("daily")
+        big = store.load_daily(ts_codes=codes, start=load_start, end=end)
     sample_days = [d for d in cal if start <= d <= end][:: max(1, step)]
     if not sample_days:
         return pd.DataFrame()
@@ -447,9 +460,6 @@ def run_grid(
     if progress_cb:
         progress_cb(f"优化池 {len(codes)} 只 × {len(sample_days)} 采样日 × {len(combos)} 组合", 5)
 
-    # 加载区间前置扩展：箱体/建仓序列判定需要窗口前 horizon 日数据
-    load_start = (pd.to_datetime(start) - pd.Timedelta(days=365)).strftime("%Y%m%d")
-    big = store.load_daily(ts_codes=codes, start=load_start, end=end)
     if big.empty:
         return pd.DataFrame()
     prepared_market = (
