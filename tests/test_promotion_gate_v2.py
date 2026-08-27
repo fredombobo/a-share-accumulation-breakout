@@ -1,4 +1,5 @@
-﻿"""P3.4 晋级门禁测试：ROBUST/STRICT 双口径、CANDIDATE 语义。"""
+"""P3.4 晋级门禁测试：ROBUST/STRICT 双口径、CANDIDATE 语义。"""
+
 from __future__ import annotations
 
 from ab_screener.research.promotion_v2 import (
@@ -13,11 +14,19 @@ from ab_screener.research.promotion_v2 import (
 
 def _good_evidence(**over) -> PromotionEvidence:
     ev = PromotionEvidence(
-        pbo=0.15, dsr=0.97, min_track_record_coverage=2,
-        outer_test_windows=6, positive_test_ratio=0.83,
-        oos_net_total=1_000_000, baseline_net_total=800_000,
-        oos_net_2x=300_000, neighborhood_positive_ratio=0.70,
-        hashes_valid=True, preregistered=True,
+        pbo=0.15,
+        dsr=0.97,
+        min_track_record_coverage=2,
+        outer_test_windows=6,
+        positive_test_ratio=0.83,
+        oos_net_total=1_000_000,
+        baseline_net_total=800_000,
+        oos_net_2x=300_000,
+        baseline_net_2x=100_000,
+        neighborhood_positive_ratio=0.70,
+        neighborhood_coverage=1.0,
+        hashes_valid=True,
+        preregistered=True,
     )
     return PromotionEvidence(**{**ev.__dict__, **over})
 
@@ -37,7 +46,9 @@ def test_robust_fail_on_each_threshold():
         "oos_negative": {"oos_net_total": -100},
         "baseline": {"oos_net_total": 700_000, "baseline_net_total": 800_000},
         "cost2x": {"oos_net_2x": -50},
+        "cost2x_baseline": {"oos_net_2x": 90, "baseline_net_2x": 100},
         "neighborhood": {"neighborhood_positive_ratio": 0.50},
+        "neighborhood_coverage": {"neighborhood_coverage": 0.75},
         "hashes": {"hashes_valid": False},
         "preregistered": {"preregistered": False},
     }

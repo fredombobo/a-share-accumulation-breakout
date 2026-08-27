@@ -106,6 +106,12 @@ def render_trusted_report(report: dict[str, Any]) -> str:
             "",
             f"`{_json(report.get('multiple_comparison') or {})}`",
             "",
+            "## 正式统计与最终晋级",
+            "",
+            f"- DSR / MinTRL：`{_json(report.get('v2_statistics') or {})}`",
+            f"- 正式证据：`{_json(report.get('formal_evidence') or {})}`",
+            f"- 晋级决策：`{_json(report.get('formal_promotion') or {})}`",
+            "",
             "## 门禁检查",
             "",
         ]

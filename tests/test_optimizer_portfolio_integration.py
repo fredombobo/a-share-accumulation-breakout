@@ -109,7 +109,60 @@ def test_grid_promotes_portfolio_metrics_and_keeps_trade_diagnostics(monkeypatch
 
     row = result.iloc[0]
     assert row["portfolio_status"] == "PASS"
-    assert row["portfolio_model_version"] == "research-portfolio-v2.0.0"
+    assert row["portfolio_model_version"] == "research-portfolio-v2.1.0"
     assert row["trade_net_max_drawdown"] == 0.5
     assert row["net_max_drawdown"] < row["trade_net_max_drawdown"]
     assert row["net_avg_return"] == row["net_total_return"]
+
+
+def test_grid_override_captures_aligned_formal_daily_returns(monkeypatch) -> None:
+    market = _market()
+    combos = [
+        {
+            "strategy": "A",
+            "vol_ratio_min": ratio,
+            "strong_reset": 3,
+            "exit_window": 10,
+            "stop_pct": 0.07,
+        }
+        for ratio in (1.3, 1.5)
+    ]
+
+    def fake_worker(payload: tuple) -> dict[str, list[dict]]:
+        return {
+            optimizer.param_id(combo["strategy"], combo): [
+                _trade("000001.SZ", net_return=0.10, exit_price=14),
+            ]
+            for combo in payload[7]
+        }
+
+    monkeypatch.setattr("parallel_scan.resolve_workers", lambda _workers: 1)
+    monkeypatch.setattr(optimizer, "_worker_chunk", fake_worker)
+    monkeypatch.setattr(optimizer, "BT_MIN_TRADES", 1)
+    snapshot = ResearchPitSnapshot(
+        decision_at="2026-08-10T16:00:00+08:00",
+        data_start="20250801",
+        data_end="20260804",
+        universe=tuple(sorted(market["ts_code"].unique().tolist())),
+        universe_sha256="a" * 64,
+        dataset_fingerprint="b" * 16,
+        daily=market,
+    )
+
+    result = optimizer.run_grid(
+        start="20260801",
+        end="20260804",
+        strategy="A",
+        step=1,
+        combos_override=combos,
+        capture_formal_series=True,
+        portfolio_policy=PortfolioPolicy(),
+        research_snapshot=snapshot,
+    )
+
+    assert set(result["param_id"]) == {
+        optimizer.param_id("A", combo)
+        for combo in combos
+    }
+    for series in result["_formal_daily_returns"]:
+        assert list(series) == ["20260802", "20260803", "20260804"]

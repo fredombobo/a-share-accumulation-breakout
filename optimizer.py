@@ -25,6 +25,7 @@ os.environ.pop("PYTHONPATH", None)
 
 from ab_screener.research.cost_adjustment import cost_adjusted_trade, summarize_costed_trades
 from ab_screener.research.portfolio_accounting import (
+    PortfolioAccountingError,
     PortfolioPolicy,
     portfolio_gate_metrics,
     prepare_portfolio_market,
@@ -184,6 +185,37 @@ def grid_combos(
     for vals in itertools.product(*[g[k] for k in keys]):
         out.append({"strategy": strategy, **dict(zip(keys, vals))})
     return out
+
+
+_PARAMETER_KEYS = ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
+
+
+def _validated_combo_overrides(
+    strategy: str,
+    combos: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize an explicitly preregistered combo list and reject ambiguity."""
+    if not combos:
+        raise ValueError("combos_override 不能为空")
+    normalized: dict[str, dict[str, Any]] = {}
+    for raw in combos:
+        if not isinstance(raw, dict):
+            raise TypeError("combos_override 每项必须为对象")
+        raw_strategy = str(raw.get("strategy") or strategy)
+        if raw_strategy != strategy:
+            raise ValueError("combos_override 的 strategy 与研究任务不一致")
+        missing = [key for key in _PARAMETER_KEYS if raw.get(key) is None]
+        if missing:
+            raise ValueError(f"combos_override 缺少参数: {missing}")
+        combo = {
+            "strategy": strategy,
+            "vol_ratio_min": float(raw["vol_ratio_min"]),
+            "strong_reset": int(raw["strong_reset"]),
+            "exit_window": int(raw["exit_window"]),
+            "stop_pct": float(raw["stop_pct"]),
+        }
+        normalized[param_id(strategy, combo)] = combo
+    return [normalized[key] for key in sorted(normalized)]
 
 
 def _detect_signals_for_code(
@@ -426,6 +458,8 @@ def run_grid(
     costs: dict | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
+    combos_override: list[dict[str, Any]] | None = None,
+    capture_formal_series: bool = False,
 ) -> pd.DataFrame:
     """网格优化主入口。返回每组参数一行统计的 DataFrame（按 profit_factor 降序）。
 
@@ -436,6 +470,8 @@ def run_grid(
     from local_store import LocalStore
     from parallel_scan import resolve_workers
 
+    if capture_formal_series and portfolio_policy is None:
+        raise ValueError("正式收益序列必须使用版本化组合账户模型")
     if _is_cancelled(cancel_check):
         raise ResearchCancelled("用户取消")
     # 加载区间前置扩展：箱体/建仓序列判定需要窗口前 horizon 日数据
@@ -455,7 +491,11 @@ def run_grid(
     sample_days = [d for d in cal if start <= d <= end][:: max(1, step)]
     if not sample_days:
         return pd.DataFrame()
-    combos = grid_combos(strategy, grid)
+    combos = (
+        _validated_combo_overrides(strategy, combos_override)
+        if combos_override is not None
+        else grid_combos(strategy, grid)
+    )
     vr_levels = sorted({c["vol_ratio_min"] for c in combos})
     if progress_cb:
         progress_cb(f"优化池 {len(codes)} 只 × {len(sample_days)} 采样日 × {len(combos)} 组合", 5)
@@ -532,6 +572,12 @@ def run_grid(
             )
             row.update({f"trade_{key}": value for key, value in trade_metrics.items()})
             row.update(portfolio_gate_metrics(portfolio))
+            if capture_formal_series:
+                dates = [str(item["trade_date"]) for item in portfolio["equity_curve"]]
+                returns = [float(value) for value in portfolio["portfolio_daily_returns"]]
+                if len(dates) != len(returns):
+                    raise PortfolioAccountingError("组合日收益与权益日期长度不一致")
+                row["_formal_daily_returns"] = dict(zip(dates, returns))
         rows.append(row)
     df_out = pd.DataFrame(rows)
     if not df_out.empty:

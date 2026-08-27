@@ -7,7 +7,7 @@ import pandas as pd
 from ab_screener.domain.costs import NOTIONAL, FillResult, summarize_fills
 from ab_screener.research.baselines import random_baseline_trades
 from ab_screener.research.portfolio_accounting import PortfolioPolicy
-from walkforward import run_is_oos, wf_recheck
+from walkforward import predeclared_parameter_neighborhood, run_is_oos, wf_recheck
 
 
 def _fill(net_return: float) -> FillResult:
@@ -129,3 +129,26 @@ def test_is_oos_progress_is_monotonic_and_identifies_oos_phase() -> None:
     progresses = [event[1] for event in events]
     assert progresses == sorted(progresses)
     assert any(message.startswith("OOS") for message, _ in events)
+
+
+def test_parameter_neighborhood_is_fixed_by_is_grid_before_oos() -> None:
+    primary = {
+        "strategy": "A",
+        "vol_ratio_min": 1.3,
+        "strong_reset": 2,
+        "exit_window": 7,
+        "stop_pct": 0.05,
+    }
+    grid = {
+        "vol_ratio_min": [1.3, 1.5],
+        "strong_reset": [2, 3],
+        "exit_window": [7, 10],
+        "stop_pct": [0.05, 0.07],
+    }
+
+    neighbors = predeclared_parameter_neighborhood(primary, grid)
+
+    assert len(neighbors) == 4
+    for row in neighbors:
+        changed = sum(row[key] != primary[key] for key in grid)
+        assert changed == 1

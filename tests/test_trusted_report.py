@@ -58,7 +58,7 @@ def test_markdown_report_contains_reproducibility_and_all_gate_sections() -> Non
     assert "不会自动进入 A 池或生成订单" in markdown
 
 
-def test_orchestrator_runs_all_stages_and_builds_pass_report(monkeypatch, tmp_path) -> None:
+def test_orchestrator_runs_all_stages_but_missing_formal_evidence_fails_closed(monkeypatch, tmp_path) -> None:
     db = tmp_path / "flow.db"
     LocalStore(db)
     portfolio_identity = trusted_portfolio_identity()
@@ -169,6 +169,9 @@ def test_orchestrator_runs_all_stages_and_builds_pass_report(monkeypatch, tmp_pa
         phase_cb=lambda phase, _pct, _message, _state: phases.append(phase),
     )
 
-    assert result["trusted_report"]["verdict"] == "PASS"
+    assert result["trusted_report"]["traditional_gate"]["verdict"] == "PASS"
+    assert result["trusted_report"]["verdict"] == "FAIL"
+    assert result["trusted_report"]["candidate_eligible"] is False
+    assert result["trusted_report"]["formal_promotion"]["candidate"] == "NO_CANDIDATE"
     assert result["trusted_report"]["anti_overfit"]["verdict"] == "PASS"
     assert {"IS", "OOS", "WF", "BASELINES", "GATE", "REPORT", "CANDIDATE"} <= set(phases)

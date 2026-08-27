@@ -1,9 +1,10 @@
-version: research-portfolio-v2.0.0
+version: research-portfolio-v2.1.0
 initial_cash_fen: 100000000
 single_name_weight_bps: 1000
 gross_exposure_bps: 8000
 minimum_cash_bps: 1000
 daily_new_buy_bps: 2000
 participation_bps: 500
+cost_multiplier_bps: 10000
 stock_lot_size: 100
 volume_unit: hand

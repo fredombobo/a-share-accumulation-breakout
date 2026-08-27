@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -23,7 +23,7 @@ from config import (
     BT_OOS_START,
     WF_MIN_OOS_PF_RATIO,
 )
-from optimizer import run_grid
+from optimizer import grid_combos, param_id, run_grid
 
 if TYPE_CHECKING:
     from ab_screener.research.pit_reader import ResearchPitSnapshot
@@ -49,6 +49,39 @@ def _single_grid(combo: dict) -> dict:
     return {k: [combo[k]] for k in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")}
 
 
+_PARAMETER_KEYS = ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
+
+
+def _combo_from_row(row: dict) -> dict[str, Any]:
+    return {
+        "strategy": str(row["strategy"]),
+        "vol_ratio_min": float(row["vol_ratio_min"]),
+        "strong_reset": int(row["strong_reset"]),
+        "exit_window": int(row["exit_window"]),
+        "stop_pct": float(row["stop_pct"]),
+    }
+
+
+def predeclared_parameter_neighborhood(
+    primary: dict,
+    grid: dict | None,
+) -> list[dict]:
+    """Return one-coordinate neighbors fixed from the IS grid before OOS is read."""
+    normalized = _combo_from_row(primary)
+    primary_id = param_id(normalized["strategy"], normalized)
+    candidates = grid_combos(normalized["strategy"], grid)
+    candidate_ids = {param_id(row["strategy"], row) for row in candidates}
+    if primary_id not in candidate_ids:
+        raise ValueError("IS 第一名不属于预登记参数网格")
+    neighbors = [
+        row
+        for row in candidates
+        if param_id(row["strategy"], row) != primary_id
+        and sum(row[key] != normalized[key] for key in _PARAMETER_KEYS) == 1
+    ]
+    return sorted(neighbors, key=lambda row: param_id(row["strategy"], row))
+
+
 def _phase_progress(progress_cb, label: str, start: int, span: int):
     if progress_cb is None:
         return None
@@ -72,6 +105,7 @@ def eval_combo(
     costs: dict | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
+    capture_formal_series: bool = False,
 ) -> dict:
     """对单个参数组合在指定区间回测，返回统计行。"""
     df = run_grid(
@@ -87,6 +121,7 @@ def eval_combo(
         costs=costs,
         portfolio_policy=portfolio_policy,
         research_snapshot=research_snapshot,
+        capture_formal_series=capture_formal_series,
     )
     if df.empty:
         return {"n_trades": 0}
@@ -110,6 +145,7 @@ def run_is_oos(
     cancel_check=None,
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
+    capture_formal_series: bool = False,
 ) -> dict:
     """完整流程：IS 网格 → 过滤（胜率≥30%、DD≤25%）→ Top N → OOS 验证。
 
@@ -138,6 +174,7 @@ def run_is_oos(
             costs=costs,
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
+            capture_formal_series=capture_formal_series,
         )
         is_df = pd.DataFrame([{**combo, **is_row}]) if is_row.get("n_trades") else pd.DataFrame()
         oos = eval_combo(
@@ -152,6 +189,7 @@ def run_is_oos(
             costs=costs,
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
+            capture_formal_series=capture_formal_series,
         )
         oos_df = pd.DataFrame(
             [
@@ -176,7 +214,13 @@ def run_is_oos(
         )
         if progress_cb:
             progress_cb("单组试跑完成", 100)
-        return {"is": is_df, "oos": oos_df, "msg": None, "mode": "single"}
+        return {
+            "is": is_df,
+            "oos": oos_df,
+            "msg": None,
+            "mode": "single",
+            "neighborhood_param_ids": [],
+        }
 
     is_df = run_grid(
         start=is_start,
@@ -191,9 +235,16 @@ def run_is_oos(
         costs=costs,
         portfolio_policy=portfolio_policy,
         research_snapshot=research_snapshot,
+        capture_formal_series=capture_formal_series,
     )
     if is_df.empty:
-        return {"is": is_df, "oos": pd.DataFrame(), "msg": "样本内无有效组合", "mode": "grid"}
+        return {
+            "is": is_df,
+            "oos": pd.DataFrame(),
+            "msg": "样本内无有效组合",
+            "mode": "grid",
+            "neighborhood_param_ids": [],
+        }
     eligibility = (
         (is_df["net_win_rate"] >= ELIG_MIN_NET_WIN_RATE)
         & (is_df["net_max_drawdown"] <= ELIG_MAX_NET_DRAWDOWN)
@@ -203,45 +254,81 @@ def run_is_oos(
         eligibility &= is_df["portfolio_status"].eq("PASS")
     elig = is_df[eligibility]
     top = elig.head(top_n) if not elig.empty else is_df.head(top_n)
+    primary = _combo_from_row(top.iloc[0].to_dict())
+    neighbors = predeclared_parameter_neighborhood(primary, grid)
+    evaluation_combos: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in [*top.to_dict("records"), *neighbors]:
+        combo = _combo_from_row(raw)
+        pid = param_id(str(combo["strategy"]), combo)
+        if pid not in seen:
+            evaluation_combos.append(combo)
+            seen.add(pid)
+
+    oos_evaluated = run_grid(
+        start=oos_start,
+        end=oos_end,
+        strategy=strategy,
+        step=step,
+        max_codes=max_codes,
+        combos_override=evaluation_combos,
+        progress_cb=_phase_progress(progress_cb, "OOS 冻结候选与参数邻域", 50, 50),
+        cancel_check=cancel_check,
+        signal_kwargs=signal_kwargs,
+        costs=costs,
+        portfolio_policy=portfolio_policy,
+        research_snapshot=research_snapshot,
+        capture_formal_series=capture_formal_series,
+    )
+    is_records = is_df.to_dict("records")
+    for row in is_records:
+        row.setdefault("param_id", param_id(str(row["strategy"]), _combo_from_row(row)))
+    oos_records = oos_evaluated.to_dict("records")
+    for row in oos_records:
+        row.setdefault("param_id", param_id(str(row["strategy"]), _combo_from_row(row)))
+    is_by_param = {str(row["param_id"]): row for row in is_records}
+    oos_by_param = {str(row["param_id"]): row for row in oos_records}
     oos_rows = []
-    total = max(1, len(top))
-    for index, (_, row) in enumerate(top.iterrows()):
-        combo = {k: row[k] for k in ("strategy", "vol_ratio_min", "strong_reset", "exit_window", "stop_pct")}
-        start_progress = 50 + int(50 * index / total)
-        span = max(1, int(50 * (index + 1) / total) - int(50 * index / total))
-        oos = eval_combo(
-            combo,
-            oos_start,
-            oos_end,
-            step=step,
-            max_codes=max_codes,
-            progress_cb=_phase_progress(progress_cb, f"OOS {index + 1}/{total}", start_progress, span),
-            cancel_check=cancel_check,
-            signal_kwargs=signal_kwargs,
-            costs=costs,
-            portfolio_policy=portfolio_policy,
-            research_snapshot=research_snapshot,
-        )
-        oos_rows.append(
-            {
-                **combo,
-                **{f"oos_{k}": v for k, v in oos.items() if k not in combo},
-                **{
-                    f"is_{k}": row[k]
-                    for k in (
-                        "n_trades",
-                        "win_rate",
-                        "profit_factor",
-                        "max_drawdown",
-                        "net_n_trades",
-                        "net_win_rate",
-                        "net_profit_factor",
-                        "net_max_drawdown",
-                    )
-                },
-            }
-        )
-    return {"is": is_df, "oos": pd.DataFrame(oos_rows), "mode": "grid"}
+    for combo in evaluation_combos:
+        pid = param_id(str(combo["strategy"]), combo)
+        oos_row = oos_by_param.get(pid)
+        if oos_row is None:
+            continue
+        is_row = is_by_param.get(pid, {})
+        payload = {
+            **combo,
+            "param_id": pid,
+            **{
+                f"oos_{key}": value
+                for key, value in oos_row.items()
+                if key not in combo and key not in {"param_id", "_formal_daily_returns"}
+            },
+            **{
+                f"is_{key}": is_row.get(key)
+                for key in (
+                    "n_trades",
+                    "win_rate",
+                    "profit_factor",
+                    "max_drawdown",
+                    "net_n_trades",
+                    "net_win_rate",
+                    "net_profit_factor",
+                    "net_max_drawdown",
+                )
+            },
+        }
+        if "_formal_daily_returns" in oos_row:
+            payload["_formal_daily_returns"] = oos_row["_formal_daily_returns"]
+        oos_rows.append(payload)
+    return {
+        "is": is_df,
+        "oos": pd.DataFrame(oos_rows),
+        "mode": "grid",
+        "neighborhood_param_ids": [
+            param_id(str(row["strategy"]), row)
+            for row in neighbors
+        ],
+    }
 
 
 def wf_recheck(

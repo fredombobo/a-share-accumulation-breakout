@@ -464,13 +464,18 @@ def lab_optimize(req: LabOptimizeRequest):
                 raise HTTPException(status_code=422, detail=f"网格组合过多({combinations}>120)")
             request_data["grid"] = clean_grid or None
 
+    from ab_screener.research.promotion_v2 import ROBUST_PROFILE
     from ab_screener.research.trusted_run import (
         COST_VERSION,
         input_fingerprint,
         prepare_trusted_pit_snapshot,
         trusted_portfolio_identity,
     )
-
+    request_data["preregistered"] = bool(
+        mode == "grid" and windows.get("mode") == "full" and windows.get("automatic_window")
+    )
+    request_data["promotion_profile"] = ROBUST_PROFILE
+    request_data["primary_baseline"] = "ma20_60"
     request_data["portfolio_model"] = trusted_portfolio_identity()
     max_codes = max(20, min(int(request_data.get("max_codes") or 200), 4500))
     pit_snapshot = prepare_trusted_pit_snapshot(

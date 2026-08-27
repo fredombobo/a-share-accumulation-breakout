@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from ab_screener.research.promotion_v2 import ROBUST_PROFILE
 from ab_screener.research.registry import (
     register_experiment,
     register_trial,
@@ -92,6 +93,9 @@ def main() -> int:
         "mode": "grid",
         "max_codes": max_codes,
         "step": args.step,
+        "preregistered": True,
+        "promotion_profile": ROBUST_PROFILE,
+        "primary_baseline": "ma20_60",
         "portfolio_model": trusted_portfolio_identity(),
         "pit_snapshot": pit_snapshot.identity(),
     }

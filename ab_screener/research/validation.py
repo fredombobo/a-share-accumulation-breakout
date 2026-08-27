@@ -171,9 +171,10 @@ def v2_statistics_block(
     oos_returns: list[float],
     *,
     n_trials: int,
+    trial_sharpe_std: float | None = None,
     confidence: float = 0.95,
 ) -> dict[str, Any]:
-    """P3.2：从 OOS 逐笔净收益计算 v2 正式统计；数据不足 → INSUFFICIENT（不伪造）。"""
+    """Compute DSR/MinTRL from OOS daily portfolio returns; missing trials fail closed."""
     from ab_screener.research.deflated_sharpe import (
         deflated_sharpe,
         expected_max_sharpe_null,
@@ -191,6 +192,15 @@ def v2_statistics_block(
     std = math.sqrt(var) if var > 0 else 0.0
     if std <= 0:
         return {"status": "INSUFFICIENT", "reason": "OOS 收益零方差，无法计算 Sharpe"}
+    if n_trials > 1 and (
+        trial_sharpe_std is None
+        or not math.isfinite(float(trial_sharpe_std))
+        or float(trial_sharpe_std) <= 0
+    ):
+        return {
+            "status": "INSUFFICIENT",
+            "reason": "多试验 DSR 缺少 IS 参数 Sharpe 横截面标准差",
+        }
     sharpe = mean / std
     skew = 0.0
     kurt = 3.0
@@ -200,7 +210,8 @@ def v2_statistics_block(
         if std > 0:
             skew = m3 / (std**3)
             kurt = m4 / (std**4)
-    dsr = deflated_sharpe(sharpe, len(finite), skew, kurt, n_trials)
+    sr0 = expected_max_sharpe_null(n_trials, sharpe_std=trial_sharpe_std)
+    dsr = deflated_sharpe(sharpe, len(finite), skew, kurt, n_trials, sr0=sr0)
     mintrl = min_track_record_length(sharpe, skew, kurt, confidence=confidence)
     return {
         "status": "OK",
@@ -210,7 +221,8 @@ def v2_statistics_block(
         "kurtosis": round(kurt, 4),
         "dsr": round(dsr, 6),
         "dsr_pass_95": dsr >= 0.95,
-        "sr0_null_max": round(expected_max_sharpe_null(n_trials), 6),
+        "sr0_null_max": round(sr0, 6),
+        "trial_sharpe_std": trial_sharpe_std,
         "min_track_record_length": round(mintrl, 2),
         "min_track_record_coverage": round(len(finite) / mintrl, 3) if mintrl > 0 else None,
         "n_trials": n_trials,

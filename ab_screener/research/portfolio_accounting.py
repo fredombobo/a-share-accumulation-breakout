@@ -32,7 +32,7 @@ from ab_screener.domain.execution.models import (
 from ab_screener.domain.instrument import is_a_share_stock
 from paper_trading.rules import InstrumentRule, default_rule
 
-PORTFOLIO_MODEL_VERSION = "research-portfolio-v2.0.0"
+PORTFOLIO_MODEL_VERSION = "research-portfolio-v2.1.0"
 _MICRO_PER_YUAN = Decimal(1000000)
 _FEN_PER_AMOUNT_K_YUAN = Decimal(100000)
 
@@ -50,6 +50,7 @@ class PortfolioPolicy:
     minimum_cash_bps: int = 1_000
     daily_new_buy_bps: int = 2_000
     participation_bps: int = 500
+    cost_multiplier_bps: int = 10_000
     stock_lot_size: int = 100
     volume_unit: str = "hand"
 
@@ -64,10 +65,14 @@ class PortfolioPolicy:
             "minimum_cash_bps",
             "daily_new_buy_bps",
             "participation_bps",
+            "cost_multiplier_bps",
         ):
             value = getattr(self, name)
-            if not isinstance(value, int) or not 0 <= value <= 10_000:
-                raise PortfolioAccountingError(f"{name} 必须为 0..10000 的整数")
+            upper = 50_000 if name == "cost_multiplier_bps" else 10_000
+            if not isinstance(value, int) or not 0 <= value <= upper:
+                raise PortfolioAccountingError(f"{name} 必须为 0..{upper} 的整数")
+        if self.cost_multiplier_bps <= 0:
+            raise PortfolioAccountingError("cost_multiplier_bps 必须大于 0")
         if self.single_name_weight_bps > self.gross_exposure_bps:
             raise PortfolioAccountingError("单标的权重不能超过总仓位上限")
         if self.gross_exposure_bps + self.minimum_cash_bps > 10_000:
@@ -491,7 +496,7 @@ def _process_exits(
                 lot_size=rule.lot_size,
                 position_qty=position.qty,
                 requested_qty=position.qty,
-                fees=_fee_params(rule),
+                fees=portfolio_fee_params(rule, policy),
             ),
         )
         if not fill.filled:
@@ -534,13 +539,18 @@ def _buy_fill(
                 lot_size=rule.lot_size,
                 cash_available_fen=0,
                 requested_qty=rule.lot_size,
-                fees=_fee_params(rule),
+                fees=portfolio_fee_params(rule, policy),
             ),
         )
     if quote.open_micro <= 0:
         rough_qty = rule.lot_size
     else:
-        buy_price = slipped_price_micro(quote.open_micro, "BUY", quote, rule.slippage_bps)
+        buy_price = slipped_price_micro(
+            quote.open_micro,
+            "BUY",
+            quote,
+            _scaled_cost(rule.slippage_bps, policy.cost_multiplier_bps),
+        )
         rough_qty = floor_to_lot(budget_fen * 10_000 // buy_price, rule.lot_size)
     return compute_fill(
         quote,
@@ -553,19 +563,24 @@ def _buy_fill(
             lot_size=rule.lot_size,
             cash_available_fen=budget_fen,
             requested_qty=max(rough_qty, rule.lot_size),
-            fees=_fee_params(rule),
+            fees=portfolio_fee_params(rule, policy),
         ),
     )
 
 
-def _fee_params(rule: InstrumentRule) -> FeeParams:
+def portfolio_fee_params(rule: InstrumentRule, policy: PortfolioPolicy) -> FeeParams:
+    """Resolve the exact versioned fee/slippage assumptions for one policy."""
     return FeeParams(
-        commission_bps=rule.commission_bps,
-        commission_min_fen=rule.min_commission_fen,
-        stamp_tax_bps=rule.sell_tax_bps,
-        other_fee_bps=rule.other_fee_bps,
-        slippage_bps=rule.slippage_bps,
+        commission_bps=_scaled_cost(rule.commission_bps, policy.cost_multiplier_bps),
+        commission_min_fen=_scaled_cost(rule.min_commission_fen, policy.cost_multiplier_bps),
+        stamp_tax_bps=_scaled_cost(rule.sell_tax_bps, policy.cost_multiplier_bps),
+        other_fee_bps=_scaled_cost(rule.other_fee_bps, policy.cost_multiplier_bps),
+        slippage_bps=_scaled_cost(rule.slippage_bps, policy.cost_multiplier_bps),
     )
+
+
+def _scaled_cost(value: int, multiplier_bps: int) -> int:
+    return (int(value) * int(multiplier_bps) + 5_000) // 10_000
 
 
 def _event_payload(fill: FillV2, event: str) -> dict[str, Any]:

@@ -293,6 +293,22 @@ tasks:
       research-pit-reader-v2.0.0 已接入 grid、OOS、WF、双基线、正式统计和 Lab；
       生产只读快照与 T+1 边界复算通过，严格质量门 916 tests PASS。新权威研究待本提交后重新预登记。
 
+  - id: V2-P7.3-FORMAL-PROMOTION-GATE
+    title: 将正式统计与稳健个人晋级门真正接入权威研究结论
+    status: in_progress
+    work_package: WP75
+    phase: P7
+    dependencies:
+      - V2-P3-RESEARCH-GOVERNANCE
+      - V2-P7.2-RESEARCH-PIT-READER
+    plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
+    acceptance:
+      - 传统 OOS/WF/双基线 PASS 不得绕过 ROBUST_PERSONAL_V2
+      - DSR、MinTRL、PBO、外层测试窗、2x 成本和参数邻域任一缺失均 fail-closed
+      - 最终 candidate_eligible、数据库状态、报告标题与下载内容使用同一结论
+      - STRICT_RESEARCH_V2 只作独立对照，不得与个人候选口径混名
+      - 旧报告不覆盖；修复后以新代码身份重新预登记
+
   # ── P8 ──
   - id: V2-P8-FINAL-ACCEPTANCE
     title: 七闸门总验收与证据索引
@@ -307,6 +323,7 @@ tasks:
       - V2-P6-DAG-AUDIT-BACKUP
       - V2-P7-API-UI
       - V2-P7.2-RESEARCH-PIT-READER
+      - V2-P7.3-FORMAL-PROMOTION-GATE
     acceptance:
       - 七闸门当前身份全部 PASS 或诚实 ENGINEERING_READY_RESEARCH_BLOCKED/BLOCKED
       - 独立审计可复跑关键命令与 hash

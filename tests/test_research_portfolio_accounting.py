@@ -7,8 +7,10 @@ from ab_screener.research.portfolio_accounting import (
     PORTFOLIO_MODEL_VERSION,
     PortfolioAccountingError,
     PortfolioPolicy,
+    portfolio_fee_params,
     portfolio_gate_metrics,
     prepare_portfolio_market,
+    resolved_stock_rules,
     simulate_portfolio,
 )
 
@@ -148,6 +150,28 @@ def test_same_day_entry_and_exit_candidate_fails_closed() -> None:
 def test_policy_rejects_impossible_risk_budget() -> None:
     with pytest.raises(PortfolioAccountingError, match="总仓位与最低现金"):
         PortfolioPolicy(gross_exposure_bps=9_500, minimum_cash_bps=1_000)
+
+
+def test_two_x_cost_policy_increases_exact_fees_and_changes_identity() -> None:
+    one_x = PortfolioPolicy()
+    two_x = PortfolioPolicy(cost_multiplier_bps=20_000)
+
+    base = simulate_portfolio([_trade("000001.SZ", 13)], _market(), policy=one_x)
+    stress = simulate_portfolio([_trade("000001.SZ", 13)], _market(), policy=two_x)
+    rule = resolved_stock_rules(["000001.SZ"], one_x)["000001.SZ"]
+    base_params = portfolio_fee_params(rule, one_x)
+    stress_params = portfolio_fee_params(rule, two_x)
+
+    assert two_x.fingerprint() != one_x.fingerprint()
+    assert stress_params.commission_bps == base_params.commission_bps * 2
+    assert stress_params.commission_min_fen == base_params.commission_min_fen * 2
+    assert stress_params.stamp_tax_bps == base_params.stamp_tax_bps * 2
+    assert stress_params.other_fee_bps == base_params.other_fee_bps * 2
+    assert stress_params.slippage_bps == base_params.slippage_bps * 2
+    assert stress["portfolio_commission_fen"] > base["portfolio_commission_fen"]
+    assert stress["portfolio_stamp_tax_fen"] > base["portfolio_stamp_tax_fen"]
+    assert stress["portfolio_slippage_fen"] > base["portfolio_slippage_fen"]
+    assert stress["portfolio_total_return"] < base["portfolio_total_return"]
 
 
 def test_prepared_market_cannot_be_reused_with_another_policy() -> None:

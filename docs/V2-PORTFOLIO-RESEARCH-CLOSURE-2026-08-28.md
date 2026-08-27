@@ -136,3 +136,59 @@ PIT 小样本复算发现：当信号位于研究窗倒数第二个交易日时�
 - 严格质量门通过：Ruff、Mypy、strict architecture、916 个离线测试、前端生产构建。
 - 旧权威研究 `v2auth20260828b` 仍为 `FAIL` 且未覆盖；下一步必须以本次新 build 重新预登记，
   不得降低 PF、回撤、WF、双基线、DSR 或 MinTRL 门槛。
+
+## 11. P7.3 正式晋级门接线纠错方案
+
+`v2auth20260828d` 在 PIT、组合账户、OOS、三窗 WF 和双基线层得到传统门禁 `PASS`，但同一
+报告的正式统计为 `DSR=0`、`MinTRL coverage=0.188`。现有流程在生成正式统计前已经设置
+`candidate_eligible=true`，导致正式统计只展示、不阻断，这是不可接受的可信性缺口。该运行
+保留为诊断证据，不得写入 `configs/platform_v2.yaml` 的权威 ID。
+
+实施顺序：
+
+1. 先将 `ROBUST_PERSONAL_V2` 接为最终硬门；传统门通过但正式证据缺失或失败时，最终结论
+   必须为 `FAIL/NO_CANDIDATE`。
+2. 统一报告、数据库 `candidate_eligible/can_claim_edge`、候选登记与前端摘要，禁止出现两个
+   互相冲突的结论。
+3. 报告在正式统计和晋级决策完成后再渲染 Markdown；写入传统门与正式门的独立明细。
+4. 预登记主基线固定为 `ma20_60`；PBO、至少 5 个外层测试窗、2×成本及参数邻域证据缺失
+   都按失败处理，不用默认值伪造。
+5. 补齐上述证据计算后，以新 run ID 重跑；旧 `v2auth20260828b/c/d` 均不覆盖。
+
+验收：
+
+- 构造“传统 PASS、DSR FAIL”时，最终 `candidate_eligible=false`，且不会写研究候选。
+- 构造正式证据缺字段时明确列出阻断项，而不是降级为传统 PASS。
+- 只有 `ROBUST_PERSONAL_V2` 全部门槛通过才返回 `CANDIDATE`；`STRICT_RESEARCH_V2` 独立展示。
+- 报告 JSON、Markdown、研究运行表和 API 恢复后的结论完全一致。
+
+## 12. P7.3 实现口径与离线验收
+
+本轮没有降低任何晋级阈值，而是把原先仅展示的统计量改成最终硬门：
+
+- `formal-evidence-v2.0.0` 从 IS 全网格的共享账户每日净收益构造对齐矩阵；无持仓日按现金
+  零收益对齐，并固化日期、参数和矩阵 SHA-256。
+- CSCV-PBO 每个训练切分只冻结 Sharpe 第一名，再在互斥测试切分读取一次排名；组合数过大
+  时确定性等距抽取最多 2,000 个切分，抽取规则写入报告。
+- 嵌套参数 Walk-forward 使用扩展训练窗和 5 个互不重叠测试窗；每窗只以训练期复合收益
+  选择参数，测试期不能反向替换参数。
+- 参数邻域在读取 OOS 前由 IS 第一名和预登记网格确定，只允许一个坐标变化；任一计划邻域
+  缺少结果都会使覆盖率低于 100%，从而阻断晋级。
+- 2× 成本通过 `research-portfolio-v2.1.0` 的 `cost_multiplier_bps=20000` 重放冻结候选及
+  预登记主基线；佣金率、最低佣金、税费、其他费和滑点假设同时放大，配置 hash 独立固化。
+- DSR 的零假设最大 Sharpe 按 Bailey 与 López de Prado 的原始口径使用全部 IS 参数 Sharpe
+  的横截面标准差；多试验但缺少该分散度时返回 `INSUFFICIENT`，不再用无尺度常数替代。
+- `formal-promotion-gate-v2.0.0` 只有在传统门与 `ROBUST_PERSONAL_V2` 同时通过时才设置
+  `candidate_eligible=true`；`STRICT_RESEARCH_V2` 只作为独立对照。
+
+离线验收证据：
+
+- Ruff：PASS。
+- Mypy：PASS。
+- 严格架构检查：PASS。
+- Pytest：`928 passed`。
+- 前端 TypeScript 与 Vite 生产构建：PASS。
+- 旧 `v2auth20260828b/c/d` 保持不可变；新的权威 ID 必须在本实现固化后重新预登记。
+
+回滚：恢复上一提交即可回到只展示正式统计的旧流程；不得修改既有研究行或删除失败报告。
+无论回滚与否，`LIVE_TRADING_ENABLED=false` 和“研究候选不自动进入 A 池/订单”均保持不变。

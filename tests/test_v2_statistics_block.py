@@ -32,5 +32,13 @@ def test_trials_deflate_dsr():
     rng = np.random.default_rng(9)
     returns = rng.normal(0.002, 0.01, size=200).tolist()
     single = v2_statistics_block(returns, n_trials=1)
-    many = v2_statistics_block(returns, n_trials=500)
+    many = v2_statistics_block(returns, n_trials=500, trial_sharpe_std=0.2)
     assert many["dsr"] < single["dsr"]
+
+
+def test_multiple_trials_without_cross_trial_dispersion_fail_closed():
+    rng = np.random.default_rng(9)
+    returns = rng.normal(0.002, 0.01, size=200).tolist()
+    block = v2_statistics_block(returns, n_trials=50)
+    assert block["status"] == "INSUFFICIENT"
+    assert "横截面标准差" in block["reason"]

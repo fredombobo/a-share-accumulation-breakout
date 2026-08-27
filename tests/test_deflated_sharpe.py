@@ -24,10 +24,10 @@ def test_dsr_normal_case_hand_calc():
 def test_dsr_deflation_with_trials():
     """多试验后 SR0 抬高 → DSR 显著下降。"""
     base = deflated_sharpe(1.0, 100, 0.0, 3.0, n_trials=1)
-    deflated = deflated_sharpe(1.0, 100, 0.0, 3.0, n_trials=50)
+    deflated = deflated_sharpe(1.0, 100, 0.0, 3.0, n_trials=50, sharpe_std=0.2)
     assert deflated < base
     # 50 次试验的 SR0 为正
-    assert expected_max_sharpe_null(50) > 0
+    assert expected_max_sharpe_null(50, sharpe_std=0.2) > 0
 
 
 def test_dsr_skew_kurtosis_penalize():
@@ -44,8 +44,17 @@ def test_dsr_fail_closed():
         deflated_sharpe(1.0, 1, 0.0, 3.0, n_trials=1)
     with pytest.raises(ValueError, match="分母非正"):
         deflated_sharpe(5.0, 100, skew=0.0, kurtosis=0.5, n_trials=1)
+    with pytest.raises(ValueError, match="横截面标准差"):
+        deflated_sharpe(1.0, 100, 0.0, 3.0, n_trials=10)
 
 
 def test_dsr_summary_shape():
-    s = dsr_summary(sharpe=1.0, n_periods=100, skew=0.0, kurtosis=3.0, n_trials=10)
+    s = dsr_summary(
+        sharpe=1.0,
+        n_periods=100,
+        skew=0.0,
+        kurtosis=3.0,
+        n_trials=10,
+        sharpe_std=0.2,
+    )
     assert "deflated_sharpe" in s and "sr0_null_max" in s

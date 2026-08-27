@@ -1,10 +1,11 @@
 version: 1
-updated_at: "2026-08-28T02:21:00+08:00"
+updated_at: "2026-08-28T02:33:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
   P7.1 组合会计与 P7.2 冻结 PIT 研究读取已完成；当前旧权威研究仍为 FAIL，
-  D/P/L/G=PASS，R/O=FAIL，S=INSUFFICIENT。新权威研究与运维成熟度完成前 P8 继续 BLOCKED；
+  P7.3 正在修复正式统计只展示、不阻断候选的缺口。D/P/L/G=PASS，R/O=FAIL，
+  S=INSUFFICIENT。新权威研究与运维成熟度完成前 P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
@@ -231,6 +232,17 @@ tasks:
       - "T+1 边界纠错：禁止次日开盘买入后同日卖出；20 标的小样本 10 候选、7 买7卖、0 未平仓、组合 PASS"
       - "执行血缘 v2.1.1：滑点按实际成交价差逐笔拆解、不二次乘费率；组合配置 hash=8457421182d765e6"
       - "严格质量门 PASS：Ruff、Mypy、strict architecture、916 offline tests、frontend build"
+  V2-P7.3-FORMAL-PROMOTION-GATE:
+    status: in_progress
+    started_at: "2026-08-28T02:33:00+08:00"
+    work_package: WP75
+    dependencies:
+      - V2-P7.2-RESEARCH-PIT-READER
+    plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
+    note: >
+      v2auth20260828d 的传统门禁 PASS 但 DSR=0、MinTRL coverage=0.188；该报告不得绑定为权威候选。
+      ROBUST_PERSONAL_V2 最终硬门、PBO/DSR 横截面尺度/5窗嵌套选择/2x成本/参数邻域已实现，
+      严格质量门 928 tests PASS；等待以新代码身份完成权威预登记运行后再标记 complete。
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80

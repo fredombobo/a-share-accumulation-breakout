@@ -7,6 +7,7 @@
 - STRICT_RESEARCH_V2 对照：PBO<10%、DSR>95%、MinTRL≥1。
 PASS 仅生成 CANDIDATE，绝不写 A 池或订单；未达门槛必须 FAIL（不静默降级）。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,14 +21,16 @@ STRICT_PROFILE = "STRICT_RESEARCH_V2"
 class PromotionEvidence:
     pbo: float | None = None
     dsr: float | None = None
-    min_track_record_coverage: int | None = None
+    min_track_record_coverage: float | None = None
     outer_test_windows: int = 0
     positive_test_ratio: float = 0.0
     oos_net_total: float | None = None
     oos_net_mean: float | None = None
     baseline_net_total: float | None = None
     oos_net_2x: float | None = None
+    baseline_net_2x: float | None = None
     neighborhood_positive_ratio: float | None = None
+    neighborhood_coverage: float | None = None
     hashes_valid: bool = False
     preregistered: bool = False
     checks: dict[str, Any] = field(default_factory=dict)
@@ -56,8 +59,12 @@ def evaluate_robust_personal_v2(ev: PromotionEvidence) -> dict[str, Any]:
         blockers.append("OOS 净收益未优于预登记主基线")
     if ev.oos_net_2x is None or ev.oos_net_2x <= 0:
         blockers.append(f"2× 成本净 OOS {ev.oos_net_2x} 未为正")
+    if ev.baseline_net_2x is None or ev.oos_net_2x is None or ev.oos_net_2x <= ev.baseline_net_2x:
+        blockers.append("2× 成本净 OOS 未优于预登记主基线")
     if ev.neighborhood_positive_ratio is None or ev.neighborhood_positive_ratio < 0.60:
         blockers.append(f"参数邻域同向比例 {ev.neighborhood_positive_ratio} < 60%")
+    if ev.neighborhood_coverage is None or ev.neighborhood_coverage < 1.0:
+        blockers.append(f"参数邻域覆盖率 {ev.neighborhood_coverage} 未达到 100%")
     if not ev.hashes_valid:
         blockers.append("身份/产物哈希校验未通过")
     if not ev.preregistered:
@@ -89,12 +96,15 @@ def promotion_decision(ev: PromotionEvidence) -> dict[str, Any]:
         "candidate": "CANDIDATE" if robust["pass"] else "NO_CANDIDATE",
         "note": "PASS 仅生成 CANDIDATE，不得写 A 池或订单",
         "evidence": {
-            "pbo": ev.pbo, "dsr": ev.dsr,
+            "pbo": ev.pbo,
+            "dsr": ev.dsr,
             "min_track_record_coverage": ev.min_track_record_coverage,
             "outer_test_windows": ev.outer_test_windows,
             "positive_test_ratio": ev.positive_test_ratio,
             "oos_net_total": ev.oos_net_total,
             "oos_net_2x": ev.oos_net_2x,
+            "baseline_net_2x": ev.baseline_net_2x,
             "neighborhood_positive_ratio": ev.neighborhood_positive_ratio,
+            "neighborhood_coverage": ev.neighborhood_coverage,
         },
     }

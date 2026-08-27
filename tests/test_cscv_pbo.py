@@ -14,6 +14,8 @@ def test_manual_logit_reference():
     result = cscv_pbo(returns, n_splits=4)
     assert result["n_splits"] == 4
     assert result["logits_count"] > 0
+    assert result["logits_count"] == result["combos_evaluated"]
+    assert result["selection_rule"] == "train_sharpe_rank_1"
     assert 0.0 <= result["pbo"] <= 1.0
 
 
