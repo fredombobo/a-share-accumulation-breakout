@@ -12,7 +12,8 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now: []
+ready_now:
+  - V2-P7.1-PORTFOLIO-BACKTEST
 tasks:
   NINE_POINT_CLOSED_LOOP:
     status: complete
@@ -203,6 +204,18 @@ tasks:
       - "Playwright 4/4：导航、刷新恢复、390px 窄屏与键盘焦点"
       - "Vitest 7/7；生产前端构建通过；npm audit 0 vulnerabilities"
       - "V2R-G accepted at a197ac6；管理者安全降级纠错 fab7340"
+  V2-P7.1-PORTFOLIO-BACKTEST:
+    status: ready
+    work_package: WP75
+    plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
+    note: "纠正固定名义逐笔串行复利，新增共享现金/持仓/逐日估值的组合会计；不改门禁阈值。"
+  V2-P7.2-RESEARCH-PIT-READER:
+    status: blocked
+    work_package: WP75
+    dependencies:
+      - V2-P7.1-PORTFOLIO-BACKTEST
+    plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
+    note: "组合会计通过后，把可信研究切到 available_at <= decision_at 的 PIT 读取。"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80

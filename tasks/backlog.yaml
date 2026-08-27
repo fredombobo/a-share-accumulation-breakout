@@ -258,6 +258,37 @@ tasks:
       - INSTITUTIONAL_CONSOLE_V2_ENABLED 默认 false 直至契约过
     completion_note: "V2R-G 已接受；Playwright 4/4、Vitest 7/7、前端构建和 npm audit 通过。"
 
+  - id: V2-P7.1-PORTFOLIO-BACKTEST
+    title: 组合级现金、持仓、估值与回撤回测 V2
+    status: ready
+    work_package: WP75
+    phase: P7
+    dependencies:
+      - V2-P2-LEDGER-PARITY
+      - V2-P5-RISK-CONSTRAINTS
+    plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
+    acceptance:
+      - 逐日权益等于现金加持仓市值且误差为零分
+      - 单标的/总仓位/现金保留/单日新增约束与纸面风险口径一致
+      - 费用滑点整手参与率停牌涨跌停复用 V2 执行核心
+      - 重叠信号不得逐笔按百分百权益串行复利
+      - 旧研究报告不可覆盖
+
+  - id: V2-P7.2-RESEARCH-PIT-READER
+    title: 可信研究按 decision_at 读取 PIT 行情与 as-of 宇宙
+    status: blocked
+    work_package: WP75
+    phase: P7
+    dependencies:
+      - V2-P1.1-PIT
+      - V2-P7.1-PORTFOLIO-BACKTEST
+    plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
+    acceptance:
+      - 研究日线只读取 available_at 不晚于 decision_at 的修订
+      - as-of 宇宙不使用当前成分回填历史
+      - 修订边界和缺 PIT 数据均 fail-closed
+      - 新权威研究重新预登记且不降低门禁阈值
+
   # ── P8 ──
   - id: V2-P8-FINAL-ACCEPTANCE
     title: 七闸门总验收与证据索引
@@ -271,6 +302,7 @@ tasks:
     dependencies:
       - V2-P6-DAG-AUDIT-BACKUP
       - V2-P7-API-UI
+      - V2-P7.2-RESEARCH-PIT-READER
     acceptance:
       - 七闸门当前身份全部 PASS 或诚实 ENGINEERING_READY_RESEARCH_BLOCKED/BLOCKED
       - 独立审计可复跑关键命令与 hash
