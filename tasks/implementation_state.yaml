@@ -1,11 +1,11 @@
 version: 1
-updated_at: "2026-08-27T11:05:00+08:00"
+updated_at: "2026-08-28T01:12:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
-  三波工程交付与 G 共享入口已由管理者接受，但七闸门现场仅 D=PASS；
-  R/S/P=INSUFFICIENT，L/O/G=FAIL。历史研究 0746a4108e15 为 FAIL，且不属于
-  当前最终代码身份；P8 保持 BLOCKED。Do not claim PERSONAL_INSTITUTIONAL_READY.
+  三波工程交付、恢复续验和凭据脱敏纠错已完成；当前 D/P/L/G=PASS，
+  R=FAIL，S/O=INSUFFICIENT。P8 继续 BLOCKED；
+  Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
 live_trading_enabled: false
@@ -208,7 +208,7 @@ tasks:
     work_package: WP80
     verdict: BLOCKED
     manager_review: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
-    gate_results: {D: PASS, R: INSUFFICIENT, S: INSUFFICIENT, P: INSUFFICIENT, L: FAIL, O: FAIL, G: FAIL}
+    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: INSUFFICIENT, G: PASS}
 v2_remediation_20260823:
   authority: tasks/v2_remediation_board_20260823.yaml
   manager_review: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
@@ -231,13 +231,26 @@ v2_remediation_20260823:
   blocked:
     - V2R-P8
   research:
-    authoritative_task_id: "0746a4108e15"
-    current_identity_verdict: INSUFFICIENT
+    authoritative_task_id: "v2auth20260828b"
+    current_identity_verdict: FAIL
     historical_verdict: FAIL
     candidate_eligible: false
+  production_snapshot:
+    trade_date: "20260827"
+    code_version: "7940f508fb00"
+    platform_config_hash: "6dd3009820232a50"
+    scan_run_id: "eaf90d4808c6"
+    daily_manifest_status: COMPLETE
+    reconciliation: OK
+    signal_observations: 52
+    signal_outcomes: 0
+    verified_backups: "4/7"
+    restore_rto: "PASS 1789.798/1800 sec"
+    soak: "1/5"
+    live_trading_enabled: false
   quality_snapshot:
-    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 868 offline tests, frontend build"
-    pytest: "900 passed in 281.45s"
+    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 890 offline tests, frontend build"
+    pytest: "890 passed in 339.11s"
     pit_data: "70 passed"
     full_ruff: PASS
     full_mypy: "PASS: strict configured source set"

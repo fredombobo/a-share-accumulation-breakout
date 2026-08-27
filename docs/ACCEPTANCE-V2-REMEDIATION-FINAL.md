@@ -1,20 +1,19 @@
 # V2 remediation 独立总验收
 
-日期：2026-08-27
+日期：2026-08-28
 
 项目：`accumulation_breakout`（AB-Screener · 横盘吸筹突破）
 
-候选代码头：`fab734094b8146a7eb76485bd484e10346c9e866`
+最终源码身份：`7940f508fb00`；平台配置：`6dd3009820232a50`
 
 运行入口：`http://127.0.0.1:8001/`
 最终裁决：**BLOCKED**
 
 ## 1. 管理结论
 
-三波工程任务已经完成并通过代码级验收，V2R-G 共享入口也已接受；但“工程实现完成”不等于
-“七闸门通过”。当前只有 D 数据闸门 PASS，R/S/P/L/O/G 仍有真实证据缺口或硬失败，
-因此不能标记 `ENGINEERING_READY_RESEARCH_BLOCKED`，更不能标记
-`PERSONAL_INSTITUTIONAL_READY`。
+三波工程任务、恢复续验和凭据脱敏纠错均已通过代码级验收，但“工程实现完成”不等于
+“七闸门通过”。当前 D/P/L/G 为 PASS，R 为策略事实 FAIL，S/O 为真实时间不足。总裁决保持
+`BLOCKED`，不得标记 `PERSONAL_INSTITUTIONAL_READY` 或实盘就绪。
 
 系统身份已经纠正并固定为 Breakout，不是 AETF：服务端返回
 `product=accumulation_breakout`、`display_name=AB-Screener · 横盘吸筹突破`、默认端口 8001；
@@ -24,16 +23,16 @@
 
 | 闸门 | 结果 | 现场证据与阻断 |
 |---|---|---|
-| D 数据/PIT | **PASS** | 968 个完成交易日；最新本地/源端/沪深300均为 20260826；20 标的×5日=100 对抽样 0 差异；daily/daily_basic/moneyflow 最新分区均 0 缺历史、0 内容差异、0 元数据差异。 |
-| R 研究 | **INSUFFICIENT（已知历史结论 FAIL）** | 生产库不存在配置的权威任务 `0746a4108e15`，且旧证据代码身份不是当前构建。已保存的权威历史实验本身为 FAIL：OOS PF 1.112、最大回撤 88.03%、PBO 0.3815、DSR 0，不可晋级。 |
-| S 策略/信号 | **INSUFFICIENT** | 六插件工程契约通过，但生产库 `strategy_profiles=0`、`signal_observations=0`、`signal_outcomes=0`；没有成熟 Shadow/Paper 或 `ACTIVE_FOR_A_POOL` 证据。 |
-| P 组合/风险 | **INSUFFICIENT** | 风险算法、手算和故障 fixture 通过，但生产 `risk_snapshots=0`，不能把离线测试等同于生产风险闸门。 |
-| L 账本/日清 | **FAIL** | 最近清单为 20260821 `PARTIAL`，阻断 `MISSING_SCAN_RUN`；20260826 没有 `COMPLETE` 日清单。最近周期和对账虽为 DONE/OK，仍不能抵消 L-12。 |
-| O 运维/恢复 | **FAIL** | 可验证备份 3/7；当前身份真实完成交易日 soak 0/5。五日观察不能在一次实现会话中压缩或回填。 |
-| G 治理/安全 | **FAIL** | clean 身份、质量门、端口隔离、实盘关闭、前端 E2E 已通过；但供应商地址仍为明文 `http://a.sszhixia.cn/`，按 G-14 必须失败；生产审计链也尚无充分事件/外部锚点证据。 |
+| D 数据/PIT | **PASS** | 当前构建真实数据门禁 PASS；969 个完成交易日，本地/源端/沪深300最新日 20260827；100 对源端抽样 0 差异；三类最新 PIT 分区全部零漂移。 |
+| R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828b` 完整完成且可复算；OOS 净 PF 1.184、净最大回撤 59.88%、DSR 0、WF 仅 1/3 盈利，`candidate_eligible=false`。 |
+| S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=52`、5 类策略、`signal_outcomes=0`。观察日期尚未达到 5/10/20 日成熟线，禁止伪造 outcome。 |
+| P 组合/风险 | **PASS** | 最新交易日风险快照 `955681b4321b58f6` 已固化，行情/规则/配置版本齐全；统计状态如实为 INSUFFICIENT（权益序列不足 30 点）。 |
+| L 账本/日清 | **PASS** | 扫描 `eaf90d4808c6`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `5541d057079a...`。 |
+| O 运维/恢复 | **INSUFFICIENT** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；可验证备份 4/7、当前身份 soak 1/5。 |
+| G 治理/安全 | **PASS** | 实盘关闭、审计 hash chain、DB 外签名锚点、HTTPS 实际 API 与独立原生 TLS 探针均通过；最新探针时间 `2026-08-28T01:11:27+08:00`，证据 SHA-256 `1741dd66136e...`，无 HTTP 回退。 |
 
-`GET /api/v2/readiness` 的服务端聚合与上表一致，状态为 `BLOCKED`；浏览器不能传入布尔值
-覆盖闸门。
+最终门禁文件在文档提交后按最终 Git 身份重新生成；`GET /api/v2/readiness` 的服务端聚合必须
+与上表一致。浏览器不能传入布尔值覆盖闸门。
 
 ## 3. 本轮纠错实现
 
@@ -50,15 +49,15 @@
 - 真实门禁新增最新完成交易日三类 canonical/PIT 全分区一致性检查。
 
 生产库连续复核两次的第二次结果为：四类 `canonical_updated=0`，四类
-`appended_revisions=0`。20260826 行数分别为 daily 5549、daily_basic 5547、moneyflow 5547，
+`appended_revisions=0`。20260827 行数分别为 daily 5549、daily_basic 5547、moneyflow 5547，
 每类 canonical 与最新 PIT 行数相同。
 
 ### 3.2 迁移与生产库安全
 
 - 修复迁移 checksum 对 worktree 绝对路径敏感的问题；未知源码漂移仍拒绝。
-- 使用 SQLite online backup 生成备份；最终口径以完整性/FK、归档 SHA-256 与逻辑库
-  字节级 SHA-256 验证（旧逐表 JSON 哈希因超过恢复 RTO 已退役）：
-  `E:/ab-backups/backup_20260827_084523.db`，16,324,935,680 bytes。
+- 使用 SQLite online backup 生成压缩备份；最终口径以完整性/FK、归档 SHA-256 与逻辑库
+  字节级 SHA-256 验证：`E:/ab-backups/backup_20260827_231331.db.gz`，归档
+  4,261,575,768 bytes，逻辑库 16,465,776,640 bytes。
 - 先在 16GB 校验副本迁移两次（第一次应用、第二次 no-op），再在生产库执行同一迁移；
   `PRAGMA quick_check=ok`，原行情、扫描和纸面账本关键计数保持。
 - 本轮只追加 PIT 修订、同步当前行情/基础/资金流/基准以及写真实门禁报告；没有删除或重写
@@ -70,6 +69,20 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 崩溃。已改为 fail-closed：缺 flags 时隐藏受控导航而不崩溃。修复后页面导航、刷新恢复、
 390px 窄屏和键盘焦点 4/4 通过。
 
+### 3.4 恢复中断与 RTO
+
+- 首次恢复进程被会话中断后只留下私有 `.partial`，没有覆盖目标或生产库。
+- 新增中断后安全续验：仅接受目标同目录、目标专属命名、零 WAL 的候选；重新验证归档 SHA、
+  SQLite `integrity_check`、外键与完整逻辑库 SHA 后才原子落目标。
+- RTO 从首次启动 `2026-08-27T23:48:13+08:00` 计时，最终 1789.798 秒，低于 1800 秒上限，
+  但余量仅 10.202 秒，列为运维性能风险。
+
+### 3.5 凭据回显纠错
+
+- 一次供应商拒绝响应使用新措辞回显凭据样式内容，旧正则未覆盖；扫描正确失败且没有固化结果。
+- 新增无 SDK 依赖的统一文本脱敏，在供应商异常、扫描子进程 JSON、持久任务和 API 返回四个边界使用。
+- 已清理该失败任务数据库字段及两个运行时 JSON；保留失败状态和诊断语义，不删除失败记录。
+
 ## 4. 质量证据
 
 权威运行时：`E:/CODEX/Stock_selection/accumulation_breakout/.venv312/Scripts/python.exe`
@@ -77,8 +90,8 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 | 检查 | 结果 |
 |---|---|
-| `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、868 个离线测试、前端构建全绿 |
-| 全收集 `python -m pytest -q` | **900 passed in 281.45s** |
+| `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、890 个离线测试、前端构建全绿 |
+| 全收集 `python -m pytest -q` | **890 passed in 339.11s** |
 | PIT/数据专项 | **70 passed** |
 | Vitest | **7 passed** |
 | Playwright | 首轮 1/4（暴露崩溃）；修复后 **4/4 passed** |
@@ -88,10 +101,9 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 真实数据门禁报告：
 
-- `runtime/gates/real_data_gate_20260827_111047.json`
-- 构建/配置/数据库：`a2f99ff8cb9c` / `745a7010eae38014` / `d4cefc68843a30a0`
-- 报告内签名：`2b2e7a27c9b7121b628ec3435d8e8eb57dd9a83980a88970350c4ae8546e6359`
-- 文件 SHA-256：`6ae76c952775680d48f5e26a4f7bfe9e935ae6f054a9d701145b0c450dc6f716`
+- `runtime/v2/real-data-gates-final/real_data_gate_20260828_010252.json`
+- 构建/数据配置/数据库：`7940f508fb00` / `745a7010eae38014` / `5e4570636a4e7386`
+- 报告签名：`c8180918bc2f1c55ee8fa8abb5978a8218989925d4cef3ba49843f9a55d33b62`
 
 该报告是在最终前后端构建重启后生成；`/api/v2/readiness` 已验证 D=PASS、
 `identity_blockers=[]`。旧 `/api/release/readiness` 只表示代码/配置/数据库与真实数据报告
@@ -99,15 +111,12 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 ## 5. 剩余工作（不能伪造）
 
-1. 将 Tushare 自定义节点置于 HTTPS 或可信 TLS 隧道后，重跑 G 安全验收。
-2. 在当前代码、配置、数据、成本和撮合身份上重新预登记并运行权威研究；保持 FAIL 也可以，
-   但必须进入生产事实库并可由 readiness 读取，禁止拷贝旧 PASS 或事后调阈值。
-3. 正式注册可观察策略并积累 Shadow/Paper outcome；未达到 S 的月数、样本和双基准阈值前，
-   策略保持 EXPERIMENTAL。
-4. 对最新完成交易日完成扫描→周期→风险快照→对账→`daily_run_manifest COMPLETE`，消除
-   `MISSING_SCAN_RUN`。
-5. 累积至少 7 份验证备份，完成一次严格临时恢复，并按真实交易日累计 5/5 soak。
-6. 产生生产写操作审计链、DB 外 chain-head 锚点，并完成敏感信息与本机网络复验。
+1. 等 52 条 SHADOW 观察自然达到 5/10/20 日并产生真实 outcome；不足长期阈值前 S 保持
+   INSUFFICIENT，所有插件继续 EXPERIMENTAL。
+2. 再新增 3 个真实恢复点达到验证备份 7/7；严格恢复本身已 PASS。
+3. 再积累 4 个不同真实完成交易日达到 soak 5/5；不得用历史回填或多次同日运行冒充。
+4. R 已有当前身份完整证据但策略结论 FAIL；若要通过，只能提出新假设并重新预登记研究，
+   不得事后调阈值或复制旧 PASS。
 
 ## 6. 回滚
 

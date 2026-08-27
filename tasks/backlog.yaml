@@ -44,7 +44,7 @@ tasks:
   # ── P0 ──
   - id: V2-P0.1-BASELINE
     title: 重新测量并冻结真实基线 manifest
-    status: ready
+    status: complete
     work_package: WP00
     phase: P0
     dependencies:
@@ -58,7 +58,7 @@ tasks:
 
   - id: V2-P0.2-ENTRY-REGISTRY
     title: 冻结 ENTRY V1、注册表与 V2 定义草稿
-    status: blocked
+    status: complete
     work_package: WP10
     phase: P0
     dependencies:
@@ -73,7 +73,7 @@ tasks:
 
   - id: V2-P0.3-QUALITY-GATES
     title: 固化质量门禁、架构边界与 NO_REPLACE_SQL
-    status: blocked
+    status: complete
     work_package: WP00
     phase: P0
     dependencies:
@@ -89,7 +89,7 @@ tasks:
 
   - id: V2-P0.4-CONTRACTS
     title: 冻结七闸门、错误码、flags、迁移 registry
-    status: ready
+    status: complete
     work_package: WP00
     phase: P0
     dependencies:
@@ -104,7 +104,7 @@ tasks:
   # ── P1 ──
   - id: V2-P1.1-PIT
     title: PIT 历史表、writer、Tushare adapter、backfill
-    status: blocked
+    status: complete
     work_package: WP20
     phase: P1
     dependencies:
@@ -118,7 +118,7 @@ tasks:
 
   - id: V2-P1.2-UNIVERSE
     title: As-of 股票池与 instrument 规则
-    status: blocked
+    status: complete
     work_package: WP20
     phase: P1
     dependencies:
@@ -130,7 +130,7 @@ tasks:
 
   - id: V2-P1.3-CORP-ACTIONS
     title: 复权、公司行为与数据质量门
-    status: blocked
+    status: complete
     work_package: WP20
     phase: P1
     dependencies:
@@ -142,7 +142,7 @@ tasks:
 
   - id: V2-P1.4-INTELLIGENCE
     title: 市场情报领域（只读）
-    status: blocked
+    status: complete
     work_package: WP20
     phase: P1
     dependencies:
@@ -155,7 +155,7 @@ tasks:
   # ── P2 ──
   - id: V2-P2-EXECUTION-CORE
     title: 统一 Decimal 执行核心（dual-run 不写账）
-    status: blocked
+    status: complete
     work_package: WP10
     phase: P2
     dependencies:
@@ -169,7 +169,7 @@ tasks:
 
   - id: V2-P2-LEDGER-PARITY
     title: 研究与纸面执行 parity + 零/部分成交
-    status: blocked
+    status: complete
     work_package: WP50
     phase: P2
     dependencies:
@@ -183,7 +183,7 @@ tasks:
   # ── P3 ──
   - id: V2-P3-RESEARCH-GOVERNANCE
     title: 实验登记、trial ledger、PBO/DSR/MinTRL/Nested WF
-    status: blocked
+    status: complete
     work_package: WP30
     phase: P3
     dependencies:
@@ -198,7 +198,7 @@ tasks:
   # ── P4 ──
   - id: V2-P4-STRATEGIES-SIGNALS
     title: 六形态插件、漏斗、不可变信号与 outcome
-    status: blocked
+    status: complete
     work_package: WP40
     phase: P4
     dependencies:
@@ -213,7 +213,7 @@ tasks:
   # ── P5 ──
   - id: V2-P5-RISK-CONSTRAINTS
     title: 唯一约束引擎、暴露、VaR/压力、对账
-    status: blocked
+    status: complete
     work_package: WP50
     phase: P5
     dependencies:
@@ -228,7 +228,7 @@ tasks:
   # ── P6 ──
   - id: V2-P6-DAG-AUDIT-BACKUP
     title: 持久 DAG、审计链、告警、备份恢复
-    status: blocked
+    status: complete
     work_package: WP60
     phase: P6
     dependencies:
@@ -263,8 +263,8 @@ tasks:
     title: 七闸门总验收与证据索引
     status: blocked
     verdict: BLOCKED
-    reviewed_at: "2026-08-27T11:05:00+08:00"
-    gate_results: {D: PASS, R: INSUFFICIENT, S: INSUFFICIENT, P: INSUFFICIENT, L: FAIL, O: FAIL, G: FAIL}
+    reviewed_at: "2026-08-28T01:12:00+08:00"
+    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: INSUFFICIENT, G: PASS}
     evidence: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
     work_package: WP80
     phase: P8
