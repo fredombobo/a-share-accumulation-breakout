@@ -1,11 +1,11 @@
 version: 1
-updated_at: "2026-08-28T03:33:08+08:00"
+updated_at: "2026-08-28T03:39:20+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
   P7.1 组合会计、P7.2 冻结 PIT 研究读取与 P7.3 正式晋级硬门均已完成；
-  当前权威研究 v2auth20260828f 诚实 FAIL/NO_CANDIDATE。D/P/L/G 的上一生产身份证据为 PASS，
-  R/O=FAIL、S=INSUFFICIENT；当前代码与平台配置重新绑定运行证据前 P8 继续 BLOCKED；
+  当前权威研究 v2auth20260828f 诚实 FAIL/NO_CANDIDATE；当前身份 D/P/L/G 已复验 PASS，
+  R/O=FAIL、S=INSUFFICIENT，因此 P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
@@ -284,10 +284,11 @@ v2_remediation_20260823:
     candidate_eligible: false
   production_snapshot:
     trade_date: "20260827"
-    code_version: "7940f508fb00"
-    platform_config_hash: "6dd3009820232a50"
-    scan_run_id: "eaf90d4808c6"
+    code_version: "d5707c22c645"
+    platform_config_hash: "f1ac706946c44937"
+    scan_run_id: "791dd2969683"
     daily_manifest_status: COMPLETE
+    daily_manifest_sha256: "21c6a38f74ac7f910f9901579b96aebad8a5bb3a293989352176558766ac549f"
     reconciliation: OK
     signal_observations: 52
     signal_outcomes: 0
@@ -295,6 +296,7 @@ v2_remediation_20260823:
     restore_rto: "PASS 1789.798/1800 sec"
     soak: "1/5"
     live_trading_enabled: false
+    real_data_gate_sha256: "e5f81ce6521713cc3aca0586551709c70f59c2c148b43d0fac49b70467b2ef69"
   quality_snapshot:
     strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 928 offline tests, frontend build"
     pytest: "928 passed in 214.34s"

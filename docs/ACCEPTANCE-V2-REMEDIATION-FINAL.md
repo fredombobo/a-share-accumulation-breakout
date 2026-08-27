@@ -13,7 +13,7 @@
 
 三波工程任务、组合级研究纠错、恢复续验和凭据脱敏均已通过代码级验收，但“工程实现完成”
 不等于“七闸门通过”。当前 R 为策略事实 FAIL，O 因备份 5/7 与 soak 1/5 未成熟，S 也需
-真实时间积累；D/P/L/G 的上一生产身份为 PASS，当前候选身份的运行证据正在重新绑定。总裁决保持
+真实时间积累；当前候选身份的 D/P/L/G 运行事实均已复验通过。总裁决保持
 `BLOCKED`，不得标记 `PERSONAL_INSTITUTIONAL_READY` 或实盘就绪。
 
 系统身份已经纠正并固定为 Breakout，不是 AETF：服务端返回
@@ -28,9 +28,9 @@
 | R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828f` 完整完成且可复算；OOS 组合净收益 8.49%、PF 1.223、最大回撤 9.18%，但 PBO 31.25%、DSR 46.36%、MinTRL 覆盖 18.8%、嵌套窗仅 1/5 正收益，`candidate_eligible=false`。 |
 | S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=52`、5 类策略、`signal_outcomes=0`。观察日期尚未达到 5/10/20 日成熟线，禁止伪造 outcome。 |
 | P 组合/风险 | **PASS** | 最新交易日风险快照 `955681b4321b58f6` 已固化，行情/规则/配置版本齐全；统计状态如实为 INSUFFICIENT（权益序列不足 30 点）。 |
-| L 账本/日清 | **PASS** | 扫描 `eaf90d4808c6`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `5541d057079a...`。 |
-| O 运维/恢复 | **INSUFFICIENT** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；但可验证备份仅 5/7，当前身份 soak 1/5，均未达到成熟线。 |
-| G 治理/安全 | **PASS** | 实盘关闭、审计 hash chain、DB 外签名锚点、HTTPS 实际 API 与独立原生 TLS 探针均通过；最新探针时间 `2026-08-28T01:11:27+08:00`，证据 SHA-256 `1741dd66136e...`，无 HTTP 回退。 |
+| L 账本/日清 | **PASS** | 扫描 `791dd2969683`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `21c6a38f74ac...`。 |
+| O 运维/恢复 | **FAIL** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；但可验证备份仅 5/7，当前身份 soak 1/5，均未达到成熟线。 |
+| G 治理/安全 | **PASS** | 实盘关闭、审计 hash chain、DB 外签名锚点、HTTPS 实际 API 与独立原生 TLS 探针均通过；最新探针时间 `2026-08-28T03:37:04+08:00`，证据 SHA-256 `7e2dd1badb6b...`，无 HTTP 回退。 |
 
 最终门禁文件在文档提交后按最终 Git 身份重新生成；`GET /api/v2/readiness` 的服务端聚合必须
 与上表一致。浏览器不能传入布尔值覆盖闸门。
@@ -102,7 +102,7 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 | `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、928 个离线测试、前端构建全绿 |
 | 全收集 `python -m pytest -q` | **928 passed in 214.34s** |
 | PIT/数据专项 | **70 passed** |
-| Vitest | **7 passed** |
+| Vitest | **20 passed** |
 | Playwright | 首轮 1/4（暴露崩溃）；修复后 **4/4 passed** |
 | 当前 8001 实时 UI | **13/13 路由 + 实验结论 PASS**；六形态白屏回归已覆盖 |
 | npm audit | **0 vulnerabilities** |
@@ -111,12 +111,12 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 真实数据门禁报告：
 
-- `runtime/v2/real-data-gates-final/real_data_gate_20260828_010252.json`
-- 构建/数据配置/数据库：`7940f508fb00` / `745a7010eae38014` / `5e4570636a4e7386`（上一生产身份；当前候选须重新生成）
-- 报告签名：`c8180918bc2f1c55ee8fa8abb5978a8218989925d4cef3ba49843f9a55d33b62`
+- `runtime/v2/real-data-gates-final-d570/real_data_gate_20260828_033921.json`
+- 构建/数据配置/数据库：`d5707c22c645` / `745a7010eae38014` / `5e4570636a4e7386`
+- 报告签名：`e5f81ce6521713cc3aca0586551709c70f59c2c148b43d0fac49b70467b2ef69`
 
-该报告属于上一生产身份，只能证明数据事实，不得冒充当前候选身份的发布证据。当前候选重建后，
-`/api/v2/readiness` 仍须验证 D=PASS、`identity_blockers=[]`。旧 `/api/release/readiness` 只表示代码/配置/数据库与真实数据报告
+该报告属于当前发布候选身份；最终文档提交后还须按最终 Git SHA 重建 S/P/L/O/G 文件并验证
+`/api/v2/readiness` 的 D=PASS、`identity_blockers=[]`。旧 `/api/release/readiness` 只表示代码/配置/数据库与真实数据报告
 满足数据发布证据，不代表七闸门或策略 edge 通过；平台总裁决只以 V2 readiness 为准。
 
 ## 5. 剩余工作（不能伪造）
