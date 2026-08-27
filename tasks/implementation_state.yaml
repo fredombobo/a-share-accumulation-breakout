@@ -1,11 +1,11 @@
 version: 1
-updated_at: "2026-08-28T02:33:00+08:00"
+updated_at: "2026-08-28T03:02:46+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
-  P7.1 组合会计与 P7.2 冻结 PIT 研究读取已完成；当前旧权威研究仍为 FAIL，
-  P7.3 正在修复正式统计只展示、不阻断候选的缺口。D/P/L/G=PASS，R/O=FAIL，
-  S=INSUFFICIENT。新权威研究与运维成熟度完成前 P8 继续 BLOCKED；
+  P7.1 组合会计、P7.2 冻结 PIT 研究读取与 P7.3 正式晋级硬门均已完成；
+  当前权威研究 v2auth20260828e 诚实 FAIL/NO_CANDIDATE。D/P/L/G 的上一生产身份证据为 PASS，
+  R/O=FAIL、S=INSUFFICIENT；当前代码与平台配置重新绑定运行证据前 P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
@@ -233,16 +233,23 @@ tasks:
       - "执行血缘 v2.1.1：滑点按实际成交价差逐笔拆解、不二次乘费率；组合配置 hash=8457421182d765e6"
       - "严格质量门 PASS：Ruff、Mypy、strict architecture、916 offline tests、frontend build"
   V2-P7.3-FORMAL-PROMOTION-GATE:
-    status: in_progress
+    status: complete
     started_at: "2026-08-28T02:33:00+08:00"
+    completed_at: "2026-08-28T02:59:59+08:00"
     work_package: WP75
     dependencies:
       - V2-P7.2-RESEARCH-PIT-READER
     plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
     note: >
-      v2auth20260828d 的传统门禁 PASS 但 DSR=0、MinTRL coverage=0.188；该报告不得绑定为权威候选。
-      ROBUST_PERSONAL_V2 最终硬门、PBO/DSR 横截面尺度/5窗嵌套选择/2x成本/参数邻域已实现，
-      严格质量门 928 tests PASS；等待以新代码身份完成权威预登记运行后再标记 complete。
+      ROBUST_PERSONAL_V2 最终硬门、PBO/DSR 横截面尺度/5窗嵌套选择/2x成本/参数邻域已完成。
+      v2auth20260828e 以新代码身份完整运行并诚实 FAIL；未创建研究候选。
+    completed_evidence:
+      - "代码 2031bdc70b61；组合 research-portfolio-v2.1.0 / c2770dc24fd37c4b；PIT faf588403e3db351"
+      - "OOS 组合净收益 8.493586%、PF 1.22260136、最大回撤 9.182442%，1x/2x 成本均完整结算"
+      - "PBO=0.3125、DSR=0.463596、MinTRL coverage=0.188、嵌套正收益窗=1/5，最终 FAIL/NO_CANDIDATE"
+      - "参数邻域 7/7 覆盖且全部优于 MA20/60；2x 候选 +4.843727%、主基线 -19.064983%"
+      - "数据库 status=done/verdict=FAIL/candidate_eligible=0/can_claim_edge=0；research_candidates=0"
+      - "严格质量门 PASS：Ruff、Mypy、strict architecture、928 offline tests、frontend build"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
@@ -271,7 +278,7 @@ v2_remediation_20260823:
   blocked:
     - V2R-P8
   research:
-    authoritative_task_id: "v2auth20260828b"
+    authoritative_task_id: "v2auth20260828e"
     current_identity_verdict: FAIL
     historical_verdict: FAIL
     candidate_eligible: false
@@ -289,8 +296,8 @@ v2_remediation_20260823:
     soak: "1/5"
     live_trading_enabled: false
   quality_snapshot:
-    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 903 offline tests, frontend build"
-    pytest: "903 passed in 195.67s"
+    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 928 offline tests, frontend build"
+    pytest: "928 passed in 210.69s"
     pit_data: "70 passed"
     full_ruff: PASS
     full_mypy: "PASS: strict configured source set"

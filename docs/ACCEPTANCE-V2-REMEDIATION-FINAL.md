@@ -4,16 +4,16 @@
 
 项目：`accumulation_breakout`（AB-Screener · 横盘吸筹突破）
 
-最终源码身份：`7940f508fb00`；平台配置：`6dd3009820232a50`
+当前发布候选源码身份：`2031bdc70b61`；平台配置：`a958f710d75ce51d`
 
 运行入口：`http://127.0.0.1:8001/`
 最终裁决：**BLOCKED**
 
 ## 1. 管理结论
 
-三波工程任务、恢复续验和凭据脱敏纠错均已通过代码级验收，但“工程实现完成”不等于
-“七闸门通过”。当前 D/P/L/G 为 PASS，R 为策略事实 FAIL，O 因备份 4/7 为 FAIL，S 与 soak
-仍需真实时间积累。总裁决保持
+三波工程任务、组合级研究纠错、恢复续验和凭据脱敏均已通过代码级验收，但“工程实现完成”
+不等于“七闸门通过”。当前 R 为策略事实 FAIL，O 因备份 5/7 与 soak 1/5 未成熟，S 也需
+真实时间积累；D/P/L/G 的上一生产身份为 PASS，当前候选身份的运行证据正在重新绑定。总裁决保持
 `BLOCKED`，不得标记 `PERSONAL_INSTITUTIONAL_READY` 或实盘就绪。
 
 系统身份已经纠正并固定为 Breakout，不是 AETF：服务端返回
@@ -25,11 +25,11 @@
 | 闸门 | 结果 | 现场证据与阻断 |
 |---|---|---|
 | D 数据/PIT | **PASS** | 当前构建真实数据门禁 PASS；969 个完成交易日，本地/源端/沪深300最新日 20260827；100 对源端抽样 0 差异；三类最新 PIT 分区全部零漂移。 |
-| R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828b` 完整完成且可复算；OOS 净 PF 1.184、净最大回撤 59.88%、DSR 0、WF 仅 1/3 盈利，`candidate_eligible=false`。 |
+| R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828e` 完整完成且可复算；OOS 组合净收益 8.49%、PF 1.223、最大回撤 9.18%，但 PBO 31.25%、DSR 46.36%、MinTRL 覆盖 18.8%、嵌套窗仅 1/5 正收益，`candidate_eligible=false`。 |
 | S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=52`、5 类策略、`signal_outcomes=0`。观察日期尚未达到 5/10/20 日成熟线，禁止伪造 outcome。 |
 | P 组合/风险 | **PASS** | 最新交易日风险快照 `955681b4321b58f6` 已固化，行情/规则/配置版本齐全；统计状态如实为 INSUFFICIENT（权益序列不足 30 点）。 |
 | L 账本/日清 | **PASS** | 扫描 `eaf90d4808c6`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `5541d057079a...`。 |
-| O 运维/恢复 | **FAIL** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；但可验证备份仅 4/7，构成硬失败；当前身份 soak 1/5。 |
+| O 运维/恢复 | **INSUFFICIENT** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；但可验证备份仅 5/7，当前身份 soak 1/5，均未达到成熟线。 |
 | G 治理/安全 | **PASS** | 实盘关闭、审计 hash chain、DB 外签名锚点、HTTPS 实际 API 与独立原生 TLS 探针均通过；最新探针时间 `2026-08-28T01:11:27+08:00`，证据 SHA-256 `1741dd66136e...`，无 HTTP 回退。 |
 
 最终门禁文件在文档提交后按最终 Git 身份重新生成；`GET /api/v2/readiness` 的服务端聚合必须
@@ -91,8 +91,8 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 | 检查 | 结果 |
 |---|---|
-| `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、890 个离线测试、前端构建全绿 |
-| 全收集 `python -m pytest -q` | **890 passed in 339.11s** |
+| `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、928 个离线测试、前端构建全绿 |
+| 全收集 `python -m pytest -q` | **928 passed in 210.69s** |
 | PIT/数据专项 | **70 passed** |
 | Vitest | **7 passed** |
 | Playwright | 首轮 1/4（暴露崩溃）；修复后 **4/4 passed** |
@@ -103,18 +103,18 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 真实数据门禁报告：
 
 - `runtime/v2/real-data-gates-final/real_data_gate_20260828_010252.json`
-- 构建/数据配置/数据库：`7940f508fb00` / `745a7010eae38014` / `5e4570636a4e7386`
+- 构建/数据配置/数据库：`7940f508fb00` / `745a7010eae38014` / `5e4570636a4e7386`（上一生产身份；当前候选须重新生成）
 - 报告签名：`c8180918bc2f1c55ee8fa8abb5978a8218989925d4cef3ba49843f9a55d33b62`
 
-该报告是在最终前后端构建重启后生成；`/api/v2/readiness` 已验证 D=PASS、
-`identity_blockers=[]`。旧 `/api/release/readiness` 只表示代码/配置/数据库与真实数据报告
+该报告属于上一生产身份，只能证明数据事实，不得冒充当前候选身份的发布证据。当前候选重建后，
+`/api/v2/readiness` 仍须验证 D=PASS、`identity_blockers=[]`。旧 `/api/release/readiness` 只表示代码/配置/数据库与真实数据报告
 满足数据发布证据，不代表七闸门或策略 edge 通过；平台总裁决只以 V2 readiness 为准。
 
 ## 5. 剩余工作（不能伪造）
 
 1. 等 52 条 SHADOW 观察自然达到 5/10/20 日并产生真实 outcome；不足长期阈值前 S 保持
    INSUFFICIENT，所有插件继续 EXPERIMENTAL。
-2. 再新增 3 个真实恢复点达到验证备份 7/7；严格恢复本身已 PASS。
+2. 再新增 2 个真实恢复点达到验证备份 7/7；严格恢复本身已 PASS。
 3. 再积累 4 个不同真实完成交易日达到 soak 5/5；不得用历史回填或多次同日运行冒充。
 4. R 已有当前身份完整证据但策略结论 FAIL；若要通过，只能提出新假设并重新预登记研究，
    不得事后调阈值或复制旧 PASS。
