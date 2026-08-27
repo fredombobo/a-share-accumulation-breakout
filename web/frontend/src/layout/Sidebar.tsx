@@ -49,8 +49,10 @@ export default function Sidebar() {
     }
   }, [])
 
-  const v2Enabled = platform?.flags.INSTITUTIONAL_CONSOLE_V2_ENABLED === true
-  const strategiesEnabled = platform?.flags.V2_STRATEGY_REGISTRY_ENABLED === true
+  // Fail closed when a stale proxy/mock returns a partial platform payload.
+  // A missing flags object must hide privileged navigation, not crash the app.
+  const v2Enabled = platform?.flags?.INSTITUTIONAL_CONSOLE_V2_ENABLED === true
+  const strategiesEnabled = platform?.flags?.V2_STRATEGY_REGISTRY_ENABLED === true
   let active = '/'
   if (loc.pathname.startsWith('/stock')) active = '/stock'
   else if (loc.pathname.startsWith('/backtest')) active = '/backtest'
