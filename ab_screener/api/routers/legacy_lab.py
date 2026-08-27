@@ -6,6 +6,7 @@ _resolve_lab_windows / _report_payload，及 lab/research-status / catalog / opt
 status / reports / cancel / leaderboard / compare / arena 路由。
 共享状态（Lab 任务/锁/store）从 ab_screener.api.legacy_state import。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -29,6 +30,7 @@ from ab_screener.api.legacy_state import (
 )
 
 router = APIRouter(tags=["legacy"])
+
 
 # ── 策略实验室（P6：闭环优化 → 验证 → 擂台赛） ──
 def _recover_orphaned_lab_runs(process_name: str | None = None) -> int:
@@ -85,8 +87,7 @@ def _select_lab_task(tasks: dict[str, dict]) -> tuple[str, dict] | None:
     if not tasks:
         return None
     active_states = {"pending", "running", "cancelling"}
-    active = [(task_id, task) for task_id, task in tasks.items()
-              if task.get("status") in active_states]
+    active = [(task_id, task) for task_id, task in tasks.items() if task.get("status") in active_states]
     candidates = active or list(tasks.items())
     return max(candidates, key=lambda item: item[1].get("started_at") or "")
 
@@ -166,8 +167,12 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
             raise RuntimeError("任务状态丢失")
         task.update({"status": "running", "phase": phase_name, "progress": pct, "message": message})
         _LAB_STORE.update(
-            task_id, status="running", phase=phase_name, progress=pct,
-            message=message, checkpoint=state,
+            task_id,
+            status="running",
+            phase=phase_name,
+            progress=pct,
+            message=message,
+            checkpoint=state,
         )
 
     try:
@@ -175,7 +180,12 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
         if task is None:
             return
         task.update({"status": "running", "windows": windows})
-        _LAB_STORE.update(task_id, status="running", phase=stored.get("phase") or "IS", progress=int(stored.get("progress") or 0))
+        _LAB_STORE.update(
+            task_id,
+            status="running",
+            phase=stored.get("phase") or "IS",
+            progress=int(stored.get("progress") or 0),
+        )
         result = execute_trusted_research(
             research_run_id=task_id,
             request=request_data,
@@ -209,11 +219,16 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
                     ).hexdigest(),
                 },
             )
-        task.update({
-            "status": "done", "phase": "CANDIDATE", "progress": 100,
-            "message": report.get("summary") or "可信报告已生成", "result": result,
-            "finished_at": datetime.now().isoformat(timespec="seconds"),
-        })
+        task.update(
+            {
+                "status": "done",
+                "phase": "CANDIDATE",
+                "progress": 100,
+                "message": report.get("summary") or "可信报告已生成",
+                "result": result,
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
         _LAB_STORE.update(
             task_id,
             status="done",
@@ -236,10 +251,7 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
         persisted_before = _LAB_STORE.get(task_id)
         persisted_cancel = bool(
             persisted_before
-            and (
-                persisted_before.get("cancel_requested")
-                or persisted_before.get("status") == "cancelling"
-            )
+            and (persisted_before.get("cancel_requested") or persisted_before.get("status") == "cancelling")
         )
         runtime_cancel = bool(task and task.get("cancel_requested"))
         cancelled = persisted_cancel or runtime_cancel
@@ -252,7 +264,9 @@ def _run_lab_worker(task_id: str, req: LabOptimizeRequest, windows: dict) -> Non
         else:
             message = str(exc)[:200]
         if task is not None:
-            task.update({"status": status, "message": message, "error": None if cancelled else str(exc)[:500]})
+            task.update(
+                {"status": status, "message": message, "error": None if cancelled else str(exc)[:500]}
+            )
         try:
             _LAB_STORE.update(task_id, status=status, message=message)
         except Exception:  # noqa: BLE001 last-resort logging at worker boundary
@@ -440,7 +454,8 @@ def lab_optimize(req: LabOptimizeRequest):
                 key: list(values)[:8]
                 for key, values in grid.items()
                 if key in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
-                and isinstance(values, list) and values
+                and isinstance(values, list)
+                and values
             }
             combinations = 1
             for values in clean_grid.values():
@@ -453,10 +468,14 @@ def lab_optimize(req: LabOptimizeRequest):
         COST_VERSION,
         dataset_fingerprint,
         input_fingerprint,
+        trusted_portfolio_identity,
     )
     from optimizer import research_universe
 
-    universe = research_universe(max(20, min(int(request_data.get("max_codes") or 200), 4500)), include_delisted=True)
+    request_data["portfolio_model"] = trusted_portfolio_identity()
+    universe = research_universe(
+        max(20, min(int(request_data.get("max_codes") or 200), 4500)), include_delisted=True
+    )
     starts = [str(windows["is_start"]), str(windows["oos_start"])]
     starts.extend(
         str(row.get("train_start"))
@@ -468,16 +487,22 @@ def lab_optimize(req: LabOptimizeRequest):
     )
     persisted_request = {**request_data, "_windows": windows}
     input_hash = input_fingerprint(
-        request_data, windows, dataset_version=dataset_version,
-        code_version=_BUILD_VERSION, cost_version=COST_VERSION,
+        request_data,
+        windows,
+        dataset_version=dataset_version,
+        code_version=_BUILD_VERSION,
+        cost_version=COST_VERSION,
     )
     if not force:
         cached = _LAB_STORE.completed_by_input_hash(input_hash)
         if cached is not None:
             return {
-                "status": "cached", "task_id": cached["research_run_id"],
-                "strategy": req.strategy, "research_mode": windows.get("mode"),
-                "can_claim_edge": cached.get("candidate_eligible", False), "windows": windows,
+                "status": "cached",
+                "task_id": cached["research_run_id"],
+                "strategy": req.strategy,
+                "research_mode": windows.get("mode"),
+                "can_claim_edge": cached.get("candidate_eligible", False),
+                "windows": windows,
             }
         resumable = _LAB_STORE.resumable_by_input_hash(input_hash)
         if resumable is not None:
@@ -497,14 +522,22 @@ def lab_optimize(req: LabOptimizeRequest):
                         },
                     )
                 _LAB_TASKS[task_id] = {
-                    "status": "pending", "phase": resumable.get("phase") or "IS",
-                    "progress": int(resumable.get("progress") or 0), "message": "从持久化检查点恢复",
-                    "started_at": resumable.get("started_at"), "strategy": req.strategy, "windows": windows,
+                    "status": "pending",
+                    "phase": resumable.get("phase") or "IS",
+                    "progress": int(resumable.get("progress") or 0),
+                    "message": "从持久化检查点恢复",
+                    "started_at": resumable.get("started_at"),
+                    "strategy": req.strategy,
+                    "windows": windows,
                 }
             threading.Thread(target=_run_lab_worker, args=(task_id, req, windows), daemon=True).start()
             return {
-                "status": "resumed", "task_id": task_id, "strategy": req.strategy,
-                "research_mode": windows.get("mode"), "can_claim_edge": False, "windows": windows,
+                "status": "resumed",
+                "task_id": task_id,
+                "strategy": req.strategy,
+                "research_mode": windows.get("mode"),
+                "can_claim_edge": False,
+                "windows": windows,
             }
     if len(_LAB_TASKS) > _LAB_TASKS_MAX:
         for tid in [k for k, v in _LAB_TASKS.items() if v.get("status") in ("done", "error", "cancelled")]:
@@ -732,5 +765,3 @@ def lab_arena():
         if r.get("oos_profit_factor"):
             weights[r["strategy"]] = float(r["oos_profit_factor"])
     return {"rows": df.to_dict("records"), "weights": weights}
-
-

@@ -5,13 +5,21 @@ from unittest.mock import patch
 import pandas as pd
 
 from ab_screener.domain.costs import NOTIONAL, FillResult, summarize_fills
+from ab_screener.research.baselines import random_baseline_trades
+from ab_screener.research.portfolio_accounting import PortfolioPolicy
 from walkforward import run_is_oos, wf_recheck
 
 
 def _fill(net_return: float) -> FillResult:
     return FillResult(
-        filled=True, qty=100, price=10.0, commission=5.0, stamp_tax=1.0,
-        other_fee=1.0, slippage_cost=2.0, gross_pnl=net_return * NOTIONAL + 7.0,
+        filled=True,
+        qty=100,
+        price=10.0,
+        commission=5.0,
+        stamp_tax=1.0,
+        other_fee=1.0,
+        slippage_cost=2.0,
+        gross_pnl=net_return * NOTIONAL + 7.0,
         net_pnl=net_return * NOTIONAL,
     )
 
@@ -25,10 +33,47 @@ def test_baseline_summary_exposes_same_net_metrics_as_candidate() -> None:
     assert summary["net_max_drawdown"] > 0
 
 
+def test_random_baseline_uses_same_versioned_portfolio_accounting() -> None:
+    daily = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": f"2026080{day}",
+                "open": 10 + day,
+                "high": 11 + day,
+                "low": 9 + day,
+                "close": 10.5 + day,
+                "pre_close": 9.5 + day,
+                "vol": 100_000,
+                "amount": 1_000_000,
+            }
+            for day in range(1, 6)
+        ]
+    )
+    policy = PortfolioPolicy()
+
+    result = random_baseline_trades(
+        daily,
+        n_trades=1,
+        hold_days=1,
+        codes=["000001.SZ"],
+        portfolio_policy=policy,
+    )
+
+    assert result["portfolio_model_version"] == policy.version
+    assert result["portfolio_config_hash"] == policy.fingerprint()
+    assert result["portfolio_status"] == "PASS"
+    assert result["net_avg_return"] == result["net_total_return"]
+    assert "trade_net_avg_return" in result
+
+
 def test_wf_missing_metric_is_incomplete_and_cannot_pass() -> None:
     combo = {
-        "strategy": "A", "vol_ratio_min": 1.5, "strong_reset": 3,
-        "exit_window": 10, "stop_pct": 0.07,
+        "strategy": "A",
+        "vol_ratio_min": 1.5,
+        "strong_reset": 3,
+        "exit_window": 10,
+        "stop_pct": 0.07,
     }
     complete = {
         "net_profit_factor": 1.2,
@@ -42,7 +87,8 @@ def test_wf_missing_metric_is_incomplete_and_cannot_pass() -> None:
 
     with patch("walkforward.eval_combo", side_effect=values):
         result = wf_recheck(
-            [combo], windows=[("1", "2", "3", "4")] * 3,
+            [combo],
+            windows=[("1", "2", "3", "4")] * 3,
             progress_cb=lambda message, progress: events.append((message, progress)),
         )
 
@@ -55,10 +101,19 @@ def test_wf_missing_metric_is_incomplete_and_cannot_pass() -> None:
 
 def test_is_oos_progress_is_monotonic_and_identifies_oos_phase() -> None:
     row = {
-        "strategy": "A", "vol_ratio_min": 1.5, "strong_reset": 3,
-        "exit_window": 10, "stop_pct": 0.07, "net_n_trades": 40,
-        "net_win_rate": 0.4, "net_profit_factor": 1.2, "net_max_drawdown": 0.2,
-        "n_trades": 40, "win_rate": 0.4, "profit_factor": 1.2, "max_drawdown": 0.2,
+        "strategy": "A",
+        "vol_ratio_min": 1.5,
+        "strong_reset": 3,
+        "exit_window": 10,
+        "stop_pct": 0.07,
+        "net_n_trades": 40,
+        "net_win_rate": 0.4,
+        "net_profit_factor": 1.2,
+        "net_max_drawdown": 0.2,
+        "n_trades": 40,
+        "win_rate": 0.4,
+        "profit_factor": 1.2,
+        "max_drawdown": 0.2,
     }
     events: list[tuple[str, int]] = []
 
@@ -69,9 +124,7 @@ def test_is_oos_progress_is_monotonic_and_identifies_oos_phase() -> None:
         return pd.DataFrame([row])
 
     with patch("walkforward.run_grid", side_effect=fake_grid):
-        run_is_oos(
-            "A", top_n=1, progress_cb=lambda message, progress: events.append((message, progress))
-        )
+        run_is_oos("A", top_n=1, progress_cb=lambda message, progress: events.append((message, progress)))
 
     progresses = [event[1] for event in events]
     assert progresses == sorted(progresses)

@@ -204,18 +204,25 @@ tasks:
       - "Vitest 7/7；生产前端构建通过；npm audit 0 vulnerabilities"
       - "V2R-G accepted at a197ac6；管理者安全降级纠错 fab7340"
   V2-P7.1-PORTFOLIO-BACKTEST:
-    status: in_progress
+    status: complete
     started_at: "2026-08-28T01:38:00+08:00"
+    completed_at: "2026-08-28T02:03:00+08:00"
     work_package: WP75
     plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
     note: "纠正固定名义逐笔串行复利，新增共享现金/持仓/逐日估值的组合会计；不改门禁阈值。"
+    completed_evidence:
+      - "research-portfolio-v2.0.0：100 万初始权益、10% 单标的、80% 总仓位、10% 现金、20% 单日新增、5% 参与率"
+      - "grid/单组/IS/OOS/WF/随机与 MA20-60 基线均复用共享组合账户；旧逐笔指标保留为 trade_* 诊断"
+      - "组合状态、配置 hash、权益 SHA-256 固化；未平仓/缺报价/重复持仓 fail-closed"
+      - "严格质量门 PASS：Ruff、Mypy、strict architecture、903 offline tests、frontend build"
   V2-P7.2-RESEARCH-PIT-READER:
-    status: blocked
+    status: in_progress
+    started_at: "2026-08-28T02:03:00+08:00"
     work_package: WP75
     dependencies:
       - V2-P7.1-PORTFOLIO-BACKTEST
     plan: docs/V2-PORTFOLIO-RESEARCH-CLOSURE-2026-08-28.md
-    note: "组合会计通过后，把可信研究切到 available_at <= decision_at 的 PIT 读取。"
+    note: "组合会计已通过；正在把可信研究切到冻结 knowledge cutoff 的 available_at <= decision_at PIT 修订读取。"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
@@ -257,13 +264,13 @@ v2_remediation_20260823:
     reconciliation: OK
     signal_observations: 52
     signal_outcomes: 0
-    verified_backups: "4/7"
+    verified_backups: "5/7"
     restore_rto: "PASS 1789.798/1800 sec"
     soak: "1/5"
     live_trading_enabled: false
   quality_snapshot:
-    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 890 offline tests, frontend build"
-    pytest: "890 passed in 339.11s"
+    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 903 offline tests, frontend build"
+    pytest: "903 passed in 195.67s"
     pit_data: "70 passed"
     full_ruff: PASS
     full_mypy: "PASS: strict configured source set"

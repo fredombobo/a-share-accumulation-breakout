@@ -7,6 +7,7 @@
 
 输出：每组参数一行统计（DataFrame），并写入 param_eval（P5 接入）。
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -23,6 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
 from ab_screener.research.cost_adjustment import cost_adjusted_trade, summarize_costed_trades
+from ab_screener.research.portfolio_accounting import (
+    PortfolioPolicy,
+    portfolio_gate_metrics,
+    prepare_portfolio_market,
+    simulate_portfolio,
+)
 from config import BT_MIN_TRADES, GRID_BENCH
 from trade_sim import simulate_trade, summarize
 
@@ -124,8 +131,10 @@ def research_universe(
             daily_codes = sorted({str(r[0]) for r in rows})
             _UNIVERSE_DAILY_CACHE = (daily_codes, max_date)
         daily_codes = _UNIVERSE_DAILY_CACHE[0]
-        codes = sorted(set(codes) | {c for c in daily_codes
-                                     if c.endswith((".SH", ".SZ")) and not c.startswith(("4", "8", "92"))})
+        codes = sorted(
+            set(codes)
+            | {c for c in daily_codes if c.endswith((".SH", ".SZ")) and not c.startswith(("4", "8", "92"))}
+        )
 
     return codes[:max_codes] if max_codes else codes
 
@@ -141,8 +150,7 @@ def _research_universe_asof(max_codes: int | None, as_of: str) -> list[str]:
     store = LocalStore()
     with store._connect() as conn:
         has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table'"
-            " AND name='instrument_universe_rules'"
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='instrument_universe_rules'"
         ).fetchone()
         if not has_table:
             raise InstrumentRegistryError(
@@ -209,10 +217,7 @@ def _detect_signals_for_code(
         if breakout_i < 0:
             return df.iloc[0:0]
         causal_start = cal[max(0, breakout_i - horizon)]
-        return df[
-            (df["trade_date"] >= causal_start)
-            & (df["trade_date"] <= breakout_day)
-        ]
+        return df[(df["trade_date"] >= causal_start) & (df["trade_date"] <= breakout_day)]
 
     for day in sample_days:
         day_i = cal_index.get(day, -1)
@@ -228,20 +233,12 @@ def _detect_signals_for_code(
             if not sig.get("is_breakout"):
                 continue
             bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
-            recent = {str(x) for x in cal[max(0, day_i - 5): day_i + 1]}
-            if (
-                not bd
-                or bd not in recent
-                or bd not in dts_set
-                or bd < first_sample
-                or bd > last_sample
-            ):
+            recent = {str(x) for x in cal[max(0, day_i - 5) : day_i + 1]}
+            if not bd or bd not in recent or bd not in dts_set or bd < first_sample or bd > last_sample:
                 continue
             causal = causal_window(bd)
             causal_sig = detect_accumulation_breakout(causal, **skwargs)
-            causal_bd = "".join(
-                ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit()
-            )[:8]
+            causal_bd = "".join(ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit())[:8]
             if not causal_sig.get("is_breakout") or causal_bd != bd:
                 continue
             key_a = (bd, None)
@@ -256,14 +253,18 @@ def _detect_signals_for_code(
                 seqs = find_build_seqs(causal, vol_ratio_min=vr)
                 bench_vols[vr] = seqs[-1]["bench_vol"] if seqs else bo_vol
             seen.add(key_a)
-            signals.append({
-                "day": bd, "discovered_on": day,
-                "entry_i": entry_i, "bench_vols": bench_vols,
-                # 交易标注（回测工作台 K 线展示用）
-                "box_high": causal_sig.get("box_high"),
-                "box_low": causal_sig.get("box_low"),
-                "breakout_date": bd,
-            })
+            signals.append(
+                {
+                    "day": bd,
+                    "discovered_on": day,
+                    "entry_i": entry_i,
+                    "bench_vols": bench_vols,
+                    # 交易标注（回测工作台 K 线展示用）
+                    "box_high": causal_sig.get("box_high"),
+                    "box_low": causal_sig.get("box_low"),
+                    "breakout_date": bd,
+                }
+            )
 
         else:  # strategy B
             for vr in vr_levels:
@@ -271,17 +272,13 @@ def _detect_signals_for_code(
                 if not sig.get("is_breakout"):
                     continue
                 bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
-                if (
-                    bd not in dts_set
-                    or bd < first_sample
-                    or bd > last_sample
-                ):
+                if bd not in dts_set or bd < first_sample or bd > last_sample:
                     continue
                 causal = causal_window(bd)
                 causal_sig = detect_plan_b(causal, vol_ratio_min=vr)
-                causal_bd = "".join(
-                    ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit()
-                )[:8]
+                causal_bd = "".join(ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit())[
+                    :8
+                ]
                 if not causal_sig.get("is_breakout") or causal_bd != bd:
                     continue
                 key_b = (bd, vr)
@@ -291,13 +288,18 @@ def _detect_signals_for_code(
                 if entry_i + 1 >= len(df):
                     continue
                 seen.add(key_b)
-                signals.append({
-                    "day": bd, "discovered_on": day, "entry_i": entry_i,
-                    "bench_vols": {vr: causal_sig["bench_vol"]}, "vr": vr,
-                    "box_high": causal_sig.get("box_high"),
-                    "box_low": causal_sig.get("box_low"),
-                    "breakout_date": bd,
-                })
+                signals.append(
+                    {
+                        "day": bd,
+                        "discovered_on": day,
+                        "entry_i": entry_i,
+                        "bench_vols": {vr: causal_sig["bench_vol"]},
+                        "vr": vr,
+                        "box_high": causal_sig.get("box_high"),
+                        "box_low": causal_sig.get("box_low"),
+                        "breakout_date": bd,
+                    }
+                )
     return signals
 
 
@@ -313,31 +315,47 @@ def _replay_params(df: pd.DataFrame, signals: list[dict], combos: list[dict]) ->
             bv = s["bench_vols"].get(combo.get("vol_ratio_min"))
             if not bv:
                 continue
-            sim = simulate_trade(df, s["entry_i"], mode="bench", params={
-                "bench_vol": bv,
-                "stop_pct": combo["stop_pct"],
-                "exit_window": combo["exit_window"],
-                "strong_reset": combo["strong_reset"],
-            })
+            sim = simulate_trade(
+                df,
+                s["entry_i"],
+                mode="bench",
+                params={
+                    "bench_vol": bv,
+                    "stop_pct": combo["stop_pct"],
+                    "exit_window": combo["exit_window"],
+                    "strong_reset": combo["strong_reset"],
+                },
+            )
             if sim.get("ok"):
                 # 交易标注（回测工作台 K 线展示用）：入场日=信号次日、出场日
                 df_dates = df["date"].astype(str).tolist() if "date" in df.columns else []
                 entry_date = (
                     df_dates[int(sim["entry_index"])]
-                    if 0 <= int(sim["entry_index"]) < len(df_dates) else None
+                    if 0 <= int(sim["entry_index"]) < len(df_dates)
+                    else None
                 )
                 exit_date = (
-                    df_dates[int(sim["exit_index"])]
-                    if 0 <= int(sim["exit_index"]) < len(df_dates) else None
+                    df_dates[int(sim["exit_index"])] if 0 <= int(sim["exit_index"]) < len(df_dates) else None
                 )
-                trades.append({"ret": sim["ret"], "win": sim["win"], "exit": sim["exit"],
-                               "days": sim["days"], "max_dd": sim.get("max_dd"),
-                               "entry": sim.get("entry"), "exit_price": sim.get("exit_price"),
-                               "ts_code": str(df["ts_code"].iloc[0]) if "ts_code" in df else "",
-                               "date": s["day"], "cost": cost_adjusted_trade(df, sim),
-                               "entry_date": entry_date, "exit_date": exit_date,
-                               "box_high": s.get("box_high"), "box_low": s.get("box_low"),
-                               "breakout_date": s.get("breakout_date")})
+                trades.append(
+                    {
+                        "ret": sim["ret"],
+                        "win": sim["win"],
+                        "exit": sim["exit"],
+                        "days": sim["days"],
+                        "max_dd": sim.get("max_dd"),
+                        "entry": sim.get("entry"),
+                        "exit_price": sim.get("exit_price"),
+                        "ts_code": str(df["ts_code"].iloc[0]) if "ts_code" in df else "",
+                        "date": s["day"],
+                        "cost": cost_adjusted_trade(df, sim),
+                        "entry_date": entry_date,
+                        "exit_date": exit_date,
+                        "box_high": s.get("box_high"),
+                        "box_low": s.get("box_low"),
+                        "breakout_date": s.get("breakout_date"),
+                    }
+                )
     return out
 
 
@@ -364,7 +382,13 @@ def _worker_chunk(payload: tuple) -> dict[str, list[dict]]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             df["vol"] = pd.to_numeric(df.get("vol", df.get("volume")), errors="coerce")
             signals = _detect_signals_for_code(
-                df, sample_days, cal_index, cal, horizon, strategy, vr_levels,
+                df,
+                sample_days,
+                cal_index,
+                cal,
+                horizon,
+                strategy,
+                vr_levels,
                 signal_kwargs=signal_kwargs,
             )
             if not signals:
@@ -397,6 +421,7 @@ def run_grid(
     cancel_check=None,
     signal_kwargs: dict | None = None,
     costs: dict | None = None,
+    portfolio_policy: PortfolioPolicy | None = None,
 ) -> pd.DataFrame:
     """网格优化主入口。返回每组参数一行统计的 DataFrame（按 profit_factor 降序）。
 
@@ -427,25 +452,43 @@ def run_grid(
     big = store.load_daily(ts_codes=codes, start=load_start, end=end)
     if big.empty:
         return pd.DataFrame()
+    prepared_market = (
+        prepare_portfolio_market(big, portfolio_policy) if portfolio_policy is not None else None
+    )
 
     nw = resolve_workers(workers)
     results: dict[str, list[dict]] = {}
     if len(codes) < _MIN_CODES_FOR_POOL or nw <= 1:
-        r = _worker_chunk((codes, big, sample_days, cal, horizon, strategy, vr_levels,
-                           combos, signal_kwargs, costs))
+        r = _worker_chunk(
+            (codes, big, sample_days, cal, horizon, strategy, vr_levels, combos, signal_kwargs, costs)
+        )
         results = r
         if _is_cancelled(cancel_check):
             raise ResearchCancelled("用户取消")
     else:
         chunk_size = max(50, (len(codes) + nw - 1) // nw)
-        chunks = [codes[i: i + chunk_size] for i in range(0, len(codes), chunk_size)]
+        chunks = [codes[i : i + chunk_size] for i in range(0, len(codes), chunk_size)]
         pool = ProcessPoolExecutor(max_workers=nw)
         abandoned = False
         try:
-            futs = [pool.submit(_worker_chunk, (ch, big[big["ts_code"].isin(ch)].copy(),
-                                              sample_days, cal, horizon, strategy, vr_levels,
-                                              combos, signal_kwargs, costs))
-                    for ch in chunks]
+            futs = [
+                pool.submit(
+                    _worker_chunk,
+                    (
+                        ch,
+                        big[big["ts_code"].isin(ch)].copy(),
+                        sample_days,
+                        cal,
+                        horizon,
+                        strategy,
+                        vr_levels,
+                        combos,
+                        signal_kwargs,
+                        costs,
+                    ),
+                )
+                for ch in chunks
+            ]
             chunk_codes = {fut: ch for fut, ch in zip(futs, chunks)}
             results, _lost = _collect_pool_results(
                 pool,
@@ -469,13 +512,31 @@ def run_grid(
         s = summarize(trades)
         if not s.get("n_trades"):
             continue
-        rows.append({"param_id": pid, **combo_map[pid], **s, **summarize_costed_trades(trades)})
+        trade_metrics = summarize_costed_trades(trades)
+        row = {"param_id": pid, **combo_map[pid], **s, **trade_metrics}
+        if portfolio_policy is not None and prepared_market is not None:
+            portfolio = simulate_portfolio(
+                trades,
+                prepared_market,
+                policy=portfolio_policy,
+            )
+            row.update({f"trade_{key}": value for key, value in trade_metrics.items()})
+            row.update(portfolio_gate_metrics(portfolio))
+        rows.append(row)
     df_out = pd.DataFrame(rows)
     if not df_out.empty:
         df_out = df_out[df_out["net_n_trades"] >= BT_MIN_TRADES]  # 统计功效门槛按实际成交计
-        df_out = df_out.sort_values(
-            ["net_profit_factor", "net_avg_return"], ascending=False, na_position="last"
-        ).reset_index(drop=True)
+        sort_columns = ["net_profit_factor", "net_avg_return"]
+        ascending = [False, False]
+        if portfolio_policy is not None:
+            df_out["_portfolio_complete"] = df_out["portfolio_status"].eq("PASS")
+            sort_columns.insert(0, "_portfolio_complete")
+            ascending.insert(0, False)
+        df_out = (
+            df_out.sort_values(sort_columns, ascending=ascending, na_position="last")
+            .drop(columns=["_portfolio_complete"], errors="ignore")
+            .reset_index(drop=True)
+        )
     return df_out
 
 
@@ -489,9 +550,14 @@ def main() -> int:
     p.add_argument("--step", type=int, default=10)
     p.add_argument("--max-codes", type=int, default=200)
     args = p.parse_args()
-    df = run_grid(start=args.start, end=args.end, strategy=args.strategy,
-                  step=args.step, max_codes=args.max_codes,
-                  progress_cb=lambda m, pct: print(f"[{pct:3d}%] {m}"))
+    df = run_grid(
+        start=args.start,
+        end=args.end,
+        strategy=args.strategy,
+        step=args.step,
+        max_codes=args.max_codes,
+        progress_cb=lambda m, pct: print(f"[{pct:3d}%] {m}"),
+    )
     pd.set_option("display.width", 200)
     print(df.head(15).to_string() if not df.empty else "无有效组合（样本不足或无信号）")
     return 0

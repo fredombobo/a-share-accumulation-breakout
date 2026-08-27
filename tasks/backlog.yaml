@@ -260,7 +260,7 @@ tasks:
 
   - id: V2-P7.1-PORTFOLIO-BACKTEST
     title: 组合级现金、持仓、估值与回撤回测 V2
-    status: in_progress
+    status: complete
     work_package: WP75
     phase: P7
     dependencies:
@@ -273,10 +273,11 @@ tasks:
       - 费用滑点整手参与率停牌涨跌停复用 V2 执行核心
       - 重叠信号不得逐笔按百分百权益串行复利
       - 旧研究报告不可覆盖
+    completion_note: "共享现金/持仓/整数费用/逐日盯市已接入 grid、单组、IS/OOS、WF、双基线和可信门禁；严格质量门 903 tests PASS。"
 
   - id: V2-P7.2-RESEARCH-PIT-READER
     title: 可信研究按 decision_at 读取 PIT 行情与 as-of 宇宙
-    status: blocked
+    status: ready
     work_package: WP75
     phase: P7
     dependencies:

@@ -1,4 +1,5 @@
 """Orchestration for the persistent, trusted Lab validation workflow."""
+
 from __future__ import annotations
 
 import hashlib
@@ -22,6 +23,10 @@ from ab_screener.domain.costs import (
 from ab_screener.domain.entry_registry import active_definition_id as _active_entry_definition_id
 from ab_screener.domain.entry_registry import report_entry_fingerprint
 from ab_screener.research.baselines import ma_cross_baseline, random_baseline_trades
+from ab_screener.research.portfolio_accounting import (
+    PortfolioPolicy,
+    load_portfolio_policy,
+)
 from ab_screener.research.reporting import freeze_is_winner, render_trusted_report
 from ab_screener.research.validation import evaluate_personal_anti_overfit, evaluate_trusted_gate
 
@@ -38,9 +43,23 @@ COST_ASSUMPTIONS = {
     "slippage_each_side": SLIPPAGE,
     "description": "固定研究假设，不代表实际券商费率",
 }
-COST_VERSION = hashlib.sha256(
-    json.dumps(COST_ASSUMPTIONS, sort_keys=True).encode("utf-8")
-).hexdigest()[:16]
+COST_VERSION = hashlib.sha256(json.dumps(COST_ASSUMPTIONS, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+DEFAULT_PORTFOLIO_POLICY_PATH = (
+    Path(__file__).resolve().parents[2] / "configs" / "research" / "portfolio_v2.yaml"
+)
+
+
+def trusted_portfolio_policy() -> PortfolioPolicy:
+    """Load the versioned account policy used by every authoritative run."""
+    return load_portfolio_policy(DEFAULT_PORTFOLIO_POLICY_PATH)
+
+
+def trusted_portfolio_identity() -> dict[str, str]:
+    policy = trusted_portfolio_policy()
+    return {
+        "version": policy.version,
+        "config_hash": policy.fingerprint(),
+    }
 
 
 def _clean(value: Any) -> Any:
@@ -55,9 +74,7 @@ def _clean(value: Any) -> Any:
     return value
 
 
-def dataset_fingerprint(
-    db_path: str | Path, *, start: str, end: str, codes: list[str]
-) -> str:
+def dataset_fingerprint(db_path: str | Path, *, start: str, end: str, codes: list[str]) -> str:
     """Hash the exact OHLCV subset used by a Lab run."""
     digest = hashlib.sha256()
     if not codes:
@@ -72,15 +89,21 @@ def dataset_fingerprint(
     with sqlite3.connect(str(db_path), timeout=30) as conn:
         cursor = conn.execute(sql, (start, end, *codes))
         for row in cursor:
-            digest.update(("|".join("" if item is None else str(item) for item in row) + "\n").encode("utf-8"))
+            digest.update(
+                ("|".join("" if item is None else str(item) for item in row) + "\n").encode("utf-8")
+            )
             count += 1
     digest.update(f"rows={count}".encode("ascii"))
     return digest.hexdigest()[:16]
 
 
 def input_fingerprint(
-    request: dict[str, Any], windows: dict[str, Any], *, dataset_version: str,
-    code_version: str, cost_version: str = COST_VERSION,
+    request: dict[str, Any],
+    windows: dict[str, Any],
+    *,
+    dataset_version: str,
+    code_version: str,
+    cost_version: str = COST_VERSION,
 ) -> str:
     payload = {
         "request": request,
@@ -98,7 +121,12 @@ def _wf_tuples(windows: dict[str, Any]) -> list[tuple[str, str, str, str]]:
     result: list[tuple[str, str, str, str]] = []
     for row in windows.get("wf_windows") or []:
         if isinstance(row, dict):
-            values = (row.get("train_start"), row.get("train_end"), row.get("test_start"), row.get("test_end"))
+            values = (
+                row.get("train_start"),
+                row.get("train_end"),
+                row.get("test_start"),
+                row.get("test_end"),
+            )
         else:
             values = tuple(row)
         if len(values) == 4 and all(values):
@@ -123,6 +151,14 @@ def execute_trusted_research(
     from walkforward import run_is_oos, wf_recheck
 
     state = dict(checkpoint or {})
+    portfolio_policy = trusted_portfolio_policy()
+    portfolio_identity = {
+        "version": portfolio_policy.version,
+        "config_hash": portfolio_policy.fingerprint(),
+    }
+    requested_portfolio = request.get("portfolio_model")
+    if requested_portfolio is not None and requested_portfolio != portfolio_identity:
+        raise ValueError("请求绑定的组合模型与当前权威配置不一致")
     strategy = str(request.get("strategy") or "A")
     run_mode = str(request.get("mode") or "grid")
     max_codes = max(20, min(int(request.get("max_codes") or 200), 4500))
@@ -145,7 +181,9 @@ def execute_trusted_research(
             top_n=3,
             progress_cb=lambda message, pct: phase_cb(
                 "OOS" if str(message).startswith("OOS") else "IS",
-                min(70, max(5, int(pct * 0.70))), str(message), state,
+                min(70, max(5, int(pct * 0.70))),
+                str(message),
+                state,
             ),
             is_start=windows["is_start"],
             is_end=windows["is_end"],
@@ -153,14 +191,12 @@ def execute_trusted_research(
             oos_end=windows["oos_end"],
             grid=request.get("grid"),
             single=(
-                {
-                    key: request[key]
-                    for key in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
-                }
+                {key: request[key] for key in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")}
                 if run_mode == "single"
                 else None
             ),
             cancel_check=cancel_check,
+            portfolio_policy=portfolio_policy,
         )
         state["is_all"] = _clean(result["is"].to_dict("records") if not result["is"].empty else [])
         state["oos_all"] = _clean(result["oos"].to_dict("records") if not result["oos"].empty else [])
@@ -177,13 +213,23 @@ def execute_trusted_research(
         wf_rows: list[dict[str, Any]] = []
         wf_windows = _wf_tuples(windows)
         if primary_is and wf_windows:
-            combo = {key: primary_is.get(key) for key in ("strategy", "vol_ratio_min", "strong_reset", "exit_window", "stop_pct")}
+            combo = {
+                key: primary_is.get(key)
+                for key in ("strategy", "vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
+            }
             wf_df = wf_recheck(
-                [combo], step=step, max_codes=max_codes, windows=wf_windows,
+                [combo],
+                step=step,
+                max_codes=max_codes,
+                windows=wf_windows,
                 progress_cb=lambda message, pct: phase_cb(
-                    "WF", 73 + int(13 * pct / 100), str(message), state,
+                    "WF",
+                    73 + int(13 * pct / 100),
+                    str(message),
+                    state,
                 ),
                 cancel_check=cancel_check,
+                portfolio_policy=portfolio_policy,
             )
             if not wf_df.empty:
                 wf_rows = _clean(wf_df.iloc[0].get("wf_detail") or [])
@@ -205,12 +251,22 @@ def execute_trusted_research(
             )
             baseline_rows = {
                 "random": random_baseline_trades(
-                    daily, n_trades=requested_trades, hold_days=hold_days,
-                    entry_start=windows["oos_start"], entry_end=windows["oos_end"], codes=universe,
+                    daily,
+                    n_trades=requested_trades,
+                    hold_days=hold_days,
+                    entry_start=windows["oos_start"],
+                    entry_end=windows["oos_end"],
+                    codes=universe,
+                    portfolio_policy=portfolio_policy,
                 ),
                 "ma20_60": ma_cross_baseline(
-                    daily, hold_days=hold_days, max_trades=requested_trades,
-                    entry_start=windows["oos_start"], entry_end=windows["oos_end"], codes=universe,
+                    daily,
+                    hold_days=hold_days,
+                    max_trades=requested_trades,
+                    entry_start=windows["oos_start"],
+                    entry_end=windows["oos_end"],
+                    codes=universe,
+                    portfolio_policy=portfolio_policy,
                 ),
             }
         ensure_not_cancelled()
@@ -232,6 +288,7 @@ def execute_trusted_research(
         wf_windows=state.get("wf_windows") or [],
         baselines=state.get("baselines") or {},
         anti_overfit=anti_overfit,
+        portfolio_model=portfolio_identity if requested_portfolio is not None else None,
     )
     state["gate"] = gate
     state["anti_overfit"] = anti_overfit
@@ -245,7 +302,9 @@ def execute_trusted_research(
             "code": code_version,
             "cost": COST_VERSION,
             "entry": report_entry_fingerprint(_active_entry_definition_id()),
+            "portfolio": portfolio_identity["config_hash"],
         },
+        "portfolio_model": portfolio_identity,
         "sample": {"universe_size": len(universe), "windows": windows, "step": step},
         "cost_assumptions": COST_ASSUMPTIONS,
         "primary_is": primary_is,
@@ -278,19 +337,30 @@ def execute_trusted_research(
                     k: primary_is[k]
                     for k in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
                     if k in primary_is
-                } or None,
-                start=windows["oos_start"], end=windows["oos_end"],
-                step=step, max_codes=max_codes,
+                }
+                or None,
+                start=windows["oos_start"],
+                end=windows["oos_end"],
+                step=step,
+                max_codes=max_codes,
+                portfolio_policy=portfolio_policy,
             )
-            oos_returns = [
-                float(t["net_return"])
-                for t in (bt.get("trades") or [])
-                if t.get("net_return") is not None
-            ]
-            report["v2_statistics"] = v2_statistics_block(oos_returns, n_trials=n_trials)
+            portfolio = bt.get("portfolio") or {}
+            if portfolio.get("portfolio_status") != "PASS":
+                report["v2_statistics"] = {
+                    "status": "INSUFFICIENT",
+                    "reason": "组合回放未完整平仓，不能计算正式统计",
+                }
+            else:
+                oos_returns = [float(value) for value in (portfolio.get("portfolio_daily_returns") or [])]
+                report["v2_statistics"] = v2_statistics_block(
+                    oos_returns,
+                    n_trials=n_trials,
+                )
         else:
             report["v2_statistics"] = {
-                "status": "INSUFFICIENT", "reason": "无 primary 组合可回放",
+                "status": "INSUFFICIENT",
+                "reason": "无 primary 组合可回放",
             }
     except Exception:  # noqa: BLE001
         report["v2_statistics"] = {"status": "INSUFFICIENT", "reason": "无法计算 v2 统计"}
@@ -312,9 +382,11 @@ def execute_trusted_research(
         ],
         "baselines": state.get("baselines") or {},
         "promotion_checks": gate,
-        "params_used": request.get("grid") or (
+        "params_used": request.get("grid")
+        or (
             {key: request.get(key) for key in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")}
-            if run_mode == "single" else None
+            if run_mode == "single"
+            else None
         ),
         "windows": windows,
         "trusted_report": report,

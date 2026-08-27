@@ -6,6 +6,7 @@
 
 产出：runtime/v2/research/trusted_report_<run_id>.json（含 v2_statistics 正式统计块）
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,6 +33,7 @@ from ab_screener.research.trusted_run import (
     dataset_fingerprint,
     execute_trusted_research,
     input_fingerprint,
+    trusted_portfolio_identity,
 )
 from research_windows import recommend_research_plan
 
@@ -71,8 +73,10 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    print(f"[research] mode={windows['mode']} IS={windows['is_start']}~{windows['is_end']}"
-          f" OOS={windows['oos_start']}~{windows['oos_end']}")
+    print(
+        f"[research] mode={windows['mode']} IS={windows['is_start']}~{windows['is_end']}"
+        f" OOS={windows['oos_start']}~{windows['oos_end']}"
+    )
 
     run_id = args.run_id or uuid.uuid4().hex[:12]
     out_dir = Path(args.out)
@@ -83,6 +87,7 @@ def main() -> int:
         "mode": "grid",
         "max_codes": args.max_codes,
         "step": args.step,
+        "portfolio_model": trusted_portfolio_identity(),
     }
     universe = research_universe(args.max_codes, include_delisted=True)
     starts = [str(windows["is_start"]), str(windows["oos_start"])]
@@ -111,6 +116,7 @@ def main() -> int:
         "dataset_version": dataset_version,
         "code_version": code_version,
         "cost_version": COST_VERSION,
+        "portfolio_model": request["portfolio_model"],
         "entry_policy": "next_tradable_open",
         "selection_rule": "freeze_is_winner_before_oos",
     }
@@ -208,9 +214,7 @@ def main() -> int:
     markdown = str(report.get("markdown") or "")
     report_sha256 = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
     oos_by_param = {
-        str(row.get("param_id")): row
-        for row in (result.get("oos") or [])
-        if row.get("param_id") is not None
+        str(row.get("param_id")): row for row in (result.get("oos") or []) if row.get("param_id") is not None
     }
     with sqlite3.connect(db_path) as conn:
         trial_rows = result.get("is_all") or []
@@ -269,9 +273,14 @@ def main() -> int:
     )
     print(f"[research] gate: {gate.get('verdict')} reasons={gate.get('reasons')}")
     stats = report.get("v2_statistics") or {}
-    print(f"[research] v2_statistics: status={stats.get('status')}"
-          + (f" dsr={stats.get('dsr')} mintrl={stats.get('min_track_record_length')}"
-             if stats.get("status") == "OK" else f" reason={stats.get('reason')}"))
+    print(
+        f"[research] v2_statistics: status={stats.get('status')}"
+        + (
+            f" dsr={stats.get('dsr')} mintrl={stats.get('min_track_record_length')}"
+            if stats.get("status") == "OK"
+            else f" reason={stats.get('reason')}"
+        )
+    )
     return 0
 
 

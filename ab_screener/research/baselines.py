@@ -1,13 +1,17 @@
 """固定种子随机基线与 20/60 均线基线。"""
+
 from __future__ import annotations
 
 import random
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 from ab_screener.domain.costs import FillResult, simulate_round_trip, summarize_fills
+
+if TYPE_CHECKING:
+    from ab_screener.research.portfolio_accounting import PortfolioPolicy
 
 RANDOM_SEED = 20260808
 
@@ -21,6 +25,7 @@ def random_baseline_trades(
     entry_start: str | None = None,
     entry_end: str | None = None,
     codes: list[str] | None = None,
+    portfolio_policy: PortfolioPolicy | None = None,
 ) -> dict[str, Any]:
     """在相同日线宇宙上随机采样入场日/股票，走成本引擎。"""
     rng = random.Random(seed)
@@ -40,6 +45,7 @@ def random_baseline_trades(
                 continue
             eligible.append((group, index))
     fills: list[FillResult] = []
+    candidates: list[dict[str, Any]] = []
     if eligible:
         sample = rng.sample(eligible, min(n_trades, len(eligible)))
     else:
@@ -47,6 +53,17 @@ def random_baseline_trades(
     for g, i in sample:
         j = i + hold_days
         row_e, row_x = g.iloc[i], g.iloc[j]
+        candidates.append(
+            {
+                "ts_code": str(row_e["ts_code"]),
+                "date": str(g.iloc[i - 1]["trade_date"]),
+                "entry_date": str(row_e["trade_date"]),
+                "exit_date": str(row_x["trade_date"]),
+                "exit": "time",
+                "exit_price": float(row_x["open"]),
+                "cost": {"filled": True},
+            }
+        )
         fills.append(
             simulate_round_trip(
                 entry_open=float(row_e["open"]),
@@ -69,6 +86,7 @@ def random_baseline_trades(
     out["entry_start"] = entry_start
     out["entry_end"] = entry_end
     out["universe_size"] = len(universe)
+    _apply_portfolio_metrics(out, candidates, daily, portfolio_policy)
     return out
 
 
@@ -82,6 +100,7 @@ def ma_cross_baseline(
     entry_start: str | None = None,
     entry_end: str | None = None,
     codes: list[str] | None = None,
+    portfolio_policy: PortfolioPolicy | None = None,
 ) -> dict[str, Any]:
     """20/60 均线金叉入场，固定持有 hold_days，成本引擎。"""
     if daily is None or daily.empty:
@@ -89,6 +108,7 @@ def ma_cross_baseline(
     universe = sorted(set(codes if codes is not None else daily["ts_code"].astype(str).unique().tolist()))
     daily = daily[daily["ts_code"].astype(str).isin(universe)].copy()
     fills: list[FillResult] = []
+    candidates: list[dict[str, Any]] = []
     for code, g in daily.groupby("ts_code", sort=True):
         g = g.sort_values("trade_date").reset_index(drop=True)
         if len(g) < slow + hold_days + 2:
@@ -111,6 +131,17 @@ def ma_cross_baseline(
                 continue
             if entry_end and (entry_date > entry_end or exit_date > entry_end):
                 continue
+            candidates.append(
+                {
+                    "ts_code": str(code),
+                    "date": str(g.iloc[i]["trade_date"]),
+                    "entry_date": entry_date,
+                    "exit_date": exit_date,
+                    "exit": "time",
+                    "exit_price": float(row_x["open"]),
+                    "cost": {"filled": True},
+                }
+            )
             fills.append(
                 simulate_round_trip(
                     entry_open=float(row_e["open"]),
@@ -136,4 +167,24 @@ def ma_cross_baseline(
     out["entry_start"] = entry_start
     out["entry_end"] = entry_end
     out["universe_size"] = len(universe)
+    _apply_portfolio_metrics(out, candidates, daily, portfolio_policy)
     return out
+
+
+def _apply_portfolio_metrics(
+    out: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    daily: pd.DataFrame,
+    policy: PortfolioPolicy | None,
+) -> None:
+    if policy is None:
+        return
+    from ab_screener.research.portfolio_accounting import (
+        portfolio_gate_metrics,
+        simulate_portfolio,
+    )
+
+    trade_metrics = dict(out)
+    portfolio = simulate_portfolio(candidates, daily, policy=policy)
+    out.update({f"trade_{key}": value for key, value in trade_metrics.items()})
+    out.update(portfolio_gate_metrics(portfolio))

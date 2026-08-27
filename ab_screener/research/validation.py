@@ -3,6 +3,7 @@
 The functions in this module are deliberately independent from FastAPI and the
 database so the exact promotion contract can be tested with fixed fixtures.
 """
+
 from __future__ import annotations
 
 import math
@@ -70,26 +71,23 @@ def evaluate_personal_anti_overfit(
     if primary_oos is None:
         param_tuple = tuple(primary_is.get(key) for key in _PARAM_KEYS)
         primary_oos = next(
-            (row for row in oos_candidates
-             if tuple(row.get(key) for key in _PARAM_KEYS) == param_tuple),
+            (row for row in oos_candidates if tuple(row.get(key) for key in _PARAM_KEYS) == param_tuple),
             None,
         )
     is_pf = _number(primary_is.get("net_profit_factor"))
     oos_pf = _number(primary_oos.get("oos_net_profit_factor")) if primary_oos else None
-    ranked = [
-        (row, _number(row.get("oos_net_avg_return")))
-        for row in oos_candidates
-    ]
+    ranked = [(row, _number(row.get("oos_net_avg_return"))) for row in oos_candidates]
     wf_pfs = [_number(row.get("test_pf")) for row in wf_windows]
     neighbor_pfs = [
-        _number(row.get("oos_net_profit_factor"))
-        for row in oos_candidates
-        if row is not primary_oos
+        _number(row.get("oos_net_profit_factor")) for row in oos_candidates if row is not primary_oos
     ]
     complete = (
-        is_pf is not None and is_pf > 0 and oos_pf is not None
+        is_pf is not None
+        and is_pf > 0
+        and oos_pf is not None
         and all(value is not None for _, value in ranked)
-        and len(neighbor_pfs) >= 2 and all(value is not None for value in neighbor_pfs)
+        and len(neighbor_pfs) >= 2
+        and all(value is not None for value in neighbor_pfs)
         and all(value is not None for value in wf_pfs)
     )
     if not complete:
@@ -113,20 +111,42 @@ def evaluate_personal_anti_overfit(
     neighbor_ratio = profitable_neighbors / len(neighbor_pfs)
     wf_values = [value if value is not None else 0.0 for value in wf_pfs]
     profitable_wf = len([value for value in wf_values if value >= 1.0])
-    checks.extend([
-        _check("anti_trials", "参数试验数量", len(is_candidates) >= 30,
-               len(is_candidates), ">= 30"),
-        _check("anti_oos_candidates", "冻结候选OOS复核数量", len(oos_candidates) >= 3,
-               len(oos_candidates), ">= 3"),
-        _check("anti_pf_retention", "IS到OOS净PF保持率", retention >= 0.75,
-               round(retention, 4), ">= 0.75"),
-        _check("anti_oos_rank", "冻结IS第一名的OOS排名", primary_rank <= math.ceil(len(ordered) / 2),
-               {"rank": primary_rank, "evaluated": len(ordered)}, "位于前半"),
-        _check("anti_neighbor_stability", "相邻优选参数OOS盈利稳定性", neighbor_ratio >= 0.5,
-               round(neighbor_ratio, 4), ">= 50% 的邻近参数净PF>=1"),
-        _check("anti_wf_consistency", "WF窗口盈利一致性", profitable_wf >= 2,
-               {"profitable": profitable_wf, "windows": 3}, ">= 2/3 窗口净PF>=1"),
-    ])
+    checks.extend(
+        [
+            _check("anti_trials", "参数试验数量", len(is_candidates) >= 30, len(is_candidates), ">= 30"),
+            _check(
+                "anti_oos_candidates",
+                "冻结候选OOS复核数量",
+                len(oos_candidates) >= 3,
+                len(oos_candidates),
+                ">= 3",
+            ),
+            _check(
+                "anti_pf_retention", "IS到OOS净PF保持率", retention >= 0.75, round(retention, 4), ">= 0.75"
+            ),
+            _check(
+                "anti_oos_rank",
+                "冻结IS第一名的OOS排名",
+                primary_rank <= math.ceil(len(ordered) / 2),
+                {"rank": primary_rank, "evaluated": len(ordered)},
+                "位于前半",
+            ),
+            _check(
+                "anti_neighbor_stability",
+                "相邻优选参数OOS盈利稳定性",
+                neighbor_ratio >= 0.5,
+                round(neighbor_ratio, 4),
+                ">= 50% 的邻近参数净PF>=1",
+            ),
+            _check(
+                "anti_wf_consistency",
+                "WF窗口盈利一致性",
+                profitable_wf >= 2,
+                {"profitable": profitable_wf, "windows": 3},
+                ">= 2/3 窗口净PF>=1",
+            ),
+        ]
+    )
     for item in checks:
         if not item["passed"]:
             reasons.append(f"{item['label']}未通过（实际 {item['actual']}，要求 {item['threshold']}）")
@@ -178,8 +198,8 @@ def v2_statistics_block(
         m3 = sum((r - mean) ** 3 for r in finite) / len(finite)
         m4 = sum((r - mean) ** 4 for r in finite) / len(finite)
         if std > 0:
-            skew = m3 / (std ** 3)
-            kurt = m4 / (std ** 4)
+            skew = m3 / (std**3)
+            kurt = m4 / (std**4)
     dsr = deflated_sharpe(sharpe, len(finite), skew, kurt, n_trials)
     mintrl = min_track_record_length(sharpe, skew, kurt, confidence=confidence)
     return {
@@ -206,6 +226,7 @@ def evaluate_trusted_gate(
     wf_windows: list[dict[str, Any]],
     baselines: dict[str, Any],
     anti_overfit: dict[str, Any] | None = None,
+    portfolio_model: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return PASS/FAIL/INSUFFICIENT_EVIDENCE for one frozen IS winner.
 
@@ -217,13 +238,15 @@ def evaluate_trusted_gate(
     checks: list[dict[str, Any]] = []
 
     trusted_scope = research_mode == "full" and automatic_window and run_mode == "grid"
-    checks.append(_check(
-        "trusted_scope",
-        "自动 full 窗格搜索",
-        trusted_scope,
-        {"research_mode": research_mode, "automatic_window": automatic_window, "run_mode": run_mode},
-        "full + 自动窗口 + grid",
-    ))
+    checks.append(
+        _check(
+            "trusted_scope",
+            "自动 full 窗格搜索",
+            trusted_scope,
+            {"research_mode": research_mode, "automatic_window": automatic_window, "run_mode": run_mode},
+            "full + 自动窗口 + grid",
+        )
+    )
     if not trusted_scope:
         reasons.append("只有自动 full 窗格搜索可形成可信结论；当前运行仅供探索")
 
@@ -272,7 +295,9 @@ def evaluate_trusted_gate(
             checks.extend((trade_check, dd_check))
             for item in (trade_check, dd_check):
                 if not item["passed"]:
-                    reasons.append(f"{item['label']}未通过（实际 {item['actual']}，要求 {item['threshold']}）")
+                    reasons.append(
+                        f"{item['label']}未通过（实际 {item['actual']}，要求 {item['threshold']}）"
+                    )
     if not wf_complete:
         reasons.append("三个 WF 窗口的净成本结果不完整")
     else:
@@ -292,7 +317,9 @@ def evaluate_trusted_gate(
     baseline_values: dict[str, float | None] = {}
     for key in ("random", "ma20_60"):
         baseline_row = baselines.get(key)
-        baseline_values[key] = _number(baseline_row.get("net_avg_return")) if isinstance(baseline_row, dict) else None
+        baseline_values[key] = (
+            _number(baseline_row.get("net_avg_return")) if isinstance(baseline_row, dict) else None
+        )
     baseline_complete = candidate_return is not None and all(v is not None for v in baseline_values.values())
     if not baseline_complete:
         reasons.append("随机与 MA20/60 基线净收益证据不完整")
@@ -307,11 +334,79 @@ def evaluate_trusted_gate(
                 f"主候选优于{labels[key]}",
                 candidate_return > value,
                 {"candidate": candidate_return, "baseline": value},
-                "candidate net_avg_return > baseline",
+                "candidate portfolio total return > baseline",
             )
             checks.append(item)
             if not item["passed"]:
                 reasons.append(f"主候选未优于{labels[key]}")
+
+    portfolio_evidence_complete = True
+    if portfolio_model is not None:
+        expected_version = portfolio_model.get("version")
+        expected_hash = portfolio_model.get("config_hash")
+        oos_values = (
+            oos.get("oos_portfolio_model_version"),
+            oos.get("oos_portfolio_config_hash"),
+            oos.get("oos_portfolio_status"),
+        )
+        if any(value is None for value in oos_values):
+            portfolio_evidence_complete = False
+            reasons.append("OOS 组合账户证据不完整")
+        else:
+            oos_portfolio_check = _check(
+                "oos_portfolio_accounting",
+                "OOS 共享账户与每日盯市",
+                oos_values == (expected_version, expected_hash, "PASS"),
+                {
+                    "version": oos_values[0],
+                    "config_hash": oos_values[1],
+                    "status": oos_values[2],
+                },
+                "版本/配置一致且完整平仓",
+            )
+            checks.append(oos_portfolio_check)
+            if not oos_portfolio_check["passed"]:
+                reasons.append("OOS 组合账户未按权威版本完整结算")
+
+        for index, row in enumerate(wf_windows, 1):
+            train_status = row.get("train_portfolio_status")
+            test_status = row.get("test_portfolio_status")
+            if train_status is None or test_status is None:
+                portfolio_evidence_complete = False
+                reasons.append(f"WF{index} 组合账户证据不完整")
+                continue
+            wf_portfolio_check = _check(
+                f"wf{index}_portfolio_accounting",
+                f"WF{index} 共享账户完整结算",
+                train_status == "PASS" and test_status == "PASS",
+                {"train": train_status, "test": test_status},
+                "训练窗与测试窗均 PASS",
+            )
+            checks.append(wf_portfolio_check)
+            if not wf_portfolio_check["passed"]:
+                reasons.append(f"WF{index} 组合账户存在未平仓或结算异常")
+
+        for key, label in (("random", "随机基线"), ("ma20_60", "MA20/60 基线")):
+            baseline_row = baselines.get(key)
+            values = (
+                baseline_row.get("portfolio_model_version") if isinstance(baseline_row, dict) else None,
+                baseline_row.get("portfolio_config_hash") if isinstance(baseline_row, dict) else None,
+                baseline_row.get("portfolio_status") if isinstance(baseline_row, dict) else None,
+            )
+            if any(value is None for value in values):
+                portfolio_evidence_complete = False
+                reasons.append(f"{label}组合账户证据不完整")
+                continue
+            baseline_portfolio_check = _check(
+                f"{key}_portfolio_accounting",
+                f"{label}共享账户完整结算",
+                values == (expected_version, expected_hash, "PASS"),
+                {"version": values[0], "config_hash": values[1], "status": values[2]},
+                "版本/配置一致且完整平仓",
+            )
+            checks.append(baseline_portfolio_check)
+            if not baseline_portfolio_check["passed"]:
+                reasons.append(f"{label}组合账户未按权威版本完整结算")
 
     anti_complete = (
         isinstance(anti_overfit, dict)
@@ -326,7 +421,12 @@ def evaluate_trusted_gate(
         reasons.extend(str(reason) for reason in anti_overfit.get("block_reasons") or [])
 
     evidence_complete = (
-        trusted_scope and oos_complete and wf_complete and baseline_complete and anti_complete
+        trusted_scope
+        and oos_complete
+        and wf_complete
+        and baseline_complete
+        and anti_complete
+        and portfolio_evidence_complete
     )
     if not evidence_complete:
         verdict = "INSUFFICIENT_EVIDENCE"
