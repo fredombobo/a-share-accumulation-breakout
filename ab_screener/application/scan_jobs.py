@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ab_screener.security import redact_sensitive_text
+
 _TZ = ZoneInfo("Asia/Shanghai")
 _DEFAULT_DB = Path(__file__).resolve().parents[2] / "runtime" / "stock_data.db"
 
@@ -219,7 +221,15 @@ class ScanJobStore:
                   finished_at=?, updated_at=?
                 WHERE task_id=? AND status NOT IN ('CANCELLED','SUCCEEDED','FAILED')
                 """,
-                (status, run_id, error_code, (error_message or "")[:500], _now(), _now(), task_id),
+                (
+                    status,
+                    run_id,
+                    error_code,
+                    redact_sensitive_text(error_message or "")[:500],
+                    _now(),
+                    _now(),
+                    task_id,
+                ),
             )
             return cur.rowcount > 0
 
@@ -294,7 +304,7 @@ def to_api_status(job: dict[str, Any] | None) -> dict[str, Any]:
         "progress": int(cp.get("progress") or 0),
         "cancel_requested": bool(job.get("cancel_requested")),
         "run_id": job.get("run_id"),
-        "error": job.get("error_message"),
+        "error": redact_sensitive_text(job.get("error_message") or "") or None,
         "result": cp.get("result"),
     }
 

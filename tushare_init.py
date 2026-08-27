@@ -33,12 +33,13 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import time
 import warnings
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from ab_screener.security import redact_sensitive_text
 
 warnings.filterwarnings("ignore", message=r".*Eventlet is deprecated.*", category=DeprecationWarning)
 
@@ -117,16 +118,8 @@ def _resolve_http_url() -> str:
 
 def sanitize_error(error: object) -> str:
     """清除异常文本中的凭据，供所有日志边界统一调用。"""
-    message = str(error)
     token = _resolve_token()
-    if token:
-        message = message.replace(token, "[REDACTED]")
-    message = re.sub(
-        r"(?i)(token\s*(?:不对|错误|invalid|[:=])?\s*[，,:：]?\s*)([A-Za-z0-9_-]{20,})",
-        r"\1[REDACTED]",
-        message,
-    )
-    return message
+    return redact_sensitive_text(error, known_secrets=(token,))
 
 
 def _patch_dataapi_query_with_curl_cffi() -> None:

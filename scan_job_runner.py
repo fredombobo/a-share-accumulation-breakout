@@ -16,6 +16,8 @@ import time
 import traceback
 from pathlib import Path
 
+from ab_screener.security import redact_sensitive_text
+
 # 清理代理污染
 for _k in (
     "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
@@ -154,13 +156,15 @@ def main() -> int:
         progress_cb("完成", 100, f"A={count_a} B={count_b}")
         return 0
     except Exception as e:  # noqa: BLE001
+        safe_error = redact_sensitive_text(e)
+        safe_trace = redact_sensitive_text(traceback.format_exc())
         _write_json(args.result, {
             "cancelled": False,
             "status": "error",
-            "error": str(e)[:800],
-            "trace": traceback.format_exc()[-1500:],
+            "error": safe_error[:800],
+            "trace": safe_trace[-1500:],
         })
-        progress_cb("失败", 100, str(e)[:120])
+        progress_cb("失败", 100, safe_error[:120])
         return 1
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 import scan_job_runner
-from ab_screener.application.scan_jobs import FAILED, ScanJobStore
+from ab_screener.application.scan_jobs import FAILED, ScanJobStore, to_api_status
 from local_store import LocalStore
 from scan_job_runner import _candidate_codes, _configure_console_encoding, _write_json
 
@@ -85,3 +85,25 @@ def test_subprocess_error_is_persisted_as_a_terminal_scan_job(tmp_path: Path) ->
     assert job["status"] == FAILED
     assert job["error_code"] == "SCAN_FAILED"
     assert job["error_message"] == "child failed"
+
+
+def test_scan_failure_redacts_vendor_echo_before_db_and_api(tmp_path: Path) -> None:
+    credential = "T" * 48
+    db_path = tmp_path / "scan-redaction.db"
+    LocalStore(db_path)
+    store = ScanJobStore(db_path)
+    store.upsert_running("task-secret", top_n=20, days=160)
+
+    changed = store.finish(
+        "task-secret",
+        status=FAILED,
+        error_code="SCAN_FAILED",
+        error_message=f"token不对，您传过来的是{credential}请确认",
+    )
+
+    job = store.get("task-secret")
+    assert changed is True
+    assert job is not None
+    assert credential not in str(job["error_message"])
+    assert "[REDACTED]" in str(job["error_message"])
+    assert credential not in str(to_api_status(job)["error"])
