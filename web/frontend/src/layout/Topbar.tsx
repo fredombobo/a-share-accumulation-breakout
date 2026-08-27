@@ -4,7 +4,25 @@ import { api, LabStatusResp, SyncStatus } from '../api/client'
 import { useTheme } from '../theme/ThemeContext'
 import { IcoMoon, IcoPulse, IcoRefresh, IcoSearch, IcoSun } from '../components/Icons'
 
-function pageMeta(pathname: string): { kicker: string; title: string; sub: string } {
+type PageMeta = { kicker: string; title: string; sub: string }
+
+const V2_PAGE_META: Record<string, PageMeta> = {
+  '/v2/desk': { kicker: 'V2 Desk', title: '指挥舱', sub: '今日唯一动作 · 门禁驱动' },
+  '/v2/intelligence': { kicker: 'Market Intelligence', title: '市场情报', sub: '档案 · 宽度 · 数据状态' },
+  '/v2/strategies': { kicker: 'Strategy Registry', title: '六形态', sub: '插件契约 · 研究状态' },
+  '/v2/signals': { kicker: 'Signal Observatory', title: '信号观察', sub: '不可变观察 · 生命周期' },
+  '/v2/research': { kicker: 'Research Governance', title: '研究治理', sub: '实验登记 · Trial Ledger' },
+  '/v2/monitor': { kicker: 'Operations Monitor', title: '监控', sub: '系统健康 · 告警' },
+  '/v2/review': { kicker: 'Decision Review', title: '复核', sub: '笔记 · 决策' },
+  '/v2/system': { kicker: 'System', title: '系统', sub: '健康 · 备份 · 深检' },
+  '/v2/compare': { kicker: 'Compare', title: '对比', sub: '2–6 标的 K 线' },
+}
+
+export function pageMeta(pathname: string): PageMeta {
+  const v2Path = Object.keys(V2_PAGE_META).find(
+    (path) => pathname === path || pathname.startsWith(`${path}/`),
+  )
+  if (v2Path) return V2_PAGE_META[v2Path]
   if (pathname.startsWith('/paper')) {
     return { kicker: 'Paper Trading', title: '纸面交易', sub: '仿真撮合 · 持仓 · 对账 · 不下单' }
   }
