@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from types import FunctionType
 
 import pytest
 
@@ -58,6 +59,7 @@ def test_plan_migrations_and_checksum(tmp_path):
         assert plan["registered_total"] == len(mr.registered_ids())
         # checksum 稳定
         assert mr.migration_checksum("v2:test_m1") == mr.migration_checksum("v2:test_m1")
+        assert mr.migration_checksum("v2:test_m1").startswith("sha256:")
     finally:
         conn.close()
 
@@ -93,3 +95,49 @@ def test_dry_run_does_not_apply(tmp_path):
         assert mr.pending_migrations(conn)  # dry-run 后仍应有 pending（未落库）
     finally:
         conn.close()
+
+
+def test_checksum_is_independent_of_checkout_path():
+    migration_id = "v2:test_path_independent"
+
+    def apply(conn):
+        conn.execute("SELECT 1")
+
+    function_a = FunctionType(
+        apply.__code__.replace(co_filename="C:/checkout-a/migration.py"), globals()
+    )
+    function_b = FunctionType(
+        apply.__code__.replace(co_filename="D:/checkout-b/migration.py"), globals()
+    )
+    mr.register_migration(migration_id, function_a)
+    try:
+        first = mr.migration_checksum(migration_id)
+        mr._REGISTRY[migration_id]["apply"] = function_b
+        assert mr.migration_checksum(migration_id) == first
+    finally:
+        mr._REGISTRY.pop(migration_id, None)
+
+
+def test_apply_rejects_unknown_checksum_drift(tmp_path):
+    migration_id = "v2:test_unknown_drift"
+
+    def apply(conn):
+        conn.execute("CREATE TABLE drift_guard (id INTEGER)")
+
+    mr.register_migration(migration_id, apply)
+    conn = _fresh_db(tmp_path)
+    try:
+        mr.ensure_table(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations_v2(migration_id,checksum) VALUES (?,?)",
+            (migration_id, "not-a-known-checksum"),
+        )
+        conn.commit()
+        with pytest.raises(RuntimeError, match="checksum"):
+            mr.apply_pending(conn)
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='drift_guard'"
+        ).fetchone() is None
+    finally:
+        conn.close()
+        mr._REGISTRY.pop(migration_id, None)

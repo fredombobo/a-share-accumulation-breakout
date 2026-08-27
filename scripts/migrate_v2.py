@@ -15,7 +15,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ab_screener.data.migration_intents import pit_history_v2  # noqa: F401  侧效应：注册全部迁移意图
-from ab_screener.data.migration_registry import apply_pending, plan_migrations
+from ab_screener.data.migration_registry import (
+    apply_pending,
+    legacy_checksum_upgrades,
+    plan_migrations,
+)
 
 
 def main() -> int:
@@ -39,6 +43,8 @@ def main() -> int:
             plan = plan_migrations(conn)
             print("待应用:", plan["pending"] or "(无)")
             print("已应用:", len(plan["already_applied"]), "| 注册总数:", plan["registered_total"])
+            upgrades = legacy_checksum_upgrades(conn)
+            print("可安全升级的旧 checksum:", upgrades or "(无)")
             return 0
         if args.apply:
             applied = apply_pending(conn)
