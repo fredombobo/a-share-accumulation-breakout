@@ -57,6 +57,9 @@ def _signal_persistence_enabled() -> bool:
 def _candidate_codes_from_result(result: dict) -> list[str]:
     """从扫描结果抽取候选代码（hits + pool_report），去重保序。"""
     codes: list[str] = []
+    serialized = result.get("candidate_codes")
+    if isinstance(serialized, list):
+        codes.extend(str(code) for code in serialized if str(code))
     raw = result.get("hits")
     if isinstance(raw, list):
         codes.extend(str(c) for c in raw if str(c))

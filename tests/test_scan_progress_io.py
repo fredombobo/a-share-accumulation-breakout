@@ -5,10 +5,12 @@ import json
 import threading
 from pathlib import Path
 
+import pandas as pd
+
 import scan_job_runner
 from ab_screener.application.scan_jobs import FAILED, ScanJobStore
 from local_store import LocalStore
-from scan_job_runner import _configure_console_encoding, _write_json
+from scan_job_runner import _candidate_codes, _configure_console_encoding, _write_json
 
 
 class _FakeStream:
@@ -30,6 +32,16 @@ def test_scan_runner_forces_utf8_before_emoji_logging(monkeypatch) -> None:
     expected = [{"encoding": "utf-8", "errors": "backslashreplace"}]
     assert stdout.calls == expected
     assert stderr.calls == expected
+
+
+def test_scan_runner_preserves_bounded_candidate_codes_for_shadow_hook() -> None:
+    result = {
+        "hits": ["000001.SZ", {"ts_code": "600000.SH"}],
+        "df_a": pd.DataFrame([{"ts_code": "000001.SZ"}]),
+        "df_b": pd.DataFrame([{"ts_code": "300001.SZ"}]),
+    }
+
+    assert _candidate_codes(result) == ["000001.SZ", "600000.SH", "300001.SZ"]
 
 
 def test_progress_write_waits_for_a_windows_reader_to_release(tmp_path: Path) -> None:

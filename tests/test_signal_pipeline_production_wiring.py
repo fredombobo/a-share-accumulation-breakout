@@ -175,6 +175,20 @@ def test_signal_persistence_flag_reads_enabled_environment(monkeypatch):
     assert legacy_scan._signal_persistence_enabled() is True
 
 
+def test_parent_reads_serialized_candidate_codes_from_scan_child():
+    from ab_screener.api.routers import legacy_scan
+
+    result = {
+        "candidate_codes": ["000001.SZ", "600000.SH", "000001.SZ"],
+        "hits": 3,
+        "pool_report": {"a_count": 1, "b_count": 2},
+    }
+    assert legacy_scan._candidate_codes_from_result(result) == [
+        "000001.SZ",
+        "600000.SH",
+    ]
+
+
 def test_read_daily_bars_bounded_by_as_of(tmp_path):
     """生产 bars reader 必须按 as_of 截断（防未来函数：不用扫描日之后的 K 线）。"""
     from ab_screener.api.routers import legacy_scan

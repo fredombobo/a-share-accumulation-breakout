@@ -58,6 +58,32 @@ def _write_json(path: Path, obj: dict) -> None:
             time.sleep(0.01 * (attempt + 1))
 
 
+def _candidate_codes(result: dict) -> list[str]:
+    """Serialize the bounded A/B/hit universe needed by the parent SHADOW hook."""
+    values: list[object] = []
+    hits = result.get("hits")
+    if isinstance(hits, list):
+        values.extend(hits)
+    for key in ("df_a", "df_b"):
+        frame = result.get(key)
+        if frame is None or getattr(frame, "empty", True):
+            continue
+        for column in ("ts_code", "code"):
+            if column in frame.columns:
+                values.extend(frame[column].tolist())
+                break
+    codes: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if isinstance(value, dict):
+            value = value.get("ts_code") or value.get("code")
+        code = str(value or "").strip()
+        if code and code not in seen:
+            seen.add(code)
+            codes.append(code)
+    return codes
+
+
 def main() -> int:
     _configure_console_encoding()
     p = argparse.ArgumentParser()
@@ -117,6 +143,7 @@ def main() -> int:
             "count": count_a,
             "count_a": count_a,
             "count_b": count_b,
+            "candidate_codes": _candidate_codes(result),
             "regime": result.get("regime"),
             "freshness": result.get("freshness"),
             "pool_report": result.get("pool_report"),
