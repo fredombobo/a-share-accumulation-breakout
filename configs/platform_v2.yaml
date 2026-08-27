@@ -22,6 +22,6 @@ flags:
 
 evidence:
   # 管理者冻结的权威研究任务；失败也必须如实显示，不能改读任意最新 PASS。
-  authoritative_research_run_id: "v2auth20260827d"
+  authoritative_research_run_id: "v2auth20260827e"
   gate_evidence_dir: "runtime/v2/gates"
   soak_evidence_dir: "runtime/v2/soak"
