@@ -263,8 +263,8 @@ tasks:
     title: 七闸门总验收与证据索引
     status: blocked
     verdict: BLOCKED
-    reviewed_at: "2026-08-28T01:12:00+08:00"
-    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: INSUFFICIENT, G: PASS}
+    reviewed_at: "2026-08-28T01:15:00+08:00"
+    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: FAIL, G: PASS}
     evidence: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
     work_package: WP80
     phase: P8

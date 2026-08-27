@@ -1,10 +1,10 @@
 version: 1
-updated_at: "2026-08-28T01:12:00+08:00"
+updated_at: "2026-08-28T01:15:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
   三波工程交付、恢复续验和凭据脱敏纠错已完成；当前 D/P/L/G=PASS，
-  R=FAIL，S/O=INSUFFICIENT。P8 继续 BLOCKED；
+  R/O=FAIL，S=INSUFFICIENT。P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
 forbidden_python_as_sole_evidence: "3.14 / bare python"
@@ -208,7 +208,7 @@ tasks:
     work_package: WP80
     verdict: BLOCKED
     manager_review: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md
-    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: INSUFFICIENT, G: PASS}
+    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: FAIL, G: PASS}
 v2_remediation_20260823:
   authority: tasks/v2_remediation_board_20260823.yaml
   manager_review: docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md

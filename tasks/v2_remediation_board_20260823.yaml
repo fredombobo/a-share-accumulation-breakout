@@ -37,7 +37,7 @@ wave_3_progress:
   research_verdict: FAIL
   historical_research_verdict: FAIL
 final_acceptance:
-  reviewed_at: "2026-08-28T01:12:00+08:00"
+  reviewed_at: "2026-08-28T01:15:00+08:00"
   verdict: BLOCKED
   code_baseline: "7940f508fb00"
   product: accumulation_breakout
@@ -48,7 +48,7 @@ final_acceptance:
     S: INSUFFICIENT
     P: PASS
     L: PASS
-    O: INSUFFICIENT
+    O: FAIL
     G: PASS
   evidence: "docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md"
 manager_role: "Codex primary agent: dispatch, scope review, independent verification, rejection/rework, P8 verdict"
@@ -409,10 +409,10 @@ tasks:
   V2R-P8:
     title: "七闸门独立总验收"
     status: blocked
-    reviewed_at: "2026-08-28T01:12:00+08:00"
+    reviewed_at: "2026-08-28T01:15:00+08:00"
     verdict: BLOCKED
-    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: INSUFFICIENT, G: PASS}
-    blocker_summary: "R 当前权威研究 FAIL；S outcome 未成熟；O 备份 4/7、soak 1/5。禁止宣称 PERSONAL_INSTITUTIONAL_READY。"
+    gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: FAIL, G: PASS}
+    blocker_summary: "R 当前权威研究 FAIL；S outcome 未成熟；O 因备份仅 4/7 硬失败且 soak 1/5。禁止宣称 PERSONAL_INSTITUTIONAL_READY。"
     manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md"
     wave: 3
     agent_role: manager-only
