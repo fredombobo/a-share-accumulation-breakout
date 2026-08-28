@@ -49,12 +49,18 @@ from ab_screener.research.trusted_run import (
 from research_windows import recommend_research_plan
 
 _TZ = ZoneInfo("Asia/Shanghai")
+AUTHORITATIVE_SAMPLE_STEP = 10
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="真实可信研究（full 窗 + 正式统计）")
     parser.add_argument("--max-codes", type=int, default=600)
-    parser.add_argument("--step", type=int, default=5)
+    parser.add_argument(
+        "--step",
+        type=int,
+        default=AUTHORITATIVE_SAMPLE_STEP,
+        help=f"采样步长；生产权威口径固定为 {AUTHORITATIVE_SAMPLE_STEP}",
+    )
     parser.add_argument("--strategy", default="A")
     parser.add_argument("--db", default="runtime/stock_data.db")
     parser.add_argument("--out", default="runtime/v2/research")
