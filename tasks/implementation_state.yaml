@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-28T22:46:55+08:00"
+updated_at: "2026-08-28T23:54:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -276,8 +276,10 @@ tasks:
       - V2-P7.4-MARKET-REGIME-PARITY
     plan: docs/V2-R-ATTACK-ONLY-PREREGISTRATION-2026-08-28.md
     note: >
-      先纠正 54 个名义参数仅对应 18 条独立收益路径的统计口径，再只运行一次预登记的
-      attack_only 假设；不降低正式门槛，不把已观察历史 OOS 冒充全新 holdout。
+      实现与真实历史纠错运行已完成：原权威运行精确去重后为 18 条独立路径；预登记
+      attack_only 运行只有 14 条独立路径且 IS/OOS 均亏损，PBO=0.7965、DSR=0.284899、
+      MinTRL coverage=0、嵌套正收益窗 2/5，正式 NO_CANDIDATE。等待最终严格质量门收口。
+    result: docs/V2-R-EDGE-STABILITY-RESULT-2026-08-28.md
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
