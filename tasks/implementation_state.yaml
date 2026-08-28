@@ -342,7 +342,7 @@ v2_remediation_20260823:
   blocked:
     - V2R-P8
   research:
-    authoritative_task_id: "v2auth20260828g"
+    authoritative_task_id: "v2auth20260829j"
     current_identity_verdict: FAIL
     historical_verdict: FAIL
     candidate_eligible: false
@@ -362,8 +362,8 @@ v2_remediation_20260823:
     live_trading_enabled: false
     real_data_gate_sha256: "runtime-generated; see latest identity-bound pt_gate_report"
   quality_snapshot:
-    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 939 offline tests, frontend build"
-    pytest: "939 passed in 205.94s"
+    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 956 offline tests, frontend build"
+    pytest: "956 passed in 203.69s"
     pit_data: "70 passed"
     full_ruff: PASS
     full_mypy: "PASS: strict configured source set"
