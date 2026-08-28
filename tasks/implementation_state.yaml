@@ -268,6 +268,16 @@ tasks:
       - "冻结窗 727 日期：允许 422、防守阻断 305；allowed_dates_sha256=e86286ab627056bc8189a8bdf721286b9384e744166a5b555a4f57f80c1d2397"
       - "v2auth20260828g：OOS 净收益 11.007%、PF 1.347、回撤 6.326%，但 PBO=0.6585、DSR=0.686741、MinTRL=0.318、嵌套正收益 2/5，最终 FAIL/NO_CANDIDATE"
       - "严格质量门 PASS：Ruff、Mypy、strict architecture、939 offline tests、frontend build"
+  V2-P7.5-R-EDGE-STABILITY:
+    status: in_progress
+    started_at: "2026-08-28T23:10:00+08:00"
+    work_package: WP75
+    dependencies:
+      - V2-P7.4-MARKET-REGIME-PARITY
+    plan: docs/V2-R-ATTACK-ONLY-PREREGISTRATION-2026-08-28.md
+    note: >
+      先纠正 54 个名义参数仅对应 18 条独立收益路径的统计口径，再只运行一次预登记的
+      attack_only 假设；不降低正式门槛，不把已观察历史 OOS 冒充全新 holdout。
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
