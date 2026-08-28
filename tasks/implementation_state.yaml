@@ -1,10 +1,11 @@
 version: 1
-updated_at: "2026-08-28T03:40:52+08:00"
+updated_at: "2026-08-28T22:46:55+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
   P7.1 组合会计、P7.2 冻结 PIT 研究读取与 P7.3 正式晋级硬门均已完成；
-  当前权威研究 v2auth20260828f 诚实 FAIL/NO_CANDIDATE；当前身份 D/P/L/G 已复验 PASS，
+  当前权威研究 v2auth20260828g 在生产一致的因果市场环境过滤下仍诚实 FAIL/NO_CANDIDATE；
+  当前身份 D/P/L/G 已复验 PASS，
   R/O=FAIL、S=INSUFFICIENT，因此 P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
 python_evidence_runtime: .venv312
@@ -250,6 +251,23 @@ tasks:
       - "参数邻域 7/7 覆盖且全部优于 MA20/60；2x 候选 +4.843727%、主基线 -19.064983%"
       - "数据库 status=done/verdict=FAIL/candidate_eligible=0/can_claim_edge=0；research_candidates=0"
       - "严格质量门 PASS：Ruff、Mypy、strict architecture、928 offline tests、frontend build"
+  V2-P7.4-MARKET-REGIME-PARITY:
+    status: complete
+    started_at: "2026-08-28T20:35:00+08:00"
+    completed_at: "2026-08-28T22:39:05+08:00"
+    work_package: WP75
+    dependencies:
+      - V2-P7.3-FORMAL-PROMOTION-GATE
+    plan: docs/V2-R-MARKET-REGIME-PARITY-2026-08-28.md
+    note: >
+      修复研究与生产对沪深300市场环境门禁的语义漂移；旧报告保持不可变，
+      新运行按披露后的新假设处理，不冒充未触碰 holdout，也不降低晋级阈值。
+    completed_evidence:
+      - "研究与生产复用因果市场环境定义；基准 PIT 缺失 fail-closed，禁止静默回退"
+      - "沪深300 历史 PIT 安全修复 977 日期；provider observation 使用真实 available_at；重跑 NOOP"
+      - "冻结窗 727 日期：允许 422、防守阻断 305；allowed_dates_sha256=e86286ab627056bc8189a8bdf721286b9384e744166a5b555a4f57f80c1d2397"
+      - "v2auth20260828g：OOS 净收益 11.007%、PF 1.347、回撤 6.326%，但 PBO=0.6585、DSR=0.686741、MinTRL=0.318、嵌套正收益 2/5，最终 FAIL/NO_CANDIDATE"
+      - "严格质量门 PASS：Ruff、Mypy、strict architecture、939 offline tests、frontend build"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
@@ -278,28 +296,28 @@ v2_remediation_20260823:
   blocked:
     - V2R-P8
   research:
-    authoritative_task_id: "v2auth20260828f"
+    authoritative_task_id: "v2auth20260828g"
     current_identity_verdict: FAIL
     historical_verdict: FAIL
     candidate_eligible: false
   production_snapshot:
-    trade_date: "20260827"
-    code_version: "d5707c22c645"
-    platform_config_hash: "f1ac706946c44937"
-    scan_run_id: "791dd2969683"
+    trade_date: "20260828"
+    code_version: "887238c9ce42"
+    platform_config_hash: "fdf42ab5ab23a2e2"
+    scan_run_id: "a0b79b2be584"
     daily_manifest_status: COMPLETE
-    daily_manifest_sha256: "21c6a38f74ac7f910f9901579b96aebad8a5bb3a293989352176558766ac549f"
+    daily_manifest_sha256: "982593e40b859f72dcd16c987797b1728b2709d574238ea92922a60d022b9579"
     reconciliation: OK
-    signal_observations: 78
+    signal_observations: 116
     signal_outcomes: 0
-    verified_backups: "5/7"
+    verified_backups: "6/7"
     restore_rto: "PASS 1789.798/1800 sec"
-    soak: "1/5"
+    soak: "2/5"
     live_trading_enabled: false
-    real_data_gate_sha256: "e5f81ce6521713cc3aca0586551709c70f59c2c148b43d0fac49b70467b2ef69"
+    real_data_gate_sha256: "runtime-generated; see latest identity-bound pt_gate_report"
   quality_snapshot:
-    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 928 offline tests, frontend build"
-    pytest: "928 passed in 214.34s"
+    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 939 offline tests, frontend build"
+    pytest: "939 passed in 205.94s"
     pit_data: "70 passed"
     full_ruff: PASS
     full_mypy: "PASS: strict configured source set"

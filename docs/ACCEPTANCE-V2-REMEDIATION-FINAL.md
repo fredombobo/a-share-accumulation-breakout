@@ -4,7 +4,7 @@
 
 项目：`accumulation_breakout`（AB-Screener · 横盘吸筹突破）
 
-当前发布候选源码身份：`d5707c22c645`；平台配置：`f1ac706946c44937`
+当前发布候选代码指纹：`887238c9ce42`；平台配置：`fdf42ab5ab23a2e2`
 
 运行入口：`http://127.0.0.1:8001/`
 最终裁决：**BLOCKED**
@@ -12,7 +12,7 @@
 ## 1. 管理结论
 
 三波工程任务、组合级研究纠错、恢复续验和凭据脱敏均已通过代码级验收，但“工程实现完成”
-不等于“七闸门通过”。当前 R 为策略事实 FAIL，O 因备份 5/7 与 soak 1/5 未成熟，S 也需
+不等于“七闸门通过”。当前 R 为策略事实 FAIL，O 因备份 6/7 与 soak 2/5 未成熟，S 也需
 真实时间积累；当前候选身份的 D/P/L/G 运行事实均已复验通过。总裁决保持
 `BLOCKED`，不得标记 `PERSONAL_INSTITUTIONAL_READY` 或实盘就绪。
 
@@ -24,13 +24,13 @@
 
 | 闸门 | 结果 | 现场证据与阻断 |
 |---|---|---|
-| D 数据/PIT | **PASS** | 当前构建真实数据门禁 PASS；969 个完成交易日，本地/源端/沪深300最新日 20260827；100 对源端抽样 0 差异；三类最新 PIT 分区全部零漂移。 |
-| R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828f` 完整完成且可复算；OOS 组合净收益 8.49%、PF 1.223、最大回撤 9.18%，但 PBO 31.25%、DSR 46.36%、MinTRL 覆盖 18.8%、嵌套窗仅 1/5 正收益，`candidate_eligible=false`。 |
-| S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=78`、5 类策略、`signal_outcomes=0`。观察日期尚未达到 5/10/20 日成熟线，禁止伪造 outcome。 |
-| P 组合/风险 | **PASS** | 最新交易日风险快照 `955681b4321b58f6` 已固化，行情/规则/配置版本齐全；统计状态如实为 INSUFFICIENT（权益序列不足 30 点）。 |
-| L 账本/日清 | **PASS** | 扫描 `791dd2969683`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `21c6a38f74ac...`。 |
-| O 运维/恢复 | **FAIL** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；但可验证备份仅 5/7，当前身份 soak 1/5，均未达到成熟线。 |
-| G 治理/安全 | **PASS** | 实盘关闭、审计 hash chain、DB 外签名锚点、HTTPS 实际 API 与独立原生 TLS 探针均通过；最新探针时间 `2026-08-28T03:37:04+08:00`，证据 SHA-256 `7e2dd1badb6b...`，无 HTTP 回退。 |
+| D 数据/PIT | **PASS** | 当前构建真实数据门禁 PASS；970 个完成交易日，本地/源端/沪深300最新日 20260828；100 对源端抽样 0 差异；三类最新 PIT 分区全部零漂移。 |
+| R 研究 | **FAIL** | 当前身份权威任务 `v2auth20260828g` 完整完成且可复算；OOS 组合净收益 11.01%、PF 1.347、最大回撤 6.33%，但 PBO 65.85%、DSR 68.67%、MinTRL 覆盖 31.8%、嵌套窗仅 2/5 正收益，`candidate_eligible=false`。 |
+| S 策略/信号 | **INSUFFICIENT** | 六插件已接入生产 SHADOW；`signal_observations=116`、`signal_outcomes=0`。观察日期尚未达到真实 5/10/20 日成熟线，禁止伪造 outcome。 |
+| P 组合/风险 | **PASS** | 最新交易日风险快照 `ae97a136d96b912c` 已固化，行情/规则/配置版本齐全；统计状态如实为 INSUFFICIENT（权益序列不足 30 点）。 |
+| L 账本/日清 | **PASS** | 扫描 `a0b79b2be584`、DAG 9/9 COMPLETED、周期 DONE、对账 OK、日清清单 COMPLETE；清单哈希 `982593e40b85...`。 |
+| O 运维/恢复 | **FAIL** | 16.5GB 严格恢复完整性/FK/双 SHA 全过，RTO 1789.798/1800 秒；但可验证备份仅 6/7，当前身份 soak 2/5，均未达到真实时间门槛。 |
+| G 治理/安全 | **PASS** | 实盘关闭、审计 hash chain、DB 外签名锚点、HTTPS 实际 API 与独立原生 TLS 探针均通过；无 HTTP 回退，最终证据以当前身份重建的 G 工件为准。 |
 
 最终门禁文件在文档提交后按最终 Git 身份重新生成；`GET /api/v2/readiness` 的服务端聚合必须
 与上表一致。浏览器不能传入布尔值覆盖闸门。
@@ -92,6 +92,16 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 - 真实 8001 上逐一点击 13 个侧栏入口，并点击“实验已完成 · 查看结论”；全部路由与结论区域
   可见，纸面交易免责声明存在，浏览器无 console error、page error 或失败响应。
 
+### 3.7 研究/生产市场环境语义对齐
+
+- 生产扫描与权威研究现在复用同一套因果沪深300环境定义；防守日期不允许候选开仓。
+- 补齐 977 个历史基准 PIT 日期，先保留 canonical recovery，再追加真实 HTTPS 供应商观察；
+  `available_at` 使用实际抓取完成时间，重复运行是 NOOP。
+- 冻结研究窗共 727 个日期，其中允许开仓 422 日、防守阻断 305 日；同一 allowed-date
+  指纹贯穿候选、双基线、WF、正式统计和成本压力。
+- 新权威运行 `v2auth20260828g` 仍未通过 PBO、DSR、MinTRL 和嵌套窗硬门；因此没有创建候选，
+  也没有通过更换参数或报告来掩盖 FAIL。
+
 ## 4. 质量证据
 
 权威运行时：`E:/CODEX/Stock_selection/accumulation_breakout/.venv312/Scripts/python.exe`
@@ -99,8 +109,8 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 | 检查 | 结果 |
 |---|---|
-| `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、928 个离线测试、前端构建全绿 |
-| 全收集 `python -m pytest -q` | **928 passed in 214.34s** |
+| `scripts/quality_gate.ps1 -Strict` | PASS：Ruff、Mypy、strict architecture、939 个离线测试、前端构建全绿 |
+| 全收集 `python -m pytest -q` | **939 passed in 205.94s** |
 | PIT/数据专项 | **70 passed** |
 | Vitest | **20 passed** |
 | Playwright | 首轮 1/4（暴露崩溃）；修复后 **4/4 passed** |
@@ -111,9 +121,9 @@ Playwright 首轮发现平台状态接口返回部分 payload 时，侧栏直接
 
 真实数据门禁报告：
 
-- `runtime/v2/real-data-gates-final-d570/real_data_gate_20260828_033921.json`
-- 构建/数据配置/数据库：`d5707c22c645` / `745a7010eae38014` / `5e4570636a4e7386`
-- 报告签名：`e5f81ce6521713cc3aca0586551709c70f59c2c148b43d0fac49b70467b2ef69`
+- 当前发布身份的最终报告由 `paper_trading.real_data_gate` 在文档提交后重建，并写入
+  `runtime/v2/real-data-gates-20260828-regime/` 与不可变 `pt_gate_report`。
+- 当前代码/数据配置/数据库指纹：`887238c9ce42` / `745a7010eae38014` / `34752914126b2b7a`。
 
 该报告属于当前发布候选身份；最终文档提交后还须按最终 Git SHA 重建 S/P/L/O/G 文件并验证
 `/api/v2/readiness` 的 D=PASS、`identity_blockers=[]`。旧 `/api/release/readiness` 只表示代码/配置/数据库与真实数据报告
