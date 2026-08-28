@@ -315,7 +315,7 @@ tasks:
 
   - id: V2-P7.5-R-EDGE-STABILITY
     title: 纠正重复试验计数并验证进攻环境突破假设
-    status: in_progress
+    status: complete
     work_package: WP75
     phase: P7
     dependencies:
@@ -328,6 +328,12 @@ tasks:
       - 候选、基线、成本压力、IS/OOS/WF 使用同一可用日期集合
       - 原 ROBUST_PERSONAL_V2 阈值不降低，失败仍为 NO_CANDIDATE
       - 披露旧 OOS 已被观察，历史 PASS 不得直接清除 R
+    completion_note: >
+      formal-evidence-v2.1.0 已按精确收益路径纠正多重试验口径；预登记 attack_only
+      真实历史运行 v2rattack20260828r1 可复算但正式 FAIL：54 个名义参数对应 14 条独立
+      路径，IS/OOS 净收益 -0.51%/-2.68%，PBO=0.7965、DSR=0.284899、MinTRL coverage=0、
+      嵌套正收益窗 2/5、2x 成本 OOS=-4.59%。假设已否决，NO_CANDIDATE；严格质量门
+      947 tests PASS。证据见 docs/V2-R-EDGE-STABILITY-RESULT-2026-08-28.md。
 
   # ── P8 ──
   - id: V2-P8-FINAL-ACCEPTANCE

@@ -100,4 +100,5 @@ python scripts/diagnose_research_gate.py --db <stock_data.db> --run-id <id> --ou
 - 提交 `7fea91c`：非正 Sharpe 的 DSR/MinTRL fail-closed 呈现。
 - 首轮严格质量门：Ruff、Mypy、严格架构、946 个离线测试和前端构建通过。
 - 负 Sharpe 纠错后相关 Ruff、Mypy 和 12 个回归测试通过。
-- 本结果文档提交后仍需执行最终一次 `scripts/quality_gate.ps1 -Strict`，其结果用于任务收口。
+- 结果文档提交后最终严格质量门通过：Ruff、Mypy、严格架构、947 个离线测试和前端构建
+  全部 PASS；ECharts 687KB 分包警告为非阻断既有性能项。
