@@ -412,7 +412,7 @@ tasks:
     reviewed_at: "2026-08-28T01:15:00+08:00"
     verdict: BLOCKED
     gate_results: {D: PASS, R: FAIL, S: INSUFFICIENT, P: PASS, L: PASS, O: FAIL, G: PASS}
-    blocker_summary: "R 当前权威研究 FAIL；S outcome 未成熟；O 因备份仅 6/7 且 soak 2/5 未达真实时间门槛。禁止宣称 PERSONAL_INSTITUTIONAL_READY。"
+    blocker_summary: "R 当前权威研究 FAIL；S outcome 未成熟；O 因备份仅 6/7，且冻结当前发布身份后 soak 0/5（保留 2 个旧身份真实日期证据）未达门槛。禁止宣称 PERSONAL_INSTITUTIONAL_READY。"
     manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-FINAL.md"
     wave: 3
     agent_role: manager-only

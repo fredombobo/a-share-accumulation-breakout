@@ -312,7 +312,7 @@ v2_remediation_20260823:
     signal_outcomes: 0
     verified_backups: "6/7"
     restore_rto: "PASS 1789.798/1800 sec"
-    soak: "2/5"
+    soak: "0/5 current identity; 2 historical distinct trade days retained"
     live_trading_enabled: false
     real_data_gate_sha256: "runtime-generated; see latest identity-bound pt_gate_report"
   quality_snapshot:
