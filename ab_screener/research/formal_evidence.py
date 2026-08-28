@@ -16,11 +16,55 @@ from ab_screener.research.nested_walkforward import (
     nested_parameter_walkforward,
 )
 
-FORMAL_EVIDENCE_VERSION = "formal-evidence-v2.0.0"
+FORMAL_EVIDENCE_VERSION = "formal-evidence-v2.1.0"
+EXACT_RETURN_DEDUP_VERSION = "exact-return-path-v1.0.0"
 
 
 class FormalEvidenceError(ValueError):
     """Formal evidence input is incomplete or internally inconsistent."""
+
+    def __init__(self, message: str, *, metadata: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.metadata = dict(metadata or {})
+
+
+def exact_unique_return_columns(
+    param_ids: list[str],
+    matrix: np.ndarray,
+) -> tuple[list[str], np.ndarray, list[dict[str, Any]]]:
+    """Collapse only byte-identical float64 return paths, preserving audit groups.
+
+    Correlated or numerically close paths remain separate trials.  The first
+    lexicographically sorted parameter id is the deterministic representative.
+    """
+    values = np.asarray(matrix, dtype="<f8")
+    if values.ndim != 2 or values.shape[1] != len(param_ids):
+        raise FormalEvidenceError("参数标识与收益矩阵列不一致")
+    if len(set(param_ids)) != len(param_ids):
+        raise FormalEvidenceError("参数标识不唯一")
+    key_to_group: dict[bytes, int] = {}
+    representatives: list[str] = []
+    representative_indexes: list[int] = []
+    grouped_ids: list[list[str]] = []
+    for column, param_id in enumerate(param_ids):
+        key = np.ascontiguousarray(values[:, column], dtype="<f8").tobytes(order="C")
+        group_index = key_to_group.get(key)
+        if group_index is None:
+            key_to_group[key] = len(grouped_ids)
+            representatives.append(param_id)
+            representative_indexes.append(column)
+            grouped_ids.append([param_id])
+        else:
+            grouped_ids[group_index].append(param_id)
+    groups = [
+        {
+            "representative_param_id": representative,
+            "param_ids": members,
+            "count": len(members),
+        }
+        for representative, members in zip(representatives, grouped_ids, strict=True)
+    ]
+    return representatives, values[:, representative_indexes].copy(), groups
 
 
 def aligned_return_matrix(
@@ -51,25 +95,50 @@ def aligned_return_matrix(
             if value is None or value <= -1.0:
                 raise FormalEvidenceError(f"参数 {param_id} 在 {date} 的收益非法")
             matrix[date_index[date], column] = value
-    digest = hashlib.sha256()
-    digest.update(json.dumps(dates, separators=(",", ":")).encode("ascii"))
-    digest.update(json.dumps(param_ids, separators=(",", ":")).encode("ascii"))
-    digest.update(matrix.tobytes(order="C"))
-    means = matrix.mean(axis=0)
-    standard_deviations = matrix.std(axis=0, ddof=1)
+    nominal_digest = _matrix_digest(dates, param_ids, matrix)
+    effective_ids, effective_matrix, parameter_groups = exact_unique_return_columns(
+        param_ids,
+        matrix,
+    )
+    effective_digest = _matrix_digest(
+        dates,
+        effective_ids,
+        effective_matrix,
+        extra={"deduplication_version": EXACT_RETURN_DEDUP_VERSION, "groups": parameter_groups},
+    )
+    means = effective_matrix.mean(axis=0)
+    standard_deviations = effective_matrix.std(axis=0, ddof=1)
     with np.errstate(divide="ignore", invalid="ignore"):
         trial_sharpes = np.where(standard_deviations > 0, means / standard_deviations, 0.0)
-    trial_sharpe_std = float(trial_sharpes.std(ddof=1))
+    trial_sharpe_std = (
+        float(trial_sharpes.std(ddof=1)) if len(effective_ids) > 1 else 0.0
+    )
     metadata = {
         "periods": len(dates),
-        "parameters": len(param_ids),
+        "parameters": len(effective_ids),
+        "nominal_parameters": len(param_ids),
+        "effective_parameters": len(effective_ids),
+        "exact_duplicate_parameters": len(param_ids) - len(effective_ids),
+        "exact_duplicate_groups": [row for row in parameter_groups if int(row["count"]) > 1],
+        "parameter_groups": parameter_groups,
+        "deduplication": {
+            "version": EXACT_RETURN_DEDUP_VERSION,
+            "method": "exact_little_endian_float64_column_bytes",
+            "near_duplicates_collapsed": False,
+        },
         "start": dates[0],
         "end": dates[-1],
         "missing_policy": "cash_zero_return",
         "trial_sharpe_std": round(trial_sharpe_std, 8),
-        "sha256": digest.hexdigest(),
+        "nominal_sha256": nominal_digest,
+        "sha256": effective_digest,
     }
-    return dates, param_ids, matrix, metadata
+    if len(effective_ids) < 4:
+        raise FormalEvidenceError(
+            f"精确去重后仅 {len(effective_ids)} 条独立收益路径，正式统计至少需要 4 条",
+            metadata=metadata,
+        )
+    return dates, effective_ids, effective_matrix, metadata
 
 
 def statistical_formal_evidence(
@@ -83,8 +152,9 @@ def statistical_formal_evidence(
         _dates, param_ids, matrix, metadata = aligned_return_matrix(series_by_param)
     except FormalEvidenceError as exc:
         reason = str(exc)
+        matrix_evidence = {"status": "INSUFFICIENT", "reason": reason, **exc.metadata}
         return {
-            "return_matrix": {"status": "INSUFFICIENT", "reason": reason},
+            "return_matrix": matrix_evidence,
             "cscv_pbo": {"status": "INSUFFICIENT", "reason": reason},
             "nested_walkforward": {"status": "INSUFFICIENT", "reason": reason},
         }
@@ -198,3 +268,23 @@ def _number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _matrix_digest(
+    dates: list[str],
+    param_ids: list[str],
+    matrix: np.ndarray,
+    *,
+    extra: Mapping[str, Any] | None = None,
+) -> str:
+    digest = hashlib.sha256()
+    digest.update(json.dumps(dates, separators=(",", ":")).encode("utf-8"))
+    digest.update(json.dumps(param_ids, separators=(",", ":")).encode("utf-8"))
+    if extra is not None:
+        digest.update(
+            json.dumps(extra, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        )
+    digest.update(np.ascontiguousarray(matrix, dtype="<f8").tobytes(order="C"))
+    return digest.hexdigest()

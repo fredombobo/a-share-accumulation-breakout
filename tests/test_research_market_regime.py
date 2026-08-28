@@ -6,7 +6,12 @@ import pytest
 import optimizer
 from ab_screener.research.baselines import random_baseline_trades
 from ab_screener.research.pit_reader import ResearchPitError, ResearchPitSnapshot
-from ab_screener.research.regime_filter import ResearchRegimeFilter, build_research_regime_filter
+from ab_screener.research.regime_filter import (
+    ATTACK_ONLY_REGIME_ENTRY_POLICY,
+    PRODUCTION_REGIME_ENTRY_POLICY,
+    ResearchRegimeFilter,
+    build_research_regime_filter,
+)
 from ab_screener.research.trusted_run import execute_trusted_research
 
 
@@ -64,7 +69,45 @@ def test_regime_filter_allows_neutral_and_blocks_defense_causally() -> None:
     assert identity["allowed_dates"] == 1
     assert identity["blocked_dates"] == 1
     assert identity["benchmark_sha256"] == "c" * 64
+    assert identity["entry_policy"] == PRODUCTION_REGIME_ENTRY_POLICY
     assert len(identity["identity_sha256"]) == 64
+
+
+def test_attack_only_allows_attack_but_blocks_neutral() -> None:
+    snapshot, dates = _snapshot()
+    neutral = build_research_regime_filter(
+        snapshot,
+        start=dates[24],
+        end=dates[24],
+        entry_policy=ATTACK_ONLY_REGIME_ENTRY_POLICY,
+    )
+    changed = snapshot.benchmark_daily.copy()
+    changed.loc[changed["trade_date"] == dates[24], "close"] = 103.0
+    attack_snapshot = ResearchPitSnapshot(**{**snapshot.__dict__, "benchmark_daily": changed})
+    attack = build_research_regime_filter(
+        attack_snapshot,
+        start=dates[24],
+        end=dates[24],
+        entry_policy=ATTACK_ONLY_REGIME_ENTRY_POLICY,
+    )
+
+    assert neutral.allowed_signal_dates == frozenset()
+    assert neutral.blocked_signal_dates == frozenset({dates[24]})
+    assert attack.allowed_signal_dates == frozenset({dates[24]})
+    assert attack.identity()["regime_counts"]["attack"] == 1
+    assert attack.identity()["entry_policy"] == ATTACK_ONLY_REGIME_ENTRY_POLICY
+
+
+def test_unknown_regime_entry_policy_fails_closed() -> None:
+    snapshot, dates = _snapshot()
+
+    with pytest.raises(ResearchPitError, match="不支持的市场状态入场策略"):
+        build_research_regime_filter(
+            snapshot,
+            start=dates[24],
+            end=dates[24],
+            entry_policy="optimize_after_oos",
+        )
 
 
 def test_future_benchmark_changes_do_not_change_earlier_regime_decision() -> None:
@@ -82,6 +125,28 @@ def test_future_benchmark_changes_do_not_change_earlier_regime_decision() -> Non
     after = build_research_regime_filter(future_changed, start=dates[24], end=dates[24])
 
     assert before.allowed_signal_dates == after.allowed_signal_dates == frozenset({dates[24]})
+
+
+def test_attack_only_decision_does_not_read_future_benchmark_rows() -> None:
+    snapshot, dates = _snapshot()
+    before = build_research_regime_filter(
+        snapshot,
+        start=dates[24],
+        end=dates[24],
+        entry_policy=ATTACK_ONLY_REGIME_ENTRY_POLICY,
+    )
+    changed = snapshot.benchmark_daily.copy()
+    changed.loc[changed["trade_date"] > dates[24], "close"] = 1000.0
+    future_changed = ResearchPitSnapshot(**{**snapshot.__dict__, "benchmark_daily": changed})
+    after = build_research_regime_filter(
+        future_changed,
+        start=dates[24],
+        end=dates[24],
+        entry_policy=ATTACK_ONLY_REGIME_ENTRY_POLICY,
+    )
+
+    assert before.allowed_signal_dates == after.allowed_signal_dates == frozenset()
+    assert before.blocked_signal_dates == after.blocked_signal_dates == frozenset({dates[24]})
 
 
 def test_missing_benchmark_trade_date_fails_closed() -> None:

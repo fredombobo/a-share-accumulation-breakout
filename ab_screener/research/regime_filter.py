@@ -27,7 +27,12 @@ from ab_screener.research.pit_reader import ResearchPitError
 if TYPE_CHECKING:
     from ab_screener.research.pit_reader import ResearchPitSnapshot
 
-RESEARCH_REGIME_FILTER_VERSION = "research-market-regime-v1.0.0"
+RESEARCH_REGIME_FILTER_VERSION = "research-market-regime-v1.1.0"
+PRODUCTION_REGIME_ENTRY_POLICY = "production"
+ATTACK_ONLY_REGIME_ENTRY_POLICY = "attack_only"
+SUPPORTED_REGIME_ENTRY_POLICIES = frozenset(
+    {PRODUCTION_REGIME_ENTRY_POLICY, ATTACK_ONLY_REGIME_ENTRY_POLICY}
+)
 
 
 @dataclass(frozen=True)
@@ -47,8 +52,12 @@ def build_research_regime_filter(
     *,
     start: str,
     end: str,
+    entry_policy: str = PRODUCTION_REGIME_ENTRY_POLICY,
 ) -> ResearchRegimeFilter:
     """Build a deterministic, fail-closed filter for one research window."""
+    policy_name = str(entry_policy).strip().lower()
+    if policy_name not in SUPPORTED_REGIME_ENTRY_POLICIES:
+        raise ResearchPitError(f"不支持的市场状态入场策略: {entry_policy!r}")
     start_date = _date(start)
     end_date = _date(end)
     if start_date > end_date:
@@ -100,14 +109,20 @@ def build_research_regime_filter(
         if not all(pd.notna(value) for value in (close, ma20, prior)) or prior <= 0:
             raise ResearchPitError(f"沪深300 PIT 无法计算市场状态: {trade_date}")
         ret_20d = close / prior - 1.0
-        regime, _label, allow, _slots, _notes = classify_regime_point(close, ma20, ret_20d)
+        regime, _label, production_allow, _slots, _notes = classify_regime_point(
+            close,
+            ma20,
+            ret_20d,
+        )
         counts[regime] += 1
+        allow = production_allow if policy_name == PRODUCTION_REGIME_ENTRY_POLICY else regime == "attack"
         (allowed if allow else blocked).add(trade_date)
 
     allowed_hash = hashlib.sha256("\n".join(sorted(allowed)).encode("ascii")).hexdigest()
     policy = market_regime_policy_identity()
     identity_payload = {
         "version": RESEARCH_REGIME_FILTER_VERSION,
+        "entry_policy": policy_name,
         "production_policy_version": policy["version"],
         "production_policy_hash": policy["config_hash"],
         "benchmark_code": code,

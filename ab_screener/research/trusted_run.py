@@ -42,6 +42,7 @@ from ab_screener.research.portfolio_accounting import (
     load_portfolio_policy,
 )
 from ab_screener.research.regime_filter import (
+    PRODUCTION_REGIME_ENTRY_POLICY,
     ResearchRegimeFilter,
     build_research_regime_filter,
 )
@@ -209,14 +210,20 @@ def prepare_trusted_regime_filter(
     snapshot: ResearchPitSnapshot,
     *,
     windows: dict[str, Any],
+    entry_policy: str = PRODUCTION_REGIME_ENTRY_POLICY,
 ) -> ResearchRegimeFilter:
-    """Freeze the causal production-equivalent regime filter for a run."""
+    """Freeze one causal, explicitly identified regime filter for a run."""
     starts = [str(windows["is_start"]), str(windows["oos_start"])]
     ends = [str(windows["is_end"]), str(windows["oos_end"])]
     for train_start, train_end, test_start, test_end in _wf_tuples(windows):
         starts.extend((train_start, test_start))
         ends.extend((train_end, test_end))
-    return build_research_regime_filter(snapshot, start=min(starts), end=max(ends))
+    return build_research_regime_filter(
+        snapshot,
+        start=min(starts),
+        end=max(ends),
+        entry_policy=entry_policy,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -379,7 +386,14 @@ def execute_trusted_research(
             raise ValueError("预登记数据版本与 PIT 快照指纹不一致")
         if not isinstance(requested_regime_filter, dict):
             raise ValueError("权威 PIT 研究必须预登记市场状态门禁")
-        regime_filter = prepare_trusted_regime_filter(research_snapshot, windows=windows)
+        regime_entry_policy = str(
+            requested_regime_filter.get("entry_policy") or PRODUCTION_REGIME_ENTRY_POLICY
+        )
+        regime_filter = prepare_trusted_regime_filter(
+            research_snapshot,
+            windows=windows,
+            entry_policy=regime_entry_policy,
+        )
         regime_identity = regime_filter.identity()
         if requested_regime_filter != regime_identity:
             raise ValueError("请求绑定的市场状态门禁与当前可复算结果不一致")
@@ -542,7 +556,7 @@ def execute_trusted_research(
     state["gate"] = gate
     state["anti_overfit"] = anti_overfit
     phase_cb("REPORT", 97, "生成一页可信报告", state)
-    n_trials = max(1, len(state.get("is_all") or []))
+    nominal_n_trials = max(1, len(state.get("is_all") or []))
     report = {
         "research_run_id": research_run_id,
         **gate,
@@ -567,13 +581,17 @@ def execute_trusted_research(
         "sensitivity": frozen["sensitivity"],
         "anti_overfit": anti_overfit,
         "multiple_comparison": {
-            "grid_trials": n_trials,
+            "grid_trials": nominal_n_trials,
             "correction": "pending_formal_evidence",
-            "note": f"网格共 {n_trials} 组参数；最终口径以 CSCV-PBO、DSR 与嵌套 WF 证据块为准。",
+            "note": (
+                f"网格共 {nominal_n_trials} 组名义参数；最终有效试验数以精确收益路径去重后"
+                "的正式证据块为准。"
+            ),
         },
     }
     formal_statistics = statistical_formal_evidence(state.get("formal_is_returns") or {})
     return_matrix = formal_statistics.get("return_matrix") or {}
+    effective_n_trials = int(return_matrix.get("effective_parameters") or 0)
     trial_sharpe_std = return_matrix.get("trial_sharpe_std")
     # P3.2：v2 正式统计（DSR/MinTRL）——primary OOS 组合每日盯市净收益；
     # 样本不足/异常 → INSUFFICIENT（不伪造）
@@ -581,7 +599,12 @@ def execute_trusted_research(
         from ab_screener.research.backtest_engine import run_single_backtest
         from ab_screener.research.validation import v2_statistics_block
 
-        if primary_is:
+        if return_matrix.get("status") != "OK" or effective_n_trials < 4:
+            report["v2_statistics"] = {
+                "status": "INSUFFICIENT",
+                "reason": str(return_matrix.get("reason") or "独立收益路径不足，不能计算正式统计"),
+            }
+        elif primary_is:
             bt = run_single_backtest(
                 strategy=str(primary_is.get("strategy") or "A"),
                 exit_params={
@@ -608,7 +631,7 @@ def execute_trusted_research(
                 oos_returns = [float(value) for value in (portfolio.get("portfolio_daily_returns") or [])]
                 report["v2_statistics"] = v2_statistics_block(
                     oos_returns,
-                    n_trials=n_trials,
+                    n_trials=effective_n_trials,
                     trial_sharpe_std=trial_sharpe_std,
                 )
         else:
@@ -655,14 +678,23 @@ def execute_trusted_research(
     pbo_block = formal.get("cscv_pbo") or {}
     if pbo_block.get("status") == "OK":
         report["multiple_comparison"] = {
-            "grid_trials": n_trials,
-            "correction": "CSCV-PBO + Deflated Sharpe + nested parameter WF",
+            "grid_trials": nominal_n_trials,
+            "effective_trials": effective_n_trials,
+            "exact_duplicate_trials": nominal_n_trials - effective_n_trials,
+            "correction": (
+                "exact return-path deduplication + CSCV-PBO + Deflated Sharpe + "
+                "nested parameter WF"
+            ),
             "pbo": pbo_block.get("pbo"),
-            "note": "参数只在训练折选择；独立测试折只评估一次。未使用 OOS 替换冻结的 IS 第一名。",
+            "note": (
+                "只合并逐日 float64 收益完全相同的路径；近似路径保持独立。参数只在训练折"
+                "选择，独立测试折只评估一次，未使用 OOS 替换冻结的 IS 第一名。"
+            ),
         }
     else:
         report["multiple_comparison"] = {
-            "grid_trials": n_trials,
+            "grid_trials": nominal_n_trials,
+            "effective_trials": effective_n_trials,
             "correction": "incomplete",
             "note": str(pbo_block.get("reason") or "CSCV-PBO 证据不完整"),
         }

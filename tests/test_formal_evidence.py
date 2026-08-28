@@ -42,6 +42,45 @@ def test_statistical_evidence_runs_pbo_and_true_nested_parameter_selection() -> 
     assert all("selected_param_id" in row for row in evidence["nested_walkforward"]["windows"])
 
 
+def test_exact_duplicate_paths_count_once_but_near_duplicate_remains_independent() -> None:
+    series = _series()
+    series["p4-exact"] = dict(series["p0"])
+    series["p5-near"] = dict(series["p0"])
+    first_date = min(series["p5-near"])
+    series["p5-near"][first_date] += 1e-15
+
+    _dates, param_ids, matrix, metadata = aligned_return_matrix(series)
+
+    assert matrix.shape == (64, 5)
+    assert len(param_ids) == 5
+    assert metadata["nominal_parameters"] == 6
+    assert metadata["effective_parameters"] == 5
+    assert metadata["exact_duplicate_parameters"] == 1
+    assert metadata["deduplication"]["near_duplicates_collapsed"] is False
+    assert metadata["exact_duplicate_groups"] == [
+        {
+            "representative_param_id": "p0",
+            "param_ids": ["p0", "p4-exact"],
+            "count": 2,
+        }
+    ]
+    assert len(metadata["sha256"]) == len(metadata["nominal_sha256"]) == 64
+
+
+def test_fewer_than_four_effective_paths_fails_closed_with_audit_counts() -> None:
+    original = _series()["p0"]
+    evidence = statistical_formal_evidence(
+        {f"duplicate-{index}": dict(original) for index in range(4)}
+    )
+
+    matrix = evidence["return_matrix"]
+    assert matrix["status"] == "INSUFFICIENT"
+    assert matrix["nominal_parameters"] == 4
+    assert matrix["effective_parameters"] == 1
+    assert evidence["cscv_pbo"]["status"] == "INSUFFICIENT"
+    assert evidence["nested_walkforward"]["status"] == "INSUFFICIENT"
+
+
 def test_nested_selection_cannot_see_future_test_changes() -> None:
     base = np.zeros((120, 4), dtype=float)
     base[:72, 0] = 0.002

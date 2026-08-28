@@ -23,6 +23,10 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ab_screener.research.promotion_v2 import ROBUST_PROFILE
+from ab_screener.research.regime_filter import (
+    ATTACK_ONLY_REGIME_ENTRY_POLICY,
+    PRODUCTION_REGIME_ENTRY_POLICY,
+)
 from ab_screener.research.registry import (
     register_experiment,
     register_trial,
@@ -50,6 +54,12 @@ def main() -> int:
     parser.add_argument("--db", default="runtime/stock_data.db")
     parser.add_argument("--out", default="runtime/v2/research")
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--regime-entry-policy",
+        choices=(PRODUCTION_REGIME_ENTRY_POLICY, ATTACK_ONLY_REGIME_ENTRY_POLICY),
+        default=PRODUCTION_REGIME_ENTRY_POLICY,
+        help="生产一致门禁或预登记的仅进攻市况开仓实验",
+    )
     args = parser.parse_args()
 
     from build_version import build_version
@@ -89,7 +99,11 @@ def main() -> int:
         windows=windows,
         max_codes=max_codes,
     )
-    regime_filter = prepare_trusted_regime_filter(pit_snapshot, windows=windows)
+    regime_filter = prepare_trusted_regime_filter(
+        pit_snapshot,
+        windows=windows,
+        entry_policy=args.regime_entry_policy,
+    )
     request = {
         "strategy": args.strategy,
         "mode": "grid",
@@ -120,6 +134,7 @@ def main() -> int:
         "portfolio_model": request["portfolio_model"],
         "market_regime_filter": request["market_regime_filter"],
         "entry_policy": "next_tradable_open",
+        "market_regime_entry_policy": args.regime_entry_policy,
         "selection_rule": "freeze_is_winner_before_oos",
     }
     store = ResearchRunStore(db_path)
