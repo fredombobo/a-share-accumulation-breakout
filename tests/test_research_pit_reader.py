@@ -255,3 +255,69 @@ def test_suspension_zero_quote_is_preserved_as_non_tradeable_bar(db: Path) -> No
     assert row["open"] == 0
     assert row["vol"] == 0
     assert row["close"] == 10
+
+
+def test_snapshot_binds_benchmark_revision_at_same_cutoff(db: Path) -> None:
+    _instrument(db)
+    _daily(db, code="000001.SZ", close=10, available_at="2026-08-10T16:00:00+08:00")
+    _daily(db, code="000300.SH", close=4000, available_at="2026-08-10T16:00:00+08:00")
+    _daily(db, code="000300.SH", close=4100, available_at="2026-08-12T09:00:00+08:00")
+
+    old = build_research_pit_snapshot(
+        db,
+        study_start="20260801",
+        study_end="20260803",
+        max_codes=10,
+        decision_at="2026-08-11T10:00:00+08:00",
+        history_days=0,
+        benchmark_code="000300.SH",
+    )
+    new = build_research_pit_snapshot(
+        db,
+        study_start="20260801",
+        study_end="20260803",
+        max_codes=10,
+        decision_at="2026-08-12T10:00:00+08:00",
+        history_days=0,
+        benchmark_code="000300.SH",
+    )
+
+    assert old.load_benchmark().iloc[0]["close"] == 4000
+    assert new.load_benchmark().iloc[0]["close"] == 4100
+    assert old.identity()["benchmark_code"] == "000300.SH"
+    assert len(str(old.identity()["benchmark_sha256"])) == 64
+    assert old.dataset_fingerprint != new.dataset_fingerprint
+
+
+def test_requested_benchmark_projection_without_pit_history_fails_closed(db: Path) -> None:
+    _instrument(db)
+    _daily(db, code="000001.SZ", close=10)
+    payload = _payload(4000)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO daily(ts_code,trade_date,open,high,low,close,pre_close,vol,amount,available_at)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                "000300.SH",
+                "20260801",
+                payload["open"],
+                payload["high"],
+                payload["low"],
+                payload["close"],
+                payload["pre_close"],
+                payload["vol"],
+                payload["amount"],
+                "2026-08-10T16:00:00+08:00",
+            ),
+        )
+
+    with pytest.raises(ResearchPitError, match="000300.SH:20260801"):
+        build_research_pit_snapshot(
+            db,
+            study_start="20260801",
+            study_end="20260803",
+            max_codes=10,
+            decision_at="2026-08-11T10:00:00+08:00",
+            history_days=0,
+            benchmark_code="000300.SH",
+        )

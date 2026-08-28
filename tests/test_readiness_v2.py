@@ -135,14 +135,10 @@ def test_readiness_collector_uses_authoritative_server_run(
     monkeypatch.setattr(readiness_service, "current_release_identity", lambda *_: dict(identity))
     monkeypatch.setattr(
         readiness_service,
-        "load_latest_gate_report",
+        "_data_gate",
         lambda *_: {
-            "passed": True,
-            "generated_at": "2026-08-27T08:00:00+08:00",
-            "code_version": "build",
-            "config_hash": "data-cfg",
-            "db_fingerprint": "db",
-            "report_sha256": "data-hash",
+            "gate": "D", "status": "PASS", "passed": True,
+            "source": "fixture", "reason": "pass", "identity_matches": True,
         },
     )
     monkeypatch.setattr(

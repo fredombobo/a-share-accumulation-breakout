@@ -41,6 +41,10 @@ from ab_screener.research.portfolio_accounting import (
     PortfolioPolicy,
     load_portfolio_policy,
 )
+from ab_screener.research.regime_filter import (
+    ResearchRegimeFilter,
+    build_research_regime_filter,
+)
 from ab_screener.research.reporting import freeze_is_winner, render_trusted_report
 from ab_screener.research.validation import evaluate_personal_anti_overfit, evaluate_trusted_gate
 
@@ -201,6 +205,20 @@ def prepare_trusted_pit_snapshot(
     )
 
 
+def prepare_trusted_regime_filter(
+    snapshot: ResearchPitSnapshot,
+    *,
+    windows: dict[str, Any],
+) -> ResearchRegimeFilter:
+    """Freeze the causal production-equivalent regime filter for a run."""
+    starts = [str(windows["is_start"]), str(windows["oos_start"])]
+    ends = [str(windows["is_end"]), str(windows["oos_end"])]
+    for train_start, train_end, test_start, test_end in _wf_tuples(windows):
+        starts.extend((train_start, test_start))
+        ends.extend((train_end, test_end))
+    return build_research_regime_filter(snapshot, start=min(starts), end=max(ends))
+
+
 @lru_cache(maxsize=1)
 def _prepare_trusted_pit_snapshot_cached(
     db_path: str,
@@ -216,6 +234,7 @@ def _prepare_trusted_pit_snapshot_cached(
         study_end=study_end,
         max_codes=max_codes,
         decision_at=decision_at,
+        benchmark_code="000300.SH",
     )
 
 
@@ -231,6 +250,7 @@ def _cost_stress_evidence(
     db_path: str | Path,
     portfolio_policy: PortfolioPolicy,
     research_snapshot: ResearchPitSnapshot | None,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """Replay candidate and preregistered baseline under exactly 2× account costs."""
     if not primary_is:
@@ -254,6 +274,7 @@ def _cost_stress_evidence(
         max_codes=max_codes,
         portfolio_policy=stress_policy,
         research_snapshot=research_snapshot,
+        allowed_signal_dates=allowed_signal_dates,
     )
     candidate_portfolio = candidate.get("portfolio") or {}
     hold_days = int(primary_is.get("exit_window") or 10)
@@ -280,6 +301,7 @@ def _cost_stress_evidence(
         "entry_end": str(windows["oos_end"]),
         "codes": universe,
         "portfolio_policy": stress_policy,
+        "allowed_signal_dates": allowed_signal_dates,
     }
     if primary_baseline == "ma20_60":
         baseline = ma_cross_baseline(max_trades=requested_trades, **baseline_kwargs)
@@ -335,8 +357,12 @@ def execute_trusted_research(
     max_codes = max(20, min(int(request.get("max_codes") or 200), 4500))
     step = max(1, min(int(request.get("step") or 10), 60))
     requested_pit = request.get("pit_snapshot")
+    requested_regime_filter = request.get("market_regime_filter")
     research_snapshot: ResearchPitSnapshot | None = None
     pit_identity: dict[str, Any] | None = None
+    regime_filter: ResearchRegimeFilter | None = None
+    regime_identity: dict[str, Any] | None = None
+    allowed_signal_dates: frozenset[str] | None = None
     if requested_pit is not None:
         if not isinstance(requested_pit, dict) or not requested_pit.get("decision_at"):
             raise ValueError("请求缺少有效的 PIT knowledge cutoff")
@@ -351,8 +377,17 @@ def execute_trusted_research(
             raise ValueError("请求绑定的 PIT 快照与当前可复算结果不一致")
         if dataset_version != research_snapshot.dataset_fingerprint:
             raise ValueError("预登记数据版本与 PIT 快照指纹不一致")
+        if not isinstance(requested_regime_filter, dict):
+            raise ValueError("权威 PIT 研究必须预登记市场状态门禁")
+        regime_filter = prepare_trusted_regime_filter(research_snapshot, windows=windows)
+        regime_identity = regime_filter.identity()
+        if requested_regime_filter != regime_identity:
+            raise ValueError("请求绑定的市场状态门禁与当前可复算结果不一致")
+        allowed_signal_dates = regime_filter.allowed_signal_dates
         universe = list(research_snapshot.universe)
     else:
+        if requested_regime_filter is not None:
+            raise ValueError("市场状态门禁必须绑定 PIT 快照")
         universe = research_universe(max_codes, include_delisted=True)
 
     def ensure_not_cancelled() -> None:
@@ -390,6 +425,7 @@ def execute_trusted_research(
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
             capture_formal_series=run_mode == "grid",
+            allowed_signal_dates=allowed_signal_dates,
         )
         raw_is = result["is"].to_dict("records") if not result["is"].empty else []
         raw_oos = result["oos"].to_dict("records") if not result["oos"].empty else []
@@ -430,6 +466,7 @@ def execute_trusted_research(
                 cancel_check=cancel_check,
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
+                allowed_signal_dates=allowed_signal_dates,
             )
             if not wf_df.empty:
                 wf_rows = _clean(wf_df.iloc[0].get("wf_detail") or [])
@@ -467,6 +504,7 @@ def execute_trusted_research(
                     entry_end=windows["oos_end"],
                     codes=universe,
                     portfolio_policy=portfolio_policy,
+                    allowed_signal_dates=allowed_signal_dates,
                 ),
                 "ma20_60": ma_cross_baseline(
                     daily,
@@ -476,6 +514,7 @@ def execute_trusted_research(
                     entry_end=windows["oos_end"],
                     codes=universe,
                     portfolio_policy=portfolio_policy,
+                    allowed_signal_dates=allowed_signal_dates,
                 ),
             }
         ensure_not_cancelled()
@@ -514,9 +553,11 @@ def execute_trusted_research(
             "entry": report_entry_fingerprint(_active_entry_definition_id()),
             "portfolio": portfolio_identity["config_hash"],
             "pit_reader": pit_identity.get("version") if pit_identity else None,
+            "market_regime_filter": regime_identity.get("version") if regime_identity else None,
         },
         "portfolio_model": portfolio_identity,
         "point_in_time": pit_identity,
+        "market_regime_filter": regime_identity,
         "sample": {"universe_size": len(universe), "windows": windows, "step": step},
         "cost_assumptions": COST_ASSUMPTIONS,
         "primary_is": primary_is,
@@ -555,6 +596,7 @@ def execute_trusted_research(
                 max_codes=max_codes,
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
+                allowed_signal_dates=allowed_signal_dates,
             )
             portfolio = bt.get("portfolio") or {}
             if portfolio.get("portfolio_status") != "PASS":
@@ -602,6 +644,7 @@ def execute_trusted_research(
             db_path=db_path,
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
+            allowed_signal_dates=allowed_signal_dates,
         )
     except Exception as exc:  # noqa: BLE001 formal evidence must fail closed, not disappear
         formal["cost_stress"] = {
@@ -628,6 +671,8 @@ def execute_trusted_research(
     identity_hashes_valid = bool(
         requested_portfolio is not None
         and requested_pit is not None
+        and requested_regime_filter is not None
+        and regime_identity is not None
         and code_version
         and dataset_version
         and COST_VERSION

@@ -55,6 +55,7 @@ def run_single_backtest(
     progress_cb=None,
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """对单组参数在 [start, end] 区间回放，返回逐笔明细与指标。
 
@@ -110,7 +111,19 @@ def run_single_backtest(
         from optimizer import _worker_chunk
 
         results = _worker_chunk(
-            (codes, big, sample_days, cal, 160, strategy, vr_levels, combos, signal_kwargs, costs)
+            (
+                codes,
+                big,
+                sample_days,
+                cal,
+                160,
+                strategy,
+                vr_levels,
+                combos,
+                signal_kwargs,
+                costs,
+                allowed_signal_dates,
+            )
         )
         if progress_cb:
             progress_cb("单进程回放完成", 90)
@@ -137,6 +150,7 @@ def run_single_backtest(
                         combos,
                         signal_kwargs,
                         costs,
+                        allowed_signal_dates,
                     ),
                 )
                 for ch in chunks

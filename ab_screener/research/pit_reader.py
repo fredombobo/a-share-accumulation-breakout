@@ -14,6 +14,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,9 @@ class ResearchPitSnapshot:
     dataset_fingerprint: str
     daily: pd.DataFrame
     version: str = PIT_READER_VERSION
+    benchmark_code: str | None = None
+    benchmark_sha256: str | None = None
+    benchmark_daily: pd.DataFrame = dataclass_field(default_factory=pd.DataFrame, repr=False)
 
     def load_daily(
         self,
@@ -74,8 +78,32 @@ class ResearchPitSnapshot:
         frame = self.load_daily(start=start, end=end)
         return sorted(frame["trade_date"].astype(str).unique().tolist())
 
+    def load_benchmark(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> pd.DataFrame:
+        """Read the frozen PIT benchmark without treating it as a stock."""
+        requested_start = _date(start or self.data_start)
+        requested_end = _date(end or self.data_end)
+        if requested_start < self.data_start or requested_end > self.data_end:
+            raise ResearchPitError(
+                f"请求基准窗口 {requested_start}~{requested_end} 超出冻结快照 "
+                f"{self.data_start}~{self.data_end}"
+            )
+        if requested_start > requested_end:
+            raise ResearchPitError("PIT 基准行情窗口起止日期倒置")
+        if not self.benchmark_code or self.benchmark_daily.empty:
+            raise ResearchPitError("冻结快照未绑定基准行情")
+        selected = self.benchmark_daily[
+            (self.benchmark_daily["trade_date"] >= requested_start)
+            & (self.benchmark_daily["trade_date"] <= requested_end)
+        ]
+        return selected.copy().reset_index(drop=True)
+
     def identity(self) -> dict[str, Any]:
-        return {
+        result = {
             "version": self.version,
             "decision_at": self.decision_at,
             "data_start": self.data_start,
@@ -84,6 +112,15 @@ class ResearchPitSnapshot:
             "universe_sha256": self.universe_sha256,
             "dataset_fingerprint": self.dataset_fingerprint,
         }
+        if self.benchmark_code:
+            result.update(
+                {
+                    "benchmark_code": self.benchmark_code,
+                    "benchmark_sha256": self.benchmark_sha256,
+                    "benchmark_rows": len(self.benchmark_daily),
+                }
+            )
+        return result
 
 
 def latest_research_cutoff(db_path: str | Path) -> str:
@@ -111,6 +148,7 @@ def build_research_pit_snapshot(
     max_codes: int,
     decision_at: str | None = None,
     history_days: int = 365,
+    benchmark_code: str | None = None,
 ) -> ResearchPitSnapshot:
     """Freeze universe and daily revisions for one preregistered research run."""
     start = _date(study_start)
@@ -122,6 +160,8 @@ def build_research_pit_snapshot(
     cutoff = normalize_ts(decision_at or latest_research_cutoff(db_path))
     data_start = (pd.to_datetime(start) - pd.Timedelta(days=history_days)).strftime("%Y%m%d")
 
+    benchmark = pd.DataFrame()
+    resolved_benchmark = str(benchmark_code or "").strip().upper() or None
     with _connect(db_path) as conn:
         _require_tables(conn)
         universe_evidence = _load_universe_evidence(
@@ -142,15 +182,27 @@ def build_research_pit_snapshot(
             end=end,
             decision_at=cutoff,
         )
+        if resolved_benchmark:
+            benchmark = _load_daily_asof(
+                conn,
+                codes=(resolved_benchmark,),
+                start=data_start,
+                end=end,
+                decision_at=cutoff,
+            )
 
     if daily.empty:
         raise ResearchPitError("冻结宇宙在研究窗口内没有 PIT 日线")
+    if resolved_benchmark and benchmark.empty:
+        raise ResearchPitError(f"冻结快照缺少基准 PIT 日线: {resolved_benchmark}")
+    benchmark_sha = _daily_hash(benchmark) if resolved_benchmark else None
     dataset_hash = _dataset_hash(
         daily,
         cutoff=cutoff,
         data_start=data_start,
         data_end=end,
         universe_sha256=universe_sha,
+        benchmark_sha256=benchmark_sha,
     )
     return ResearchPitSnapshot(
         decision_at=cutoff,
@@ -160,6 +212,9 @@ def build_research_pit_snapshot(
         universe_sha256=universe_sha,
         dataset_fingerprint=dataset_hash,
         daily=daily,
+        benchmark_code=resolved_benchmark,
+        benchmark_sha256=benchmark_sha,
+        benchmark_daily=benchmark,
     )
 
 
@@ -394,9 +449,13 @@ def _dataset_hash(
     data_start: str,
     data_end: str,
     universe_sha256: str,
+    benchmark_sha256: str | None = None,
 ) -> str:
     digest = hashlib.sha256(
-        f"{PIT_READER_VERSION}|{cutoff}|{data_start}|{data_end}|{universe_sha256}\n".encode()
+        (
+            f"{PIT_READER_VERSION}|{cutoff}|{data_start}|{data_end}|"
+            f"{universe_sha256}|{benchmark_sha256 or ''}\n"
+        ).encode()
     )
     for row in daily[
         [
@@ -411,6 +470,25 @@ def _dataset_hash(
         digest.update("|".join(str(value) for value in row).encode("utf-8") + b"\n")
     digest.update(f"rows={len(daily)}".encode("ascii"))
     return digest.hexdigest()[:16]
+
+
+def _daily_hash(daily: pd.DataFrame) -> str:
+    digest = hashlib.sha256()
+    if daily.empty:
+        return digest.hexdigest()
+    for row in daily[
+        [
+            "ts_code",
+            "trade_date",
+            "revision",
+            "available_at",
+            "source",
+            "content_hash",
+        ]
+    ].itertuples(index=False, name=None):
+        digest.update("|".join(str(value) for value in row).encode("utf-8") + b"\n")
+    digest.update(f"rows={len(daily)}".encode("ascii"))
+    return digest.hexdigest()
 
 
 def _chunks(values: tuple[str, ...], size: int) -> Iterator[tuple[str, ...]]:

@@ -9,9 +9,11 @@ from ab_screener.research.trusted_run import _cost_stress_evidence
 
 def test_cost_stress_replays_candidate_and_baseline_with_exact_two_x_policy(monkeypatch) -> None:
     seen: list[PortfolioPolicy] = []
+    seen_allowed: list[frozenset[str] | None] = []
 
     def fake_backtest(**kwargs):
         seen.append(kwargs["portfolio_policy"])
+        seen_allowed.append(kwargs.get("allowed_signal_dates"))
         return {
             "portfolio": {
                 "portfolio_status": "PASS",
@@ -22,6 +24,7 @@ def test_cost_stress_replays_candidate_and_baseline_with_exact_two_x_policy(monk
 
     def fake_baseline(*_args, **kwargs):
         seen.append(kwargs["portfolio_policy"])
+        seen_allowed.append(kwargs.get("allowed_signal_dates"))
         return {
             "portfolio_status": "PASS",
             "net_total_return": -0.01,
@@ -56,6 +59,7 @@ def test_cost_stress_replays_candidate_and_baseline_with_exact_two_x_policy(monk
         daily=daily,
     )
 
+    allowed = frozenset({"20260801", "20260802"})
     evidence = _cost_stress_evidence(
         primary_is={
             "strategy": "A",
@@ -73,6 +77,7 @@ def test_cost_stress_replays_candidate_and_baseline_with_exact_two_x_policy(monk
         db_path="unused.db",
         portfolio_policy=PortfolioPolicy(),
         research_snapshot=snapshot,
+        allowed_signal_dates=allowed,
     )
 
     assert evidence["status"] == "OK"
@@ -82,3 +87,4 @@ def test_cost_stress_replays_candidate_and_baseline_with_exact_two_x_policy(monk
     assert len(seen) == 2
     assert all(policy.cost_multiplier_bps == 20_000 for policy in seen)
     assert seen[0].fingerprint() == seen[1].fingerprint() == evidence["portfolio_config_hash"]
+    assert seen_allowed == [allowed, allowed]

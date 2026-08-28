@@ -106,6 +106,7 @@ def eval_combo(
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
     capture_formal_series: bool = False,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> dict:
     """对单个参数组合在指定区间回测，返回统计行。"""
     df = run_grid(
@@ -122,6 +123,7 @@ def eval_combo(
         portfolio_policy=portfolio_policy,
         research_snapshot=research_snapshot,
         capture_formal_series=capture_formal_series,
+        allowed_signal_dates=allowed_signal_dates,
     )
     if df.empty:
         return {"n_trades": 0}
@@ -146,6 +148,7 @@ def run_is_oos(
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
     capture_formal_series: bool = False,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> dict:
     """完整流程：IS 网格 → 过滤（胜率≥30%、DD≤25%）→ Top N → OOS 验证。
 
@@ -175,6 +178,7 @@ def run_is_oos(
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
             capture_formal_series=capture_formal_series,
+            allowed_signal_dates=allowed_signal_dates,
         )
         is_df = pd.DataFrame([{**combo, **is_row}]) if is_row.get("n_trades") else pd.DataFrame()
         oos = eval_combo(
@@ -190,6 +194,7 @@ def run_is_oos(
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
             capture_formal_series=capture_formal_series,
+            allowed_signal_dates=allowed_signal_dates,
         )
         oos_df = pd.DataFrame(
             [
@@ -236,6 +241,7 @@ def run_is_oos(
         portfolio_policy=portfolio_policy,
         research_snapshot=research_snapshot,
         capture_formal_series=capture_formal_series,
+        allowed_signal_dates=allowed_signal_dates,
     )
     if is_df.empty:
         return {
@@ -279,6 +285,7 @@ def run_is_oos(
         portfolio_policy=portfolio_policy,
         research_snapshot=research_snapshot,
         capture_formal_series=capture_formal_series,
+        allowed_signal_dates=allowed_signal_dates,
     )
     is_records = is_df.to_dict("records")
     for row in is_records:
@@ -342,6 +349,7 @@ def wf_recheck(
     costs: dict | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> pd.DataFrame:
     """对 Top 组合做 3 窗口滚动复核，附 wf_pass 判定。windows 可覆盖（降级时传短窗）。"""
     wf_windows = windows or WF_WINDOWS
@@ -364,6 +372,7 @@ def wf_recheck(
                 costs=costs,
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
+                allowed_signal_dates=allowed_signal_dates,
             )
             completed_evaluations += 1
             if progress_cb:
@@ -379,6 +388,7 @@ def wf_recheck(
                 costs=costs,
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
+                allowed_signal_dates=allowed_signal_dates,
             )
             completed_evaluations += 1
             if progress_cb:

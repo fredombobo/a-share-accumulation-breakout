@@ -469,6 +469,7 @@ def lab_optimize(req: LabOptimizeRequest):
         COST_VERSION,
         input_fingerprint,
         prepare_trusted_pit_snapshot,
+        prepare_trusted_regime_filter,
         trusted_portfolio_identity,
     )
     request_data["preregistered"] = bool(
@@ -484,6 +485,10 @@ def lab_optimize(req: LabOptimizeRequest):
         max_codes=max_codes,
     )
     request_data["pit_snapshot"] = pit_snapshot.identity()
+    request_data["market_regime_filter"] = prepare_trusted_regime_filter(
+        pit_snapshot,
+        windows=windows,
+    ).identity()
     dataset_version = pit_snapshot.dataset_fingerprint
     persisted_request = {**request_data, "_windows": windows}
     input_hash = input_fingerprint(

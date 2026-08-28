@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -14,6 +16,32 @@ import pandas as pd
 
 # 默认观察指数
 DEFAULT_INDEX = "000300.SH"
+MARKET_REGIME_POLICY_VERSION = "breakout-market-regime-v1.0.0"
+MARKET_REGIME_MINIMUM_HISTORY_ROWS = 25
+MARKET_REGIME_MA_WINDOW = 20
+MARKET_REGIME_RETURN_LOOKBACK = 20
+MARKET_REGIME_MA_TOLERANCE_BPS = 50
+MARKET_REGIME_ATTACK_MIN_RETURN = 0.02
+MARKET_REGIME_DEFENSE_MAX_RETURN = -0.06
+MARKET_REGIME_POLICY = {
+    "version": MARKET_REGIME_POLICY_VERSION,
+    "benchmark_code": DEFAULT_INDEX,
+    "minimum_history_rows": MARKET_REGIME_MINIMUM_HISTORY_ROWS,
+    "ma_window": MARKET_REGIME_MA_WINDOW,
+    "return_lookback": MARKET_REGIME_RETURN_LOOKBACK,
+    "ma_tolerance_bps": MARKET_REGIME_MA_TOLERANCE_BPS,
+    "attack_min_return": MARKET_REGIME_ATTACK_MIN_RETURN,
+    "defense_max_return": MARKET_REGIME_DEFENSE_MAX_RETURN,
+}
+
+
+def market_regime_policy_identity() -> dict[str, str]:
+    """Return the immutable identity shared by research and production."""
+    payload = json.dumps(MARKET_REGIME_POLICY, ensure_ascii=False, sort_keys=True)
+    return {
+        "version": MARKET_REGIME_POLICY_VERSION,
+        "config_hash": hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16],
+    }
 
 
 @dataclass
@@ -44,16 +72,22 @@ class RegimeResult:
         }
 
 
-def _classify(close: float, ma20: float, ret_20d: float) -> tuple[str, str, bool, int, list[str]]:
+def classify_regime_point(
+    close: float,
+    ma20: float,
+    ret_20d: float,
+) -> tuple[str, str, bool, int, list[str]]:
     """防守时 allow=False 且 slots=0，字段语义一致。"""
     notes: list[str] = []
-    above = close >= ma20 * 0.995
+    tolerance = MARKET_REGIME_MA_TOLERANCE_BPS / 10_000
+    above = close >= ma20 * (1.0 - tolerance)
     ma_up = ret_20d is not None and ret_20d > 0.0
-    if above and ma_up and ret_20d >= 0.02:
+    if above and ma_up and ret_20d >= MARKET_REGIME_ATTACK_MIN_RETURN:
         notes.append("指数站上MA20且20日涨幅≥2%")
         return "attack", "进攻", True, 15, notes
     # 明确空头：破位或 20 日大跌
-    if (not above) or (ret_20d is not None and ret_20d <= -0.06):
+    defense_return = MARKET_REGIME_DEFENSE_MAX_RETURN
+    if (not above) or (ret_20d is not None and ret_20d <= defense_return):
         if not above and ret_20d is not None and ret_20d <= -0.05:
             notes.append("指数跌破MA20且20日跌幅≥5%")
         elif ret_20d is not None and ret_20d <= -0.06:
@@ -63,6 +97,11 @@ def _classify(close: float, ma20: float, ret_20d: float) -> tuple[str, str, bool
         return "defense", "防守", False, 0, notes
     notes.append("指数中性震荡")
     return "neutral", "中性", True, 10, notes
+
+
+# Backward-compatible private alias.  New consumers must use the public pure
+# function so research and production cannot silently diverge.
+_classify = classify_regime_point
 
 
 def detect_regime_from_index_df(df: pd.DataFrame, index_code: str = DEFAULT_INDEX) -> RegimeResult:
@@ -95,7 +134,7 @@ def detect_regime_from_index_df(df: pd.DataFrame, index_code: str = DEFAULT_INDE
     ma20 = float(d["close"].tail(20).mean())
     c20 = float(d["close"].iloc[-21]) if len(d) >= 21 else float(d["close"].iloc[0])
     ret_20d = (close / c20 - 1.0) if c20 > 0 else 0.0
-    regime, label, allow, slots, n2 = _classify(close, ma20, ret_20d)
+    regime, label, allow, slots, n2 = classify_regime_point(close, ma20, ret_20d)
     notes.extend(n2)
     return RegimeResult(
         regime=regime,

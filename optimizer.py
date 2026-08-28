@@ -399,7 +399,19 @@ def _worker_chunk(payload: tuple) -> dict[str, list[dict]]:
 
     payload 末尾两项：signal_kwargs（形态阈值）、costs（成本覆盖，子进程内临时生效）。
     """
-    codes, chunk_df, sample_days, cal, horizon, strategy, vr_levels, combos, signal_kwargs, costs = payload
+    (
+        codes,
+        chunk_df,
+        sample_days,
+        cal,
+        horizon,
+        strategy,
+        vr_levels,
+        combos,
+        signal_kwargs,
+        costs,
+        allowed_signal_dates,
+    ) = payload
     if costs:
         from ab_screener.research.backtest_engine import apply_cost_override
 
@@ -426,6 +438,8 @@ def _worker_chunk(payload: tuple) -> dict[str, list[dict]]:
                 vr_levels,
                 signal_kwargs=signal_kwargs,
             )
+            if allowed_signal_dates is not None:
+                signals = [signal for signal in signals if signal.get("day") in allowed_signal_dates]
             if not signals:
                 continue
             for pid, trades in _replay_params(df, signals, combos).items():
@@ -460,6 +474,7 @@ def run_grid(
     research_snapshot: ResearchPitSnapshot | None = None,
     combos_override: list[dict[str, Any]] | None = None,
     capture_formal_series: bool = False,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> pd.DataFrame:
     """网格优化主入口。返回每组参数一行统计的 DataFrame（按 profit_factor 降序）。
 
@@ -497,6 +512,11 @@ def run_grid(
         else grid_combos(strategy, grid)
     )
     vr_levels = sorted({c["vol_ratio_min"] for c in combos})
+    normalized_allowed_dates = (
+        frozenset(str(value)[:8] for value in allowed_signal_dates)
+        if allowed_signal_dates is not None
+        else None
+    )
     if progress_cb:
         progress_cb(f"优化池 {len(codes)} 只 × {len(sample_days)} 采样日 × {len(combos)} 组合", 5)
 
@@ -510,7 +530,19 @@ def run_grid(
     results: dict[str, list[dict]] = {}
     if len(codes) < _MIN_CODES_FOR_POOL or nw <= 1:
         r = _worker_chunk(
-            (codes, big, sample_days, cal, horizon, strategy, vr_levels, combos, signal_kwargs, costs)
+            (
+                codes,
+                big,
+                sample_days,
+                cal,
+                horizon,
+                strategy,
+                vr_levels,
+                combos,
+                signal_kwargs,
+                costs,
+                normalized_allowed_dates,
+            )
         )
         results = r
         if _is_cancelled(cancel_check):
@@ -535,6 +567,7 @@ def run_grid(
                         combos,
                         signal_kwargs,
                         costs,
+                        normalized_allowed_dates,
                     ),
                 )
                 for ch in chunks

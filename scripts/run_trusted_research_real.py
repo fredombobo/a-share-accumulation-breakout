@@ -34,6 +34,7 @@ from ab_screener.research.trusted_run import (
     execute_trusted_research,
     input_fingerprint,
     prepare_trusted_pit_snapshot,
+    prepare_trusted_regime_filter,
     trusted_portfolio_identity,
 )
 from research_windows import recommend_research_plan
@@ -88,6 +89,7 @@ def main() -> int:
         windows=windows,
         max_codes=max_codes,
     )
+    regime_filter = prepare_trusted_regime_filter(pit_snapshot, windows=windows)
     request = {
         "strategy": args.strategy,
         "mode": "grid",
@@ -98,6 +100,7 @@ def main() -> int:
         "primary_baseline": "ma20_60",
         "portfolio_model": trusted_portfolio_identity(),
         "pit_snapshot": pit_snapshot.identity(),
+        "market_regime_filter": regime_filter.identity(),
     }
     dataset_version = pit_snapshot.dataset_fingerprint
     code_version = build_version()
@@ -115,6 +118,7 @@ def main() -> int:
         "code_version": code_version,
         "cost_version": COST_VERSION,
         "portfolio_model": request["portfolio_model"],
+        "market_regime_filter": request["market_regime_filter"],
         "entry_policy": "next_tradable_open",
         "selection_rule": "freeze_is_winner_before_oos",
     }

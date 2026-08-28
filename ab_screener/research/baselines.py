@@ -26,6 +26,7 @@ def random_baseline_trades(
     entry_end: str | None = None,
     codes: list[str] | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """在相同日线宇宙上随机采样入场日/股票，走成本引擎。"""
     rng = random.Random(seed)
@@ -37,6 +38,9 @@ def random_baseline_trades(
     for code in universe:
         group = daily[daily["ts_code"].astype(str) == code].sort_values("trade_date").reset_index(drop=True)
         for index in range(1, len(group) - hold_days):
+            signal_date = str(group.iloc[index - 1]["trade_date"])
+            if allowed_signal_dates is not None and signal_date not in allowed_signal_dates:
+                continue
             date = str(group.iloc[index]["trade_date"])
             exit_date = str(group.iloc[index + hold_days]["trade_date"])
             if entry_start and date < entry_start:
@@ -101,6 +105,7 @@ def ma_cross_baseline(
     entry_end: str | None = None,
     codes: list[str] | None = None,
     portfolio_policy: PortfolioPolicy | None = None,
+    allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """20/60 均线金叉入场，固定持有 hold_days，成本引擎。"""
     if daily is None or daily.empty:
@@ -120,6 +125,9 @@ def ma_cross_baseline(
         idxs = list(np.where(cross.fillna(False).to_numpy())[0])
         for i in idxs:
             # 信号日 i 收盘确认 → i+1 开盘买
+            signal_date = str(g.iloc[i]["trade_date"])
+            if allowed_signal_dates is not None and signal_date not in allowed_signal_dates:
+                continue
             entry_i = i + 1
             exit_i = entry_i + hold_days
             if exit_i >= len(g):
