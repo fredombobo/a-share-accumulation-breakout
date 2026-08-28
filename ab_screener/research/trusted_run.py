@@ -47,6 +47,11 @@ from ab_screener.research.regime_filter import (
     build_research_regime_filter,
 )
 from ab_screener.research.reporting import freeze_is_winner, render_trusted_report
+from ab_screener.research.resilient_absorption import (
+    BASE_ENTRY_MECHANISM_ID,
+    resolve_requested_entry_mechanism,
+    signal_kwargs_for_entry_mechanism,
+)
 from ab_screener.research.validation import evaluate_personal_anti_overfit, evaluate_trusted_gate
 
 PhaseCallback = Callable[[str, int, str, dict[str, Any]], None]
@@ -257,6 +262,7 @@ def _cost_stress_evidence(
     db_path: str | Path,
     portfolio_policy: PortfolioPolicy,
     research_snapshot: ResearchPitSnapshot | None,
+    signal_kwargs: dict[str, Any] | None = None,
     allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """Replay candidate and preregistered baseline under exactly 2× account costs."""
@@ -281,6 +287,7 @@ def _cost_stress_evidence(
         max_codes=max_codes,
         portfolio_policy=stress_policy,
         research_snapshot=research_snapshot,
+        signal_kwargs=signal_kwargs,
         allowed_signal_dates=allowed_signal_dates,
     )
     candidate_portfolio = candidate.get("portfolio") or {}
@@ -360,6 +367,11 @@ def execute_trusted_research(
     if requested_portfolio is not None and requested_portfolio != portfolio_identity:
         raise ValueError("请求绑定的组合模型与当前权威配置不一致")
     strategy = str(request.get("strategy") or "A")
+    entry_mechanism = resolve_requested_entry_mechanism(request.get("entry_mechanism"))
+    entry_mechanism_id = str(entry_mechanism["id"])
+    if strategy != "A" and entry_mechanism_id != BASE_ENTRY_MECHANISM_ID:
+        raise ValueError("韧性吸收机制只允许绑定 A 方案")
+    signal_kwargs = signal_kwargs_for_entry_mechanism(entry_mechanism_id)
     run_mode = str(request.get("mode") or "grid")
     max_codes = max(20, min(int(request.get("max_codes") or 200), 4500))
     step = max(1, min(int(request.get("step") or 10), 60))
@@ -436,6 +448,7 @@ def execute_trusted_research(
                 else None
             ),
             cancel_check=cancel_check,
+            signal_kwargs=signal_kwargs,
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
             capture_formal_series=run_mode == "grid",
@@ -478,6 +491,7 @@ def execute_trusted_research(
                     state,
                 ),
                 cancel_check=cancel_check,
+                signal_kwargs=signal_kwargs,
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
                 allowed_signal_dates=allowed_signal_dates,
@@ -568,10 +582,12 @@ def execute_trusted_research(
             "portfolio": portfolio_identity["config_hash"],
             "pit_reader": pit_identity.get("version") if pit_identity else None,
             "market_regime_filter": regime_identity.get("version") if regime_identity else None,
+            "entry_mechanism": entry_mechanism["semantic_hash"],
         },
         "portfolio_model": portfolio_identity,
         "point_in_time": pit_identity,
         "market_regime_filter": regime_identity,
+        "entry_mechanism": entry_mechanism,
         "sample": {"universe_size": len(universe), "windows": windows, "step": step},
         "cost_assumptions": COST_ASSUMPTIONS,
         "primary_is": primary_is,
@@ -617,10 +633,34 @@ def execute_trusted_research(
                 end=windows["oos_end"],
                 step=step,
                 max_codes=max_codes,
+                signal_kwargs=signal_kwargs,
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
                 allowed_signal_dates=allowed_signal_dates,
             )
+            accepted_mechanism_signals = [
+                {
+                    "ts_code": row.get("ts_code"),
+                    "signal_date": row.get("signal_date"),
+                    "evidence": row.get("entry_mechanism"),
+                }
+                for row in (bt.get("trades") or [])
+                if row.get("entry_mechanism")
+            ]
+            audit_blob = json.dumps(
+                accepted_mechanism_signals,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            report["entry_mechanism_audit"] = {
+                "accepted_signal_count": len(accepted_mechanism_signals),
+                "accepted_signals_sha256": hashlib.sha256(
+                    audit_blob.encode("utf-8")
+                ).hexdigest(),
+                "accepted_signals": accepted_mechanism_signals,
+            }
             portfolio = bt.get("portfolio") or {}
             if portfolio.get("portfolio_status") != "PASS":
                 report["v2_statistics"] = {
@@ -670,6 +710,7 @@ def execute_trusted_research(
             db_path=db_path,
             portfolio_policy=portfolio_policy,
             research_snapshot=research_snapshot,
+            signal_kwargs=signal_kwargs,
             allowed_signal_dates=allowed_signal_dates,
         )
     except Exception as exc:  # noqa: BLE001 formal evidence must fail closed, not disappear
@@ -711,6 +752,8 @@ def execute_trusted_research(
         and code_version
         and dataset_version
         and COST_VERSION
+        and entry_mechanism
+        == resolve_requested_entry_mechanism(request.get("entry_mechanism"))
         and formal_identity_valid(formal)
     )
     report = apply_formal_promotion_gate(
@@ -718,6 +761,41 @@ def execute_trusted_research(
         request,
         hashes_valid=identity_hashes_valid,
     )
+    if bool(entry_mechanism.get("research_only")):
+        forward_check = {
+            "id": "untouched_forward_validation",
+            "label": "预登记后独立前瞻验证",
+            "passed": False,
+            "actual": {
+                "scope": str(
+                    request.get("evidence_scope")
+                    or "HISTORICAL_DIAGNOSTIC_OBSERVED_OOS"
+                ),
+                "mature_trading_days": 0,
+                "mature_fills": 0,
+                "mature_calendar_months": 0,
+            },
+            "threshold": "预登记后至少60个真实交易日、30笔成熟成交、3个自然月",
+        }
+        robust_pass = bool(
+            ((report.get("formal_promotion") or {}).get("profiles") or {})
+            .get("ROBUST_PERSONAL_V2", {})
+            .get("pass")
+        )
+        scope_reason = (
+            "历史门禁得到支持，但 OOS 已被观察；只能记为 HISTORICAL_SUPPORT_ONLY，"
+            "等待预登记后的独立前瞻样本。"
+            if robust_pass
+            else "新经济机制未通过历史正式门，且尚无预登记后的独立前瞻样本。"
+        )
+        report["research_claim_status"] = (
+            "HISTORICAL_SUPPORT_ONLY" if robust_pass else "NO_CANDIDATE"
+        )
+        report["candidate_eligible"] = False
+        report["verdict"] = "FAIL"
+        report["checks"] = list(report.get("checks") or []) + [forward_check]
+        report["block_reasons"] = list(report.get("block_reasons") or []) + [scope_reason]
+        report["summary"] = scope_reason
     report["markdown"] = render_trusted_report(report)
     state["gate"] = {
         key: report.get(key)

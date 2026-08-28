@@ -32,6 +32,11 @@ from ab_screener.research.registry import (
     register_trial,
     transition_experiment_status,
 )
+from ab_screener.research.resilient_absorption import (
+    BASE_ENTRY_MECHANISM_ID,
+    entry_mechanism_identity,
+    registered_entry_mechanism_ids,
+)
 from ab_screener.research.store import ResearchRunStore
 from ab_screener.research.trusted_run import (
     COST_VERSION,
@@ -59,6 +64,12 @@ def main() -> int:
         choices=(PRODUCTION_REGIME_ENTRY_POLICY, ATTACK_ONLY_REGIME_ENTRY_POLICY),
         default=PRODUCTION_REGIME_ENTRY_POLICY,
         help="生产一致门禁或预登记的仅进攻市况开仓实验",
+    )
+    parser.add_argument(
+        "--entry-mechanism",
+        choices=registered_entry_mechanism_ids(),
+        default=BASE_ENTRY_MECHANISM_ID,
+        help="预登记研究入场机制；默认保持生产严格突破，不增加过滤",
     )
     args = parser.parse_args()
 
@@ -115,6 +126,12 @@ def main() -> int:
         "portfolio_model": trusted_portfolio_identity(),
         "pit_snapshot": pit_snapshot.identity(),
         "market_regime_filter": regime_filter.identity(),
+        "entry_mechanism": entry_mechanism_identity(args.entry_mechanism),
+        "evidence_scope": (
+            "HISTORICAL_DIAGNOSTIC_OBSERVED_OOS"
+            if args.entry_mechanism != BASE_ENTRY_MECHANISM_ID
+            else "AUTHORITATIVE_PRODUCTION_RESEARCH"
+        ),
     }
     dataset_version = pit_snapshot.dataset_fingerprint
     code_version = build_version()
@@ -133,8 +150,11 @@ def main() -> int:
         "cost_version": COST_VERSION,
         "portfolio_model": request["portfolio_model"],
         "market_regime_filter": request["market_regime_filter"],
+        "entry_mechanism": request["entry_mechanism"],
+        "evidence_scope": request["evidence_scope"],
         "entry_policy": "next_tradable_open",
         "market_regime_entry_policy": args.regime_entry_policy,
+        "entry_mechanism_id": args.entry_mechanism,
         "selection_rule": "freeze_is_winner_before_oos",
     }
     store = ResearchRunStore(db_path)

@@ -465,6 +465,10 @@ def lab_optimize(req: LabOptimizeRequest):
             request_data["grid"] = clean_grid or None
 
     from ab_screener.research.promotion_v2 import ROBUST_PROFILE
+    from ab_screener.research.resilient_absorption import (
+        BASE_ENTRY_MECHANISM_ID,
+        entry_mechanism_identity,
+    )
     from ab_screener.research.trusted_run import (
         COST_VERSION,
         input_fingerprint,
@@ -489,6 +493,8 @@ def lab_optimize(req: LabOptimizeRequest):
         pit_snapshot,
         windows=windows,
     ).identity()
+    request_data["entry_mechanism"] = entry_mechanism_identity(BASE_ENTRY_MECHANISM_ID)
+    request_data["evidence_scope"] = "AUTHORITATIVE_PRODUCTION_RESEARCH"
     dataset_version = pit_snapshot.dataset_fingerprint
     persisted_request = {**request_data, "_windows": windows}
     input_hash = input_fingerprint(

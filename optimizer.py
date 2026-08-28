@@ -234,11 +234,18 @@ def _detect_signals_for_code(
     A 方案：detect_accumulation_breakout（与参数无关，detect 一次；signal_kwargs 可覆盖形态阈值）
     B 方案：detect_plan_b（vol_ratio_min 影响建仓识别，按 vr_levels 各 detect 一次）
     """
+    from ab_screener.research.resilient_absorption import (
+        BASE_ENTRY_MECHANISM_ID,
+        evaluate_entry_mechanism,
+        split_signal_kwargs,
+    )
     from bench_volume import find_build_seqs
     from entry_plan_b import detect_plan_b
     from signals import detect_accumulation_breakout
 
-    skwargs = dict(signal_kwargs or {})
+    skwargs, entry_mechanism_id = split_signal_kwargs(signal_kwargs)
+    if strategy != "A" and entry_mechanism_id != BASE_ENTRY_MECHANISM_ID:
+        raise ValueError("韧性吸收机制只适用于 A 方案严格横盘突破")
     dts = df["trade_date"].astype(str).tolist()
     dts_set = set(dts)
     signals: list[dict] = []
@@ -276,6 +283,13 @@ def _detect_signals_for_code(
             causal_bd = "".join(ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit())[:8]
             if not causal_sig.get("is_breakout") or causal_bd != bd:
                 continue
+            mechanism_evidence = evaluate_entry_mechanism(
+                entry_mechanism_id,
+                causal,
+                causal_sig,
+            )
+            if not mechanism_evidence.get("passed"):
+                continue
             key_a = (bd, None)
             if key_a in seen:
                 continue
@@ -298,6 +312,7 @@ def _detect_signals_for_code(
                     "box_high": causal_sig.get("box_high"),
                     "box_low": causal_sig.get("box_low"),
                     "breakout_date": bd,
+                    "entry_mechanism": mechanism_evidence,
                 }
             )
 
@@ -389,6 +404,7 @@ def _replay_params(df: pd.DataFrame, signals: list[dict], combos: list[dict]) ->
                         "box_high": s.get("box_high"),
                         "box_low": s.get("box_low"),
                         "breakout_date": s.get("breakout_date"),
+                        "entry_mechanism": s.get("entry_mechanism"),
                     }
                 )
     return out
@@ -503,6 +519,15 @@ def run_grid(
         # 兼容探索路径；权威研究必须显式传入冻结 PIT 快照。
         cal = store.distinct_dates("daily")
         big = store.load_daily(ts_codes=codes, start=load_start, end=end)
+    from ab_screener.research.resilient_absorption import prepare_signal_market_context
+
+    big = prepare_signal_market_context(
+        big,
+        research_snapshot=research_snapshot,
+        start=load_start,
+        end=end,
+        signal_kwargs=signal_kwargs,
+    )
     sample_days = [d for d in cal if start <= d <= end][:: max(1, step)]
     if not sample_days:
         return pd.DataFrame()

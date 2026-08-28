@@ -86,6 +86,15 @@ def run_single_backtest(
         codes = research_universe(max_codes, include_delisted=True)
         cal = store.distinct_dates("daily")
         big = store.load_daily(ts_codes=codes, start=load_start, end=end)
+    from ab_screener.research.resilient_absorption import prepare_signal_market_context
+
+    big = prepare_signal_market_context(
+        big,
+        research_snapshot=research_snapshot,
+        start=load_start,
+        end=end,
+        signal_kwargs=signal_kwargs,
+    )
     sample_days = [d for d in cal if start <= d <= end][:: max(1, step)]
     if not sample_days:
         return {"error": "窗口内无采样日"}
@@ -205,6 +214,7 @@ def run_single_backtest(
                 "other_fee": cost.get("other_fee"),
                 "slippage_cost": cost.get("slippage_cost"),
                 "reason": cost.get("reason") or "",
+                "entry_mechanism": t.get("entry_mechanism"),
             }
         )
 

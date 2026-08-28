@@ -3,6 +3,10 @@ from __future__ import annotations
 import pandas as pd
 
 from ab_screener.research.reporting import freeze_is_winner, render_trusted_report
+from ab_screener.research.resilient_absorption import (
+    RESILIENT_ABSORPTION_ID,
+    entry_mechanism_identity,
+)
 from ab_screener.research.trusted_run import execute_trusted_research, trusted_portfolio_identity
 from local_store import LocalStore
 
@@ -56,6 +60,8 @@ def test_markdown_report_contains_reproducibility_and_all_gate_sections() -> Non
     ):
         assert heading in markdown
     assert "不会自动进入 A 池或生成订单" in markdown
+    assert "入场经济机制" in markdown
+    assert "证据声明" in markdown
 
 
 def test_orchestrator_runs_all_stages_but_missing_formal_evidence_fails_closed(monkeypatch, tmp_path) -> None:
@@ -92,9 +98,11 @@ def test_orchestrator_runs_all_stages_but_missing_formal_evidence_fails_closed(m
         "oos_portfolio_status": "PASS",
     }
     monkeypatch.setattr("optimizer.research_universe", lambda _limit, **kwargs: ["000001.SZ"])
-    monkeypatch.setattr(
-        "walkforward.run_is_oos",
-        lambda **_kwargs: {
+    captured_signal_kwargs: list[dict] = []
+
+    def fake_run_is_oos(**kwargs):
+        captured_signal_kwargs.append(dict(kwargs.get("signal_kwargs") or {}))
+        return {
             "is": pd.DataFrame(
                 [
                     combo,
@@ -112,8 +120,9 @@ def test_orchestrator_runs_all_stages_but_missing_formal_evidence_fails_closed(m
                 ]
             ),
             "msg": None,
-        },
-    )
+        }
+
+    monkeypatch.setattr("walkforward.run_is_oos", fake_run_is_oos)
     wf_detail = [
         {
             "window": f"WF{i}",
@@ -161,6 +170,8 @@ def test_orchestrator_runs_all_stages_but_missing_formal_evidence_fails_closed(m
             "mode": "grid",
             "max_codes": 200,
             "portfolio_model": portfolio_identity,
+            "entry_mechanism": entry_mechanism_identity(RESILIENT_ABSORPTION_ID),
+            "evidence_scope": "HISTORICAL_DIAGNOSTIC_OBSERVED_OOS",
         },
         windows=windows,
         db_path=db,
@@ -173,5 +184,11 @@ def test_orchestrator_runs_all_stages_but_missing_formal_evidence_fails_closed(m
     assert result["trusted_report"]["verdict"] == "FAIL"
     assert result["trusted_report"]["candidate_eligible"] is False
     assert result["trusted_report"]["formal_promotion"]["candidate"] == "NO_CANDIDATE"
+    assert result["trusted_report"]["research_claim_status"] == "NO_CANDIDATE"
+    assert any(
+        check.get("id") == "untouched_forward_validation"
+        for check in result["trusted_report"]["checks"]
+    )
+    assert captured_signal_kwargs == [{"entry_mechanism_id": RESILIENT_ABSORPTION_ID}]
     assert result["trusted_report"]["anti_overfit"]["verdict"] == "PASS"
     assert {"IS", "OOS", "WF", "BASELINES", "GATE", "REPORT", "CANDIDATE"} <= set(phases)

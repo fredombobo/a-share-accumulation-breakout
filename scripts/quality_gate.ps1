@@ -31,6 +31,7 @@ $Stages = @(
             "$Root\ab_screener\research\backtest_engine.py" `
             "$Root\ab_screener\research\pit_reader.py" `
             "$Root\ab_screener\research\regime_filter.py" `
+            "$Root\ab_screener\research\resilient_absorption.py" `
             "$Root\ab_screener\research\trusted_run.py" `
             "$Root\ab_screener\data\benchmark_pit_sync.py" `
             "$Root\paper_trading\rules.py" "$Root\paper_trading\engine.py" `
