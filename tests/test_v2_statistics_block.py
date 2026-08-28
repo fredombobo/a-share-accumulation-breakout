@@ -42,3 +42,17 @@ def test_multiple_trials_without_cross_trial_dispersion_fail_closed():
     block = v2_statistics_block(returns, n_trials=50)
     assert block["status"] == "INSUFFICIENT"
     assert "横截面标准差" in block["reason"]
+
+
+def test_negative_sharpe_keeps_dsr_visible_and_fails_mintrl_explicitly():
+    rng = np.random.default_rng(17)
+    returns = rng.normal(-0.001, 0.01, size=200).tolist()
+
+    block = v2_statistics_block(returns, n_trials=5, trial_sharpe_std=0.1)
+
+    assert block["status"] == "OK"
+    assert block["sharpe_period"] < 0
+    assert block["dsr"] < 0.5
+    assert block["min_track_record_length"] is None
+    assert block["min_track_record_coverage"] == 0.0
+    assert block["min_track_record_status"] == "FAIL_NONPOSITIVE_SHARPE"

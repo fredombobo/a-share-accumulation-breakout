@@ -212,7 +212,19 @@ def v2_statistics_block(
             kurt = m4 / (std**4)
     sr0 = expected_max_sharpe_null(n_trials, sharpe_std=trial_sharpe_std)
     dsr = deflated_sharpe(sharpe, len(finite), skew, kurt, n_trials, sr0=sr0)
-    mintrl = min_track_record_length(sharpe, skew, kurt, confidence=confidence)
+    if sharpe > 0:
+        mintrl = min_track_record_length(sharpe, skew, kurt, confidence=confidence)
+        mintrl_coverage = round(len(finite) / mintrl, 3) if mintrl > 0 else None
+        mintrl_status = "OK"
+        mintrl_reason = None
+    else:
+        # A non-positive observed edge cannot become significant merely by
+        # extending the same track record.  Keep DSR observable and make the
+        # MinTRL promotion check fail explicitly instead of hiding both values.
+        mintrl = None
+        mintrl_coverage = 0.0
+        mintrl_status = "FAIL_NONPOSITIVE_SHARPE"
+        mintrl_reason = "OOS 每期 Sharpe 非正，不存在证明正收益边际的有限 MinTRL"
     return {
         "status": "OK",
         "n_periods": len(finite),
@@ -223,8 +235,10 @@ def v2_statistics_block(
         "dsr_pass_95": dsr >= 0.95,
         "sr0_null_max": round(sr0, 6),
         "trial_sharpe_std": trial_sharpe_std,
-        "min_track_record_length": round(mintrl, 2),
-        "min_track_record_coverage": round(len(finite) / mintrl, 3) if mintrl > 0 else None,
+        "min_track_record_length": round(mintrl, 2) if mintrl is not None else None,
+        "min_track_record_coverage": mintrl_coverage,
+        "min_track_record_status": mintrl_status,
+        "min_track_record_reason": mintrl_reason,
         "n_trials": n_trials,
     }
 

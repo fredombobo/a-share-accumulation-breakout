@@ -639,8 +639,11 @@ def execute_trusted_research(
                 "status": "INSUFFICIENT",
                 "reason": "无 primary 组合可回放",
             }
-    except Exception:  # noqa: BLE001
-        report["v2_statistics"] = {"status": "INSUFFICIENT", "reason": "无法计算 v2 统计"}
+    except Exception as exc:  # noqa: BLE001
+        report["v2_statistics"] = {
+            "status": "INSUFFICIENT",
+            "reason": f"无法计算 v2 统计: {type(exc).__name__}: {str(exc)[:160]}",
+        }
     phase_cb("FORMAL", 98, "计算 PBO、嵌套参数复验、邻域与 2× 成本压力", state)
     formal: dict[str, Any] = {
         "version": FORMAL_EVIDENCE_VERSION,
