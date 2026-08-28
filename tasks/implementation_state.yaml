@@ -288,6 +288,23 @@ tasks:
       - "两次同配置运行核心结果与权益/矩阵身份一致；首轮统计呈现缺陷记录未删除"
       - "v2auth20260829h：当前代码的生产 attack+neutral 口径重证据，核心结果与 g 一致，正式 FAIL/NO_CANDIDATE"
       - "最终严格质量门 PASS：Ruff、Mypy、strict architecture、947 offline tests、frontend build"
+  V2-P7.6-R-RESILIENT-ABSORPTION:
+    status: in_progress
+    started_at: "2026-08-29T09:00:00+08:00"
+    work_package: WP75
+    dependencies:
+      - V2-P7.5-R-EDGE-STABILITY
+    plan: docs/V2-R-RESILIENT-ABSORPTION-PREREGISTRATION-2026-08-29.md
+    note: >
+      停止继续调整市场状态阈值；预登记单一韧性吸收经济机制。历史 OOS 已被观察，
+      因此本任务历史运行只能否证或形成 HISTORICAL_SUPPORT_ONLY，不能单独清除 R。
+    planned_files:
+      - "ab_screener/research/resilient_absorption.py"
+      - "optimizer.py"
+      - "ab_screener/research/backtest_engine.py"
+      - "ab_screener/research/trusted_run.py"
+      - "scripts/run_trusted_research_real.py"
+      - "tests/test_resilient_absorption.py"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80

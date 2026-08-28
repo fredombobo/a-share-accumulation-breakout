@@ -336,6 +336,22 @@ tasks:
       947 tests PASS。生产口径重证据 v2auth20260829h 与旧结果核心一致并继续正式 FAIL，
       现作为当前代码身份权威报告。证据见 docs/V2-R-EDGE-STABILITY-RESULT-2026-08-28.md。
 
+  - id: V2-P7.6-R-RESILIENT-ABSORPTION
+    title: 预登记并验证韧性吸收经济机制
+    status: ready
+    work_package: WP75
+    phase: P7
+    dependencies:
+      - V2-P7.5-R-EDGE-STABILITY
+    plan: docs/V2-R-RESILIENT-ABSORPTION-PREREGISTRATION-2026-08-29.md
+    acceptance:
+      - 新机制检验供给吸收与相对韧性，不调整市场状态阈值
+      - 固定经济中性边界且机制本身不存在参数网格
+      - 只读取冻结 PIT 个股及沪深300数据，缺失或未来数据 fail-closed
+      - 机制身份贯穿 IS/OOS/WF/正式统计/成本压力和报告
+      - 已观察历史结果只可否证或记为历史支持，不得直接清除 R
+      - 原 ROBUST_PERSONAL_V2 门槛不降低，生产 V1 与实盘关闭状态不变
+
   # ── P8 ──
   - id: V2-P8-FINAL-ACCEPTANCE
     title: 七闸门总验收与证据索引
