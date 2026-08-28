@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-28T23:59:00+08:00"
+updated_at: "2026-08-29T00:21:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -286,6 +286,7 @@ tasks:
       - "v2auth20260828g 只读复算：54 名义参数 / 18 独立路径，DSR=0.714270，主因 TEMPORAL_EDGE_INSTABILITY"
       - "v2rattack20260828r1：数据库 done/DONE/100/FAIL，candidate_eligible=false，can_claim_edge=false"
       - "两次同配置运行核心结果与权益/矩阵身份一致；首轮统计呈现缺陷记录未删除"
+      - "v2auth20260829h：当前代码的生产 attack+neutral 口径重证据，核心结果与 g 一致，正式 FAIL/NO_CANDIDATE"
       - "最终严格质量门 PASS：Ruff、Mypy、strict architecture、947 offline tests、frontend build"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked

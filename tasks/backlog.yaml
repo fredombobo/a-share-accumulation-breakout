@@ -333,7 +333,8 @@ tasks:
       真实历史运行 v2rattack20260828r1 可复算但正式 FAIL：54 个名义参数对应 14 条独立
       路径，IS/OOS 净收益 -0.51%/-2.68%，PBO=0.7965、DSR=0.284899、MinTRL coverage=0、
       嵌套正收益窗 2/5、2x 成本 OOS=-4.59%。假设已否决，NO_CANDIDATE；严格质量门
-      947 tests PASS。证据见 docs/V2-R-EDGE-STABILITY-RESULT-2026-08-28.md。
+      947 tests PASS。生产口径重证据 v2auth20260829h 与旧结果核心一致并继续正式 FAIL，
+      现作为当前代码身份权威报告。证据见 docs/V2-R-EDGE-STABILITY-RESULT-2026-08-28.md。
 
   # ── P8 ──
   - id: V2-P8-FINAL-ACCEPTANCE

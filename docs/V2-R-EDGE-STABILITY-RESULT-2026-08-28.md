@@ -90,11 +90,27 @@ python scripts/diagnose_research_gate.py --db <stock_data.db> --run-id <id> --ou
 - `attack_only` 已按预登记停止规则被否决，不再测试其它收益阈值、均线窗口或状态组合。
 - 本实验是在看过旧 OOS 汇总后提出；即使它通过，也不能直接清除 R。本次实际为 FAIL，
   因而不存在候选晋级争议。
-- 当前权威配置仍保留 `v2auth20260828g` 的正式 FAIL，不把更差的实验运行替换成权威身份。
+- 更差的 `attack_only` 实验不替换权威身份；统计发布后仅用同生产口径的重证据
+  `v2auth20260829h` 更新旧 `g` 的代码身份，R 结论保持正式 FAIL。
 - 后续若继续 R，必须提出新的经济机制和新的预登记任务；不得围绕本次 OOS 调市场阈值。
 - 生产扫描、A/B 池、纸面订单、风险阈值和 `LIVE_TRADING_ENABLED=false` 均未修改。
 
-## 5. 验收证据
+## 5. 当前代码身份的生产口径重证据
+
+统计纠错发布后，为消除旧 `g` 报告的代码身份失配，使用原生产 `attack + neutral` 入场
+集合、同一冻结数据、窗口、参数、成本和组合模型生成 `v2auth20260829h`。这不是新的策略
+变体，也没有再次调整参数。
+
+- 新旧核心结果完全一致：冻结参数、IS/OOS 收益、OOS 权益 SHA、PBO、五个嵌套测试收益和
+  2×成本收益均未漂移。
+- 新报告按 18 条独立收益路径计算：PBO=0.6585、DSR=0.714272、MinTRL coverage=0.318、
+  嵌套正收益窗 2/5。
+- 数据库终态 `done / DONE / 100 / FAIL`，`candidate_eligible=false`、
+  `can_claim_edge=false`，报告 SHA-256：
+  `e9e0e130e308b6d0303b5343ba552b7002362648be35098015109bf8ab0b5501`。
+- 平台权威 ID 因此更新为 `v2auth20260829h`；这只消除代码身份不匹配，R 仍为正式 FAIL。
+
+## 6. 验收证据
 
 - 提交 `f032423`：精确路径去重、attack_only PIT 身份、只读诊断与测试。
 - 提交 `7fea91c`：非正 Sharpe 的 DSR/MinTRL fail-closed 呈现。
