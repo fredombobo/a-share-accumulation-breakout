@@ -289,15 +289,17 @@ tasks:
       - "v2auth20260829h：当前代码的生产 attack+neutral 口径重证据，核心结果与 g 一致，正式 FAIL/NO_CANDIDATE"
       - "最终严格质量门 PASS：Ruff、Mypy、strict architecture、947 offline tests、frontend build"
   V2-P7.6-R-RESILIENT-ABSORPTION:
-    status: in_progress
+    status: complete
     started_at: "2026-08-29T09:00:00+08:00"
     work_package: WP75
     dependencies:
       - V2-P7.5-R-EDGE-STABILITY
     plan: docs/V2-R-RESILIENT-ABSORPTION-PREREGISTRATION-2026-08-29.md
     note: >
-      停止继续调整市场状态阈值；预登记单一韧性吸收经济机制。历史 OOS 已被观察，
-      因此本任务历史运行只能否证或形成 HISTORICAL_SUPPORT_ONLY，不能单独清除 R。
+      单一韧性吸收机制已按预登记实现并运行。OOS/PBO/DSR/MinTRL 有改善但正式硬门
+      仍失败，且 IS 与跨时间稳定性不足；按停止规则 NO_CANDIDATE，不再调本机制阈值。
+    completed_at: "2026-08-29T01:00:27+08:00"
+    result: docs/V2-R-RESILIENT-ABSORPTION-RESULT-2026-08-29.md
     planned_files:
       - "ab_screener/research/resilient_absorption.py"
       - "optimizer.py"
@@ -305,6 +307,13 @@ tasks:
       - "ab_screener/research/trusted_run.py"
       - "scripts/run_trusted_research_real.py"
       - "tests/test_resilient_absorption.py"
+    completed_evidence:
+      - "预登记 d4c8c80 早于实现 135e354 与真实运行；机制参数搜索为 none"
+      - "v2rabsorb20260829r1：done/DONE/100/FAIL，candidate_eligible=false，can_claim_edge=false"
+      - "IS -10.6339%；OOS +14.9388%、PF 1.4173、回撤 6.4258%；2×成本 +10.2685%"
+      - "PBO=0.571、DSR=0.858757、MinTRL coverage=0.668、嵌套正收益 2/5"
+      - "195 条机制接受信号审计哈希 f15a32233314997f5bd6b6866a837197da7eb44bd4dea566e9a3b3fe155f69b4"
+      - "严格质量门 PASS：Ruff、Mypy、strict architecture、956 offline tests、frontend build"
   V2-P8-FINAL-ACCEPTANCE:
     status: blocked
     work_package: WP80
