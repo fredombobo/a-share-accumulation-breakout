@@ -58,6 +58,8 @@ describe('专业回测工作台', () => {
 
     render(<ProfessionalBacktest />)
     await screen.findByRole('heading', { name: '多参数专业回测' })
+    expect(screen.getByLabelText('交易日采样间隔')).toHaveValue(10)
+    expect(screen.getByText(/每隔 N 个交易日生成一个研究决策截面/)).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
 
     await waitFor(() => expect(previewSpy).toHaveBeenCalledOnce())

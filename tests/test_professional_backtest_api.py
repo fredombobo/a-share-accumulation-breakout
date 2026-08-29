@@ -93,5 +93,7 @@ def test_professional_preview_and_ai_api_fail_with_structured_reasons(tmp_path: 
     assert oversized.json()["detail"]["code"] == "COMBINATION_LIMIT_EXCEEDED"
     assert local_review.status_code == 200
     assert local_review.json()["boundary"]["read_only"] is True
+    assert local_review.json()["generation"]["provider"] == "deepseek"
+    assert isinstance(local_review.json()["generation"]["available"], bool)
     assert invalid_provider.status_code == 422
     assert invalid_provider.json()["detail"]["code"] == "UNKNOWN_AI_PROVIDER"

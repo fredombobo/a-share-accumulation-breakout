@@ -473,7 +473,11 @@ export default function ProfessionalBacktest() {
             </div>
             <div className="compact-fields">
               <div className="field"><label htmlFor="max-codes">最多股票数</label><input id="max-codes" className="input num" type="number" min="20" max="1500" value={maxCodes} onChange={(event) => mutate(() => setMaxCodes(Number(event.target.value)))} /></div>
-              <div className="field"><label htmlFor="sample-step">采样步长</label><input id="sample-step" className="input num" type="number" min="1" max="60" value={sampleStep} onChange={(event) => mutate(() => setSampleStep(Number(event.target.value)))} /></div>
+              <div className="field">
+                <label htmlFor="sample-step">交易日采样间隔</label>
+                <input id="sample-step" className="input num" type="number" min="1" max="60" value={sampleStep} onChange={(event) => mutate(() => setSampleStep(Number(event.target.value)))} />
+                <small>每隔 N 个交易日生成一个研究决策截面；越小越慢，默认 10。</small>
+              </div>
             </div>
           </section>
           <section className="condition-section">

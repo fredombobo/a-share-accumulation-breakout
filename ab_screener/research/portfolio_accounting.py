@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -162,6 +162,8 @@ def simulate_portfolio(
     *,
     policy: PortfolioPolicy,
     rules: Mapping[str, InstrumentRule] | None = None,
+    cancellation_checkpoint: Callable[[], None] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Run exact shared-account simulation over frozen candidate trades."""
     normalized = _normalize_trades(trades)
@@ -204,7 +206,16 @@ def simulate_portfolio(
     min_cash_fen = cash_fen
     max_gross_bps = 0
 
-    for trade_date in relevant_calendar:
+    calendar_count = len(relevant_calendar)
+    for calendar_index, trade_date in enumerate(relevant_calendar, start=1):
+        if cancellation_checkpoint is not None:
+            cancellation_checkpoint()
+        if progress_callback is not None and (
+            calendar_index == 1
+            or calendar_index == calendar_count
+            or calendar_index % 20 == 0
+        ):
+            progress_callback(calendar_index, calendar_count)
         day_start_equity = _equity_at_price(cash_fen, positions, bars, trade_date, price_field="open_micro")
         cash_fen = _process_exits(
             trade_date,

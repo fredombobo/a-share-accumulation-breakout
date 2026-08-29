@@ -85,6 +85,35 @@ def test_equity_is_cash_plus_market_value_and_deterministic() -> None:
     assert metrics["portfolio_model_version"] == PORTFOLIO_MODEL_VERSION
 
 
+def test_portfolio_reports_progress_and_honors_cancellation_checkpoint() -> None:
+    progress: list[tuple[int, int]] = []
+    result = simulate_portfolio(
+        [_trade("000001.SZ", 13)],
+        _market(),
+        policy=PortfolioPolicy(),
+        progress_callback=lambda done, total: progress.append((done, total)),
+    )
+    assert result["portfolio_status"] == "PASS"
+    assert progress[0][0] == 1
+    assert progress[-1][0] == progress[-1][1]
+
+    checkpoints = 0
+
+    def cancel_during_accounting() -> None:
+        nonlocal checkpoints
+        checkpoints += 1
+        if checkpoints == 2:
+            raise RuntimeError("cancel checkpoint reached")
+
+    with pytest.raises(RuntimeError, match="cancel checkpoint reached"):
+        simulate_portfolio(
+            [_trade("000001.SZ", 13)],
+            _market(),
+            policy=PortfolioPolicy(),
+            cancellation_checkpoint=cancel_during_accounting,
+        )
+
+
 def test_zero_volume_buy_is_rejected_without_changing_cash() -> None:
     policy = PortfolioPolicy()
     result = simulate_portfolio(

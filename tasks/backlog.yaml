@@ -401,7 +401,7 @@ tasks:
 
   - id: PROFESSIONAL-BACKTEST-AI-REVIEW
     title: 收敛为每日选股、专业网格回测与个股 AI 证据评测
-    status: in_progress
+    status: complete
     work_package: WP91
     phase: product-focus
     dependencies:
@@ -418,3 +418,9 @@ tasks:
       - 每日候选具有只读 AI 证据评测并可在无模型时本地降级
       - OOS/WF/基线/成本压力和候选边界完整披露
       - 全量质量门与 8001 浏览器验收通过
+    completion_note: >
+      8001 已发布每日选股、个股详情和专业多参数回测；默认 144 组参数可先预览，
+      股票池/窗口/成本身份冻结。真实任务 probt-d0b44dbb45b0 完成 IS/OOS/WF、
+      随机与 MA20/60 基线及 2x 成本压力，并诚实返回 EXPLORATORY_WEAK、
+      candidate_eligible=false。个股本地 AI 证据评测只读可用，外部模型未配置时
+      按钮前置禁用。严格质量门和 8001 浏览器验收通过；总机构/实盘闸门仍 BLOCKED。

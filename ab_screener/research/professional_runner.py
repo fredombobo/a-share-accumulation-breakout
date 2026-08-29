@@ -116,8 +116,28 @@ def execute_professional_run(
     signal_groups: list[dict[str, Any]] = expanded["signal_combinations"]
     exit_groups: list[dict[str, Any]] = expanded["exit_combinations"]
     for index, signal_params in enumerate(signal_groups):
+        group_number = index + 1
         base_pct = 5 + int(56 * index / max(1, len(signal_groups)))
         next_pct = 5 + int(56 * (index + 1) / max(1, len(signal_groups)))
+        middle_pct = base_pct + max(1, (next_pct - base_pct) // 2)
+
+        def window_progress(
+            window_label: str,
+            start_pct: int,
+            end_pct: int,
+            current_group: int = group_number,
+        ) -> Callable[[str, int], None]:
+            def callback(message: str, local_pct: int) -> None:
+                bounded = max(0, min(100, int(local_pct)))
+                overall = start_pct + int((end_pct - start_pct) * bounded / 100)
+                progress(
+                    "GRID",
+                    overall,
+                    f"参数组 {current_group}/{len(signal_groups)} · {window_label} · {message}",
+                )
+
+            return callback
+
         progress(
             "GRID",
             base_pct,
@@ -132,7 +152,7 @@ def execute_professional_run(
             max_codes=len(snapshot.universe),
             horizon=horizon,
             workers=None,
-            progress_cb=None,
+            progress_cb=window_progress("IS", base_pct, middle_pct),
             cancel_check=cancel_check,
             signal_kwargs=signal_params,
             portfolio_policy=policy,
@@ -147,7 +167,7 @@ def execute_professional_run(
             max_codes=len(snapshot.universe),
             horizon=horizon,
             workers=None,
-            progress_cb=None,
+            progress_cb=window_progress("OOS", middle_pct, next_pct),
             cancel_check=cancel_check,
             signal_kwargs=signal_params,
             portfolio_policy=policy,

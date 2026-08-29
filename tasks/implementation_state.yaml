@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-29T18:34:52+08:00"
+updated_at: "2026-08-29T22:41:08+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -17,8 +17,9 @@ protected_user_docs:
 ready_now: []
 tasks:
   PROFESSIONAL-BACKTEST-AI-REVIEW:
-    status: in_progress
+    status: complete
     started_at: "2026-08-29T19:05:00+08:00"
+    completed_at: "2026-08-29T22:41:08+08:00"
     work_package: WP91
     dependencies:
       - LEAN-PRODUCT-PRUNING
@@ -26,6 +27,7 @@ tasks:
       - V2-P7.2-RESEARCH-PIT-READER
       - V2-P3-RESEARCH-GOVERNANCE
     plan: docs/PROFESSIONAL-BACKTEST-AI-REVIEW-2026-08-29.md
+    result: docs/ACCEPTANCE-PROFESSIONAL-BACKTEST-AI-2026-08-29.md
     planned_files:
       - "ab_screener/research/professional_grid.py"
       - "ab_screener/research/condition_plugins.py"
@@ -35,7 +37,14 @@ tasks:
       - "web/frontend/src/pages/ProfessionalBacktest.tsx"
       - "web/frontend/src/pages/Overview.tsx"
       - "web/frontend/src/pages/StockDetail.tsx"
-    note: "只推进 accumulation_breakout/8001；不恢复旧单参数页面，不启用纸面或实盘。"
+    note: "accumulation_breakout/8001 已完成每日选股 + 专业回测 + 只读 AI 证据评测；旧单参数、纸面与实盘保持关闭。"
+    completed_evidence:
+      - "8001 OpenAPI 36 条：backtest=7、ai-review=2、paper=0、lab=0；LIVE_TRADING_ENABLED=false"
+      - "真实任务 probt-d0b44dbb45b0：DONE/100，IS/OOS/WF/双基线/2x 成本完成，报告 SHA-256 4ff135fc4bdef4be6a940bf9e18dd1021581e9ab34b212dce23996bf28934fc7"
+      - "结论 EXPLORATORY_WEAK；candidate_eligible=false；can_claim_edge=false；未修改生产策略或每日选股"
+      - "单股 603587.SH 本地 AI 评测返回证据/风险/时点；外部模型未配置时按钮禁用且浏览器零错误"
+      - "严格质量门：Ruff、Mypy 25 files、strict architecture、967 offline Pytest、6 Vitest、production build PASS"
+      - "Chromium 真实 8001 验收：专业预览、AI 面板、旧路由重定向、390px 无溢出、0 console/page/request errors"
   LEAN-PRODUCT-PRUNING:
     status: complete
     work_package: WP90

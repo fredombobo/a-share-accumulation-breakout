@@ -24,11 +24,26 @@ def _signal(db_path: str, ts_code: str) -> tuple[dict[str, Any] | None, str]:
     return None, ""
 
 
+def _with_generation_capability(review: dict[str, Any]) -> dict[str, Any]:
+    """Expose model capability without leaking configuration or credentials."""
+    generation_available = has_provider("deepseek")
+    review["generation"] = {
+        "available": generation_available,
+        "provider": "deepseek",
+        "message": (
+            "可按需生成外部模型文字解读"
+            if generation_available
+            else "未配置外部模型；本地证据评测已可独立使用"
+        ),
+    }
+    return review
+
+
 @router.get("/{ts_code}")
 def local_review(ts_code: str, db_path: str = Depends(get_db_path)) -> dict[str, Any]:
     """Read-only deterministic review; never invokes a model and never writes."""
     try:
-        return local_evidence_review(db_path, ts_code)
+        return _with_generation_capability(local_evidence_review(db_path, ts_code))
     except AIInsightError as exc:
         raise HTTPException(
             status_code=404,
@@ -69,4 +84,7 @@ def generate_review(
             status_code=503,
             detail={"code": "AI_PROVIDER_FAILED", "message": str(result.get("reason") or "AI 调用失败"), "details": {}, "retryable": True},
         )
-    return {"review": local_evidence_review(db_path, code), "generated": result}
+    return {
+        "review": _with_generation_capability(local_evidence_review(db_path, code)),
+        "generated": result,
+    }

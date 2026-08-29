@@ -1014,7 +1014,8 @@
   .evidence-grid article small { color: var(--faint); font-family: var(--font-num); }
   .evidence-empty { padding: 12px 0; color: var(--muted); border-top: 1px solid var(--border); }
   .ai-review-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--border); }
-  .ai-review-actions > span { color: var(--muted); font-size: 11px; font-family: var(--font-num); }
+  .ai-review-actions > span { display: grid; gap: 3px; color: var(--muted); font-size: 11px; font-family: var(--font-num); }
+  .ai-review-actions > span small { color: var(--muted-2); font-family: var(--font-sans); }
   .ai-narrative { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); background: var(--surface-2); }
   .ai-narrative summary { cursor: pointer; color: var(--accent); font-weight: 650; }
   .ai-narrative div { margin-top: 9px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }

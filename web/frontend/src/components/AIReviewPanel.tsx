@@ -47,6 +47,7 @@ export default function AIReviewPanel({ tsCode }: { tsCode: string }) {
     : review?.verdict === 'MIXED_EVIDENCE'
       ? 'warn'
       : 'muted'
+  const generationAvailable = review?.generation?.available === true
 
   return (
     <section id="ai-review" className="card ai-review section-gap" aria-live="polite">
@@ -81,9 +82,24 @@ export default function AIReviewPanel({ tsCode }: { tsCode: string }) {
             </div>
           </div>
           <div className="ai-review-actions">
-            <span>证据时点 {review.as_of || 'n/a'} · 信号时点 {review.signal_date || 'n/a'}</span>
-            <button className="btn" type="button" onClick={generate} disabled={generating}>
-              {generating ? '正在生成...' : review.external_ai ? '重新生成 AI 文字解读' : '生成 AI 文字解读'}
+            <span>
+              证据时点 {review.as_of || 'n/a'} · 信号时点 {review.signal_date || 'n/a'}
+              <small>{review.generation?.message || '本地证据评测已可独立使用'}</small>
+            </span>
+            <button
+              className="btn"
+              type="button"
+              onClick={generate}
+              disabled={generating || !generationAvailable}
+              title={generationAvailable ? '仅解释现有证据，不改变选股结果' : review.generation?.message}
+            >
+              {generating
+                ? '正在生成...'
+                : !generationAvailable
+                  ? 'AI 文字解读未配置'
+                  : review.external_ai
+                    ? '重新生成 AI 文字解读'
+                    : '生成 AI 文字解读'}
             </button>
           </div>
           {review.external_ai?.ai_text && (

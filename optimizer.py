@@ -622,17 +622,44 @@ def run_grid(
     # 聚合统计
     rows = []
     combo_map = {param_id(c["strategy"], c): c for c in combos}
-    for pid, trades in results.items():
+    result_count = max(1, len(results))
+
+    def ensure_not_cancelled() -> None:
+        if _is_cancelled(cancel_check):
+            raise ResearchCancelled("用户取消")
+
+    if progress_cb:
+        progress_cb("信号重放完成，正在进行组合会计", 96)
+    for result_index, (pid, trades) in enumerate(results.items(), start=1):
+        ensure_not_cancelled()
         s = summarize(trades)
         if not s.get("n_trades"):
             continue
         trade_metrics = summarize_costed_trades(trades)
         row = {"param_id": pid, **combo_map[pid], **s, **trade_metrics}
         if portfolio_policy is not None and prepared_market is not None:
+            def accounting_progress(
+                day: int,
+                total: int,
+                current_index: int = result_index,
+            ) -> None:
+                if progress_cb:
+                    progress_cb(
+                        f"组合会计 {current_index}/{result_count} · 估值 {day}/{total}",
+                        96
+                        + int(
+                            3
+                            * ((current_index - 1) + day / max(1, total))
+                            / result_count
+                        ),
+                    )
+
             portfolio = simulate_portfolio(
                 trades,
                 prepared_market,
                 policy=portfolio_policy,
+                cancellation_checkpoint=ensure_not_cancelled,
+                progress_callback=accounting_progress,
             )
             row.update({f"trade_{key}": value for key, value in trade_metrics.items()})
             row.update(portfolio_gate_metrics(portfolio))
@@ -643,6 +670,8 @@ def run_grid(
                     raise PortfolioAccountingError("组合日收益与权益日期长度不一致")
                 row["_formal_daily_returns"] = dict(zip(dates, returns))
         rows.append(row)
+    if progress_cb:
+        progress_cb("组合会计完成", 99)
     df_out = pd.DataFrame(rows)
     if not df_out.empty:
         df_out = df_out[df_out["net_n_trades"] >= BT_MIN_TRADES]  # 统计功效门槛按实际成交计

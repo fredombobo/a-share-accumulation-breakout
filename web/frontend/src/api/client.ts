@@ -527,6 +527,11 @@ export interface AIReview {
     breakout_vol_ratio: number | null
   }
   external_ai: ExternalAIInsight | null
+  generation: {
+    available: boolean
+    provider: 'deepseek'
+    message: string
+  }
   boundary: {
     read_only: true
     changes_scan_or_signal: false
