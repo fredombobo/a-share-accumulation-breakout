@@ -380,7 +380,7 @@ tasks:
 
   - id: LEAN-PRODUCT-PRUNING
     title: 收敛为每日选股、个股详情与纸面仿真的最小产品
-    status: in_progress
+    status: complete
     work_package: WP90
     phase: product-simplification
     dependencies:
@@ -393,3 +393,8 @@ tasks:
       - 实验室、回测台和机构控制台退出 8001 发布产品
       - 正确性、安全、研究证据和纸面账本底座不删除
       - 全量质量门与浏览器核心闭环通过
+    completion_note: >
+      89d2a6b 已将发布面收敛为 3 类路由/2 个导航入口，8001 OpenAPI 由
+      102 收敛至 47，960 Pytest、4 Vitest、Ruff、Mypy、架构检查、生产构建和
+      浏览器验收全部通过。研究与安全底座保留离线，实盘保持关闭；机构七闸门仍
+      BLOCKED，不因产品精简而改判。

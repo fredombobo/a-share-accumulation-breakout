@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-29T00:21:00+08:00"
+updated_at: "2026-08-29T18:34:52+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -17,11 +17,18 @@ protected_user_docs:
 ready_now: []
 tasks:
   LEAN-PRODUCT-PRUNING:
-    status: in_progress
+    status: complete
     work_package: WP90
     plan: docs/LEAN-PRODUCT-PRUNING-2026-08-29.md
     started_at: "2026-08-29T18:07:28+08:00"
+    completed_at: "2026-08-29T18:34:52+08:00"
     note: "只收敛 8001 发布产品；不删除数据库、历史研究证据或安全底座。"
+    completed_evidence:
+      - "commit 89d2a6b：前端 14→3 类路由、侧栏 13→2、删除 4821 行发布面代码"
+      - "8001 OpenAPI 102→47；lab/backtest/logic/机构业务路径均未发布"
+      - "quality gate：Ruff/Mypy/architecture/960 Pytest/production build PASS"
+      - "Vitest 4 passed；真实浏览器主页/纸面/旧路由重定向 PASS，0 console/page/request errors"
+      - "product=accumulation_breakout；LIVE_TRADING_ENABLED=false；数据库与证据零删除"
   NINE_POINT_CLOSED_LOOP:
     status: complete
     work_package: historical
