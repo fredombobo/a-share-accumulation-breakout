@@ -377,3 +377,19 @@ tasks:
       - 独立审计可复跑关键命令与 hash
       - Agent 不得自行宣布 PERSONAL_INSTITUTIONAL_READY
       - 合并用户 STATUS/ROADMAP 修改，禁止覆盖
+
+  - id: LEAN-PRODUCT-PRUNING
+    title: 收敛为每日选股、个股详情与纸面仿真的最小产品
+    status: ready
+    work_package: WP90
+    phase: product-simplification
+    dependencies:
+      - WINDOWS_SCAN_PROGRESS_REPLACE
+      - V2-P2-LEDGER-PARITY
+      - V2-P6-DAG-AUDIT-BACKUP
+    plan: docs/LEAN-PRODUCT-PRUNING-2026-08-29.md
+    acceptance:
+      - 发布前端只有总览、个股详情、纸面交易三类路由
+      - 实验室、回测台和机构控制台退出 8001 发布产品
+      - 正确性、安全、研究证据和纸面账本底座不删除
+      - 全量质量门与浏览器核心闭环通过

@@ -14,8 +14,14 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now: []
+ready_now:
+  - LEAN-PRODUCT-PRUNING
 tasks:
+  LEAN-PRODUCT-PRUNING:
+    status: ready
+    work_package: WP90
+    plan: docs/LEAN-PRODUCT-PRUNING-2026-08-29.md
+    note: "只收敛 8001 发布产品；不删除数据库、历史研究证据或安全底座。"
   NINE_POINT_CLOSED_LOOP:
     status: complete
     work_package: historical
