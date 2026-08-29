@@ -13,11 +13,7 @@ _COPY: dict[str, tuple[str, str, str, str | None]] = {
     "SYNC_DATA": ("行情需要更新", "本地行情还没有覆盖应完成的最新交易日。", "同步最新行情", None),
     "WAIT_SCAN": ("扫描正在运行", "不需要再次启动；系统会保留当前进度。", "查看扫描进度", "/"),
     "RUN_SCAN": ("行情已就绪", "今天还没有对应数据版本的选股结果。", "开始今日扫描", "/"),
-    "CREATE_ACCOUNT": ("扫描已完成", "创建纸面账户后才能完成模拟成交和对账。", "创建纸面账户", "/paper"),
-    "RESOLVE_RECONCILIATION": ("对账存在异常", "先处理账务差异，系统不会继续生成新交易。", "处理对账异常", "/paper?tab=reconciliation"),
-    "REVIEW_DRAFT": ("有订单待确认", "核对价格、费用和风险后再确认。", "核对待确认订单", "/paper?tab=orders"),
-    "RUN_SETTLEMENT": ("可以执行日结", "撮合、估值、信号快照和对账将使用同一交易日。", "执行今日闭环", "/paper"),
-    "DAILY_COMPLETE": ("今日闭环已完成", "数据、扫描、纸面日结和对账均已有记录。", "查看今日结果", "/paper"),
+    "DAILY_COMPLETE": ("今日选股已完成", "行情和扫描结果已就绪，可查看候选证据或进入专业回测。", "查看今日候选", "/"),
 }
 
 
@@ -77,22 +73,6 @@ def build_today_guide(
             latest_market = str(latest_row[0]) if latest_row and latest_row[0] else None
         expected_market = _expected_market_date(conn, now)
 
-        unresolved = None
-        if _table_exists(conn, "pt_reconciliation"):
-            unresolved = conn.execute(
-                "SELECT rec_id,run_date,result,severity,status FROM pt_reconciliation "
-                "WHERE status IN ('OPEN','ESCALATED') AND result!='OK' "
-                "ORDER BY rec_id DESC LIMIT 1"
-            ).fetchone()
-        if unresolved is not None:
-            return _response(
-                "RESOLVE_RECONCILIATION",
-                trade_date=str(unresolved["run_date"]),
-                reconciliation_id=int(unresolved["rec_id"]),
-                latest_market_date=latest_market,
-                expected_market_date=expected_market,
-            )
-
         if latest_market is None or (expected_market and latest_market < expected_market):
             return _response(
                 "SYNC_DATA",
@@ -132,53 +112,9 @@ def build_today_guide(
                 expected_market_date=expected_market,
             )
 
-        account = None
-        if _table_exists(conn, "pt_account"):
-            account = conn.execute(
-                "SELECT account_id FROM pt_account WHERE account_id=1 AND status='ACTIVE'"
-            ).fetchone()
-        if account is None:
-            return _response(
-                "CREATE_ACCOUNT",
-                trade_date=latest_market,
-                scan_run_id=str(scan["run_id"]),
-                latest_market_date=latest_market,
-                expected_market_date=expected_market,
-            )
-
-        pending = conn.execute(
-            "SELECT order_id,state,eligible_trade_date FROM pt_order "
-            "WHERE state IN ('DRAFT','CONFIRMED','QUEUED') "
-            "ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
-        if pending is not None and str(pending["state"]) == "DRAFT":
-            return _response(
-                "REVIEW_DRAFT",
-                order_id=str(pending["order_id"]),
-                trade_date=str(pending["eligible_trade_date"] or latest_market),
-                latest_market_date=latest_market,
-                expected_market_date=expected_market,
-            )
-
-        cycle = conn.execute(
-            "SELECT cycle_id,phase FROM pt_cycle WHERE run_date=? "
-            "ORDER BY started_at DESC LIMIT 1",
-            (latest_market,),
-        ).fetchone()
-        if pending is not None or cycle is None or str(cycle["phase"]) != "DONE":
-            return _response(
-                "RUN_SETTLEMENT",
-                order_id=str(pending["order_id"]) if pending is not None else None,
-                trade_date=str(pending["eligible_trade_date"] or latest_market)
-                if pending is not None else latest_market,
-                latest_market_date=latest_market,
-                expected_market_date=expected_market,
-            )
-
         return _response(
             "DAILY_COMPLETE",
             trade_date=latest_market,
-            cycle_id=str(cycle["cycle_id"]),
             scan_run_id=str(scan["run_id"]),
             latest_market_date=latest_market,
             expected_market_date=expected_market,

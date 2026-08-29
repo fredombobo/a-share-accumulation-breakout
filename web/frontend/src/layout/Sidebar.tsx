@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { fetchPlatformStatus, type PlatformStatus } from '../api/platform'
-import { IcoOverview, IcoPaper } from '../components/Icons'
+import { IcoLayers, IcoOverview } from '../components/Icons'
 
 const items = [
   { path: '/', label: '每日选股', hint: '扫描 · 候选 · 资金', Icon: IcoOverview },
-  { path: '/paper', label: '纸面仿真', hint: '持仓 · 成交 · 对账', Icon: IcoPaper },
+  { path: '/backtest', label: '专业回测', hint: '多参数 · OOS · 成本', Icon: IcoLayers },
 ]
 
 const readinessCopy: Record<string, string> = {
@@ -32,7 +32,7 @@ export default function Sidebar() {
   }, [])
 
   let active = '/'
-  if (loc.pathname.startsWith('/paper')) active = '/paper'
+  if (loc.pathname.startsWith('/backtest')) active = '/backtest'
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -69,8 +69,8 @@ export default function Sidebar() {
           </div>
         )}
         <b>每日</b> 更新 → 扫描 → 看证据<br />
-        <b>仿真</b> 预览 → 成交 → 对账<br />
-        <span style={{ display: 'block', marginTop: 6, opacity: 0.8 }}>只做纸面仿真，不连接券商</span>
+        <b>回测</b> 参数空间 → OOS → 稳健性<br />
+        <span style={{ display: 'block', marginTop: 6, opacity: 0.8 }}>研究工具，不连接券商，不自动交易</span>
       </div>
     </aside>
   )

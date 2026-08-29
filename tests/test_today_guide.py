@@ -11,7 +11,6 @@ from ab_screener.api.deps import get_db_path
 from ab_screener.application.today_guide import build_today_guide
 from ab_screener.data.migrations_v2 import run_v2_migrations
 from local_store import LocalStore
-from paper_trading.account import create_account
 from paper_trading.migrations import run_migrations
 from web import backend_app as backend
 
@@ -79,33 +78,14 @@ def test_current_data_without_scan_recommends_scan(tmp_path: Path) -> None:
     assert guide["next_action"] == "RUN_SCAN"
 
 
-def test_scan_complete_then_recommends_account_or_settlement(tmp_path: Path) -> None:
-    db = tmp_path / "paper.db"
+def test_scan_complete_recommends_viewing_daily_candidates(tmp_path: Path) -> None:
+    db = tmp_path / "daily-complete.db"
     _setup(db)
     _add_successful_scan(db)
-
-    without_account = build_today_guide(db, now=datetime(2026, 8, 7, 18, 0, tzinfo=_TZ))
-    assert without_account["next_action"] == "CREATE_ACCOUNT"
-
-    create_account(db, 1_000_000)
-    with_account = build_today_guide(db, now=datetime(2026, 8, 7, 18, 0, tzinfo=_TZ))
-    assert with_account["next_action"] == "RUN_SETTLEMENT"
-
-
-def test_open_reconciliation_blocks_other_daily_actions(tmp_path: Path) -> None:
-    db = tmp_path / "reconciliation.db"
-    _setup(db)
-    _add_successful_scan(db)
-    create_account(db, 1_000_000)
-    with sqlite3.connect(db) as conn:
-        conn.execute(
-            "INSERT INTO pt_reconciliation(run_date,result,diff_json,severity,status,checked_at) "
-            "VALUES ('20260807','DIFF','[]','CRITICAL','OPEN','t')"
-        )
 
     guide = build_today_guide(db, now=datetime(2026, 8, 7, 18, 0, tzinfo=_TZ))
-
-    assert guide["next_action"] == "RESOLVE_RECONCILIATION"
+    assert guide["next_action"] == "DAILY_COMPLETE"
+    assert guide["href"] == "/"
 
 
 def test_today_api_returns_the_server_derived_action(tmp_path: Path) -> None:

@@ -64,18 +64,6 @@ export async function request<T>(path: string, init?: RequestInit & ReqOpts): Pr
   }
 }
 
-export const newIdempotencyKey = () =>
-  globalThis.crypto?.randomUUID?.() || `paper-${Date.now()}-${Math.random().toString(16).slice(2)}`
-
-export function paperWrite<T>(path: string, body: unknown, opts?: ReqOpts): Promise<T> {
-  return request<T>(path, {
-    ...opts,
-    method: 'POST',
-    headers: { 'Idempotency-Key': newIdempotencyKey() },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
-}
-
 export interface KlinePoint {
   trade_date: string
   open: number
@@ -190,10 +178,6 @@ export type TodayAction =
   | 'SYNC_DATA'
   | 'WAIT_SCAN'
   | 'RUN_SCAN'
-  | 'CREATE_ACCOUNT'
-  | 'RESOLVE_RECONCILIATION'
-  | 'REVIEW_DRAFT'
-  | 'RUN_SETTLEMENT'
   | 'DAILY_COMPLETE'
 
 export interface TodayGuide {
@@ -321,45 +305,24 @@ export const api = {
   cancelScan: (taskId: string, opts?: ReqOpts) =>
     request<{ status: string; stage: string }>(`/scan/${taskId}/cancel`, { ...opts, method: 'POST' }),
 
-  // ── 纸面交易 ──
-  paperAccount: (opts?: ReqOpts) => request<PaperAccount>('/paper/account', opts),
-  paperCreateAccount: (initialCashFen: number, opts?: ReqOpts) =>
-    paperWrite<PaperAccount>('/paper/account', { initial_cash_fen: String(initialCashFen) }, opts),
-  paperDashboard: (opts?: ReqOpts) => request<PaperDashboard>('/paper/dashboard', opts),
-  paperTradingCalendar: (start: string, end: string, opts?: ReqOpts) =>
-    request<PaperTradingCalendar>(`/paper/trading-calendar?start=${start}&end=${end}`, opts),
-  paperReviewOrder: (body: PaperOrderReviewRequest, opts?: ReqOpts) =>
-    request<PaperOrderReview>('/paper/orders/review', {
-      ...opts, method: 'POST', body: JSON.stringify(body),
+  // ── 专业多参数回测 ──
+  backtestCatalog: (opts?: ReqOpts) => request<BacktestCatalog>('/backtest/catalog', opts),
+  backtestUniverse: (industry?: string, opts?: ReqOpts) =>
+    request<BacktestUniverseCatalog>(`/backtest/universe${industry ? `?industry=${encodeURIComponent(industry)}` : ''}`, opts),
+  backtestPreview: (body: BacktestRequest, opts?: ReqOpts) =>
+    request<BacktestPreview>('/backtest/preview', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+  backtestRun: (body: BacktestRequest, opts?: ReqOpts) =>
+    request<{ task_id: string; status: string; cached: boolean }>('/backtest/run', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+  backtestLatest: (opts?: ReqOpts) => request<{ task: BacktestTask | null }>('/backtest/latest', opts),
+  backtestStatus: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/status/${encodeURIComponent(taskId)}`, opts),
+  backtestCancel: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/${encodeURIComponent(taskId)}/cancel`, { ...opts, method: 'POST' }),
+
+  // ── 个股 AI 证据评测 ──
+  aiReview: (tsCode: string, opts?: ReqOpts) => request<AIReview>(`/ai-review/${encodeURIComponent(tsCode)}`, opts),
+  aiReviewGenerate: (tsCode: string, provider = 'deepseek', opts?: ReqOpts) =>
+    request<{ review: AIReview; generated: ExternalAIInsight }>(`/ai-review/${encodeURIComponent(tsCode)}/generate`, {
+      ...opts, method: 'POST', body: JSON.stringify({ provider }),
     }),
-  paperPositions: (opts?: ReqOpts) => request<{ positions: PaperPosition[] }>('/paper/positions', opts),
-  paperOrders: (state?: string, opts?: ReqOpts) =>
-    request<{ orders: PaperOrder[] }>(`/paper/orders${state ? `?state=${state}` : ''}`, opts),
-  paperCreateDraft: (body: Record<string, unknown>, opts?: ReqOpts) =>
-    paperWrite<PaperOrder>('/paper/orders/drafts', body, opts),
-  paperConfirmOrder: (orderId: string, opts?: ReqOpts) =>
-    paperWrite<PaperOrder>(`/paper/orders/${orderId}/confirm`, undefined, opts),
-  paperCancelOrder: (orderId: string, opts?: ReqOpts) =>
-    paperWrite<PaperOrder>(`/paper/orders/${orderId}/cancel`, undefined, opts),
-  paperFills: (limit = 50, opts?: ReqOpts) => request<{ fills: PaperFill[] }>(`/paper/fills?limit=${limit}`, opts),
-  paperRunCycle: (tradeDate: string, opts?: ReqOpts) =>
-    paperWrite<PaperCycleResult>('/paper/cycles/run', { trade_date: tradeDate }, opts),
-  paperCycleStatus: (tradeDate: string, opts?: ReqOpts) =>
-    request<{ trade_date: string; phase: string | null; blocked_reason?: string }>(`/paper/cycles/${tradeDate}`, opts),
-  paperImportPreview: (path: string, opts?: ReqOpts) =>
-    paperWrite<PaperImportPreview>('/paper/import/preview', { path }, opts),
-  paperImportCommit: (path: string, opts?: ReqOpts) =>
-    paperWrite<{ imported: number; skipped_existing: boolean; positions: unknown[] }>('/paper/import/commit', { path }, opts),
-  paperReconciliation: (tradeDate?: string, opts?: ReqOpts) =>
-    request<{ items: Record<string, unknown>[] }>(tradeDate ? `/paper/reconciliation?trade_date=${tradeDate}` : '/paper/reconciliation', opts),
-  paperRunReconciliation: (tradeDate: string, opts?: ReqOpts) =>
-    paperWrite<{ result: string; diffs: unknown[] }>('/paper/reconciliation/run', { trade_date: tradeDate }, opts),
-  paperCorporateActions: (status?: string, opts?: ReqOpts) =>
-    request<{ items: PaperCorporateAction[] }>(`/paper/corporate-actions${status ? `?status=${status}` : ''}`, opts),
-  paperApplyCorporateAction: (actionId: number, opts?: ReqOpts) =>
-    paperWrite<{ action_id: number; status: string }>(`/paper/corporate-actions/${actionId}/apply`, undefined, opts),
-  paperGates: (opts?: ReqOpts) => request<Record<string, unknown>>('/paper/gates/status', opts),
-  releaseReadiness: (opts?: ReqOpts) => request<ReleaseReadiness>('/release/readiness', opts),
 
   // 最新交易日资金热力图；top 表示流入、流出每个方向各取多少项。
   moneyHeatmap: (top = 10, opts?: ReqOpts) => request<MoneyHeatmapResp>(`/money-heatmap?top=${top}`, opts),
@@ -386,214 +349,188 @@ export interface MoneyHeatmapResp {
   items: { name: string; value: number; net_wan: number }[]
 }
 
-// ── 纸面交易（paper trading）──
+// ── 专业回测 ──
+export type ParameterMode = 'fixed' | 'range' | 'values'
+export type ParameterSpec =
+  | { mode: 'fixed'; value: number | boolean }
+  | { mode: 'range'; start: number; stop: number; step: number }
+  | { mode: 'values'; values: (number | boolean)[] }
 
-export interface PaperAccount {
-  account_id: number
-  initial_cash_fen: number
-  status: string
-  config_version: number
+export interface BacktestParameterDefinition {
+  key: string
+  title: string
+  group: 'signal' | 'exit'
+  value_type: 'integer' | 'number' | 'boolean'
+  minimum: number | null
+  maximum: number | null
+  default: ParameterSpec
+  description: string
+}
+
+export interface BacktestCatalog {
+  version: string
+  max_combinations: number
+  parameters: BacktestParameterDefinition[]
+  conditions: {
+    id: string
+    version: string
+    title: string
+    default_enabled: boolean
+    production_ready: boolean
+    status: string
+    dataset?: { available: boolean; rows: number; codes?: number; earliest?: string; latest?: string }
+  }[]
+  research_boundary: string
+  paper_trading_enabled: false
+  live_trading_enabled: false
+}
+
+export interface BacktestUniverseCatalog {
+  classification_mode: string
+  classification_note: string
+  industries: { name: string; count: number }[]
+  stocks: { ts_code: string; name: string; industry: string }[]
+  stock_count: number
+}
+
+export interface BacktestRequest {
+  strategy: 'A'
+  sample_step: number
+  max_codes: number
+  parameters: Record<string, ParameterSpec>
+  universe: { industries: string[]; codes: string[] }
+  conditions: { id: string; enabled: boolean; params?: Record<string, number> }[]
+  windows?: { mode: 'auto' }
+}
+
+export interface PreparedBacktestRequest extends Omit<BacktestRequest, 'windows'> {
+  contract_version: string
+  parameter_space: {
+    count: number
+    sha256: string
+    horizon: number
+    signal_group_count: number
+    exit_group_count: number
+    invalid_signal_combinations: number
+  }
+  universe: BacktestRequest['universe'] & {
+    source: string
+    count: number
+    sha256: string
+    classification_mode: string
+    classification_note: string
+  }
+  windows: {
+    mode: string
+    label?: string
+    is: [string, string]
+    oos: [string, string]
+    wf: { train_start: string; train_end: string; test_start: string; test_end: string }[]
+    n_dates: number
+    earliest?: string
+    latest?: string
+  }
+  input_hash: string
+}
+
+export interface BacktestPreview {
+  can_run: boolean
+  prepared: PreparedBacktestRequest
+  estimated_work: { combinations: number; stocks: number; sample_step: number; note: string }
+}
+
+export interface BacktestMetrics {
+  net_n_trades?: number
+  net_win_rate?: number | null
+  net_avg_return?: number | null
+  net_profit_factor?: number | null
+  net_max_drawdown?: number | null
+  portfolio_status?: string | null
+  portfolio_total_return?: number | null
+  portfolio_max_drawdown?: number | null
+  evidence_complete?: boolean
+}
+
+export interface BacktestLeaderboardRow {
+  param_id: string
+  signal: Record<string, number | boolean>
+  exit: Record<string, number>
+  is: BacktestMetrics
+  oos: BacktestMetrics
+}
+
+export interface BacktestResult {
+  verdict: string
+  verdict_label: string
+  verdict_reasons?: string[]
+  candidate_eligible: false
+  can_claim_edge: false
+  request: PreparedBacktestRequest
+  leaderboard: BacktestLeaderboardRow[]
+  selected: BacktestLeaderboardRow | null
+  evaluated_combinations?: number
+  wf: { evidence_complete?: boolean; wf_pass?: boolean; oos_mean_pf?: number | null } | null
+  baselines: Record<string, BacktestMetrics & { baseline?: string }> | null
+  cost_stress: { multiplier: string; metrics: BacktestMetrics } | null
+  warnings: string[]
+  report_markdown?: string
+}
+
+export interface BacktestTask {
+  task_id: string
+  research_run_id: string
+  research_mode: string
+  status: 'pending' | 'running' | 'cancelling' | 'done' | 'error' | 'cancelled' | 'interrupted'
+  phase: string
+  progress: number
+  message: string
+  request: PreparedBacktestRequest
+  result: BacktestResult | null
   created_at: string
   updated_at: string
-  cash_fen: number
 }
 
-export interface PaperPosition {
+// ── AI 证据评测 ──
+export interface AIReviewEvidence {
+  code: string
+  label: string
+  value?: string
+  as_of?: string
+}
+
+export interface ExternalAIInsight {
   ts_code: string
-  total_qty: number
-  sellable_qty: number
-  avg_cost_micro: number
+  signal_date: string
+  provider: string
+  ai_text: string
+  created_at?: string
+  cached?: boolean
 }
 
-export interface PaperOrder {
-  order_id: string
-  idempotency_key?: string
-  source?: string
+export interface AIReview {
   ts_code: string
-  side: string
-  qty: number
-  state: string
-  reserve_fen: number
-  reserved_qty?: number
-  signal_trade_date?: string | null
-  confirmed_at?: string | null
-  eligible_trade_date?: string | null
-  reject_reason: string | null
-  created_at: string
-}
-
-export interface PaperFill {
-  fill_id: string
-  order_id: string
-  ref_open_price_micro: number
-  fill_price_micro: number
-  qty: number
-  commission_fen: number
-  tax_fen: number
-  fill_model_version: string
-  quote_revision: string
-  filled_at: string
-}
-
-export interface PaperDashboard {
-  account: PaperAccount | null
-  equity: {
-    cash_fen: number
-    market_value_fen: number
-    total_equity_fen: number
-    positions: number
-  } | null
-  equity_curve?: {
-    trade_date: string
-    cash_fen: number
-    market_value_fen: number
-    total_asset_fen: number
-    realized_pnl_fen: number | null
-    unrealized_pnl_fen: number | null
-    drawdown_fen: number | null
-  }[]
-  risk?: {
-    gross_exposure_limit_pct: string
-    cash_buffer_pct: string
-    daily_buy_limit_pct: string
-    single_instrument_limit_pct: string
-    reserved_cash_fen: number
-    reserved_sell_qty: number
+  name: string
+  industry: string
+  verdict: 'SUPPORTS_MONITORING' | 'MIXED_EVIDENCE' | 'INSUFFICIENT_EVIDENCE'
+  verdict_label: string
+  as_of: string | null
+  signal_date: string | null
+  evidence: AIReviewEvidence[]
+  risks: AIReviewEvidence[]
+  data: {
+    close: number | null
+    pe: number | null
+    pb: number | null
+    roe: number | null
+    box_high: number | null
+    box_days: number | null
+    breakout_vol_ratio: number | null
   }
-  unresolved_reconciliation_count?: number
-  paper_notice: string
-  guide?: PaperGuide
-}
-
-export type PaperNextAction =
-  | 'CREATE_ACCOUNT'
-  | 'REVIEW_DRAFT'
-  | 'RUN_SETTLEMENT'
-  | 'RESOLVE_RECONCILIATION'
-  | 'START_SIMULATION'
-  | 'SYNC_DATA'
-
-export interface PaperGuide {
-  next_action: PaperNextAction
-  blocker_codes: string[]
-  pending_order: Pick<PaperOrder, 'order_id' | 'source' | 'ts_code' | 'side' | 'qty' | 'state' | 'eligible_trade_date'> | null
-  earliest_simulation_date: string | null
-  latest_market_date: string | null
-  unresolved_reconciliation_count: number
-}
-
-export interface ReleaseReadiness {
-  status: 'PASS' | 'FAIL'
-  ready: boolean
-  blockers: { code: string; message: string }[]
-  identity: {
-    git_sha: string
-    worktree_clean: boolean
-    worktree_fingerprint: string
-    code_version: string
-    config_hash: string
-    db_fingerprint: string
+  external_ai: ExternalAIInsight | null
+  boundary: {
+    read_only: true
+    changes_scan_or_signal: false
+    triggers_order: false
+    message: string
   }
-  gate_report_sha256: string | null
-  gate_generated_at: string | null
-  checked_at: string
-}
-
-export interface PaperTradingCalendar {
-  open_dates: string[]
-  earliest_simulation_date: string | null
-  latest_market_date: string | null
-}
-
-export interface PaperOrderReviewRequest {
-  scope: 'ACCOUNT' | 'TUTORIAL'
-  side: 'BUY' | 'SELL'
-  mode: 'MANUAL_HISTORY'
-  ts_code: string
-  execution_trade_date: string
-  qty: number
-}
-
-export interface PaperOrderReview {
-  scope: 'ACCOUNT' | 'TUTORIAL'
-  persisted: false
-  can_confirm: boolean
-  instrument: { ts_code: string; inst_type: string; lot_size: number }
-  side: 'BUY' | 'SELL'
-  mode: 'MANUAL_HISTORY'
-  decision_date: string
-  execution_trade_date: string
-  quote: {
-    open: string; high: string; low: string; close: string
-    volume: string; revision: string
-  }
-  estimate: {
-    requested_qty: number
-    estimated_fill_qty: number
-    max_fill_qty: number
-    fill_price: string
-    notional_yuan: string
-    commission_yuan: string
-    tax_yuan: string
-    other_fee_yuan: string
-    reserve_yuan: string
-    cash_change_yuan: string
-    remaining_cash_yuan: string
-  }
-  checks: { code: string; label: string; passed: boolean; message: string }[]
-  assumptions: {
-    slippage_bps: number
-    commission_bps: number
-    sell_tax_bps: number
-    participation_limit_pct: string
-  }
-}
-
-export interface PaperCorporateAction {
-  action_id: number
-  ts_code: string
-  ex_date: string
-  kind: string
-  amount_fen: number | null
-  ratio: number | null
-  note: string | null
-  status: string
-  applied_at: string | null
-  adjustment_ref: string | null
-}
-
-export interface PaperImportPreview {
-  source_file: string
-  source_hash: string
-  total: number
-  valid_count: number
-  invalid_count: number
-  items: {
-    ts_code: string
-    name: string
-    cost: number | null
-    shares: number | null
-    stop_loss: number | null
-    opened_at: string
-    last_close: number | null
-    last_date: string | null
-    errors: string[]
-    valid: boolean
-  }[]
-  has_invalid: boolean
-}
-
-export interface PaperCycleResult {
-  filled_count: number
-  zero_fill_count: number
-  mark: {
-    cash_fen: number
-    market_value_fen: number
-    total_asset_fen: number
-    unrealized_pnl_fen: number
-    trade_date: string
-    holdings: { ts_code: string; qty: number; close: number; market_value_fen: number }[]
-  }
-  reconciliation: { result: string; diffs: unknown[] }
-  snapshot_ok: boolean
 }

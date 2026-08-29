@@ -7,7 +7,7 @@ describe('顶栏路由元数据', () => {
   it.each([
     ['/', '每日选股'],
     ['/stock/000001.SZ', '个股详情'],
-    ['/paper', '纸面仿真'],
+    ['/backtest', '专业回测'],
   ])('为 %s 返回对应标题', (path, expectedTitle) => {
     expect(pageMeta(path).title).toBe(expectedTitle)
   })

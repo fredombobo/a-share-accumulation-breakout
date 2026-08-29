@@ -401,7 +401,7 @@ tasks:
 
   - id: PROFESSIONAL-BACKTEST-AI-REVIEW
     title: 收敛为每日选股、专业网格回测与个股 AI 证据评测
-    status: ready
+    status: in_progress
     work_package: WP91
     phase: product-focus
     dependencies:

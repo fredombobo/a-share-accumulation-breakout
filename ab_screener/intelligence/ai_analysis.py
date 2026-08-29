@@ -562,3 +562,149 @@ def list_insights(db_path: str | Path, limit: int = 50) -> list[dict[str, Any]]:
 
 def get_insight(db_path: str | Path, ts_code: str, signal_date: str) -> dict[str, Any] | None:
     return _insight_cache(db_path, ts_code, signal_date)
+
+
+def local_evidence_review(db_path: str | Path, ts_code: str) -> dict[str, Any]:
+    """Deterministic, read-only review used even when no LLM is configured.
+
+    This function performs no writes and never calls an external provider.  Its
+    labels describe evidence completeness/consistency, not expected return.
+    """
+    code = str(ts_code).strip().upper()
+    candidates = get_a_pool_candidates(db_path, top_n=500)
+    candidate = next((item for item in candidates if item["ts_code"] == code), None)
+    signal = dict((candidate or {}).get("signal") or {})
+    kline = _kline(db_path, code, 250)
+    basic = _basic_info(db_path, code)
+    if basic is None and not kline:
+        raise AIInsightError(f"未知股票或无本地行情: {code}")
+    valuation = _latest_valuation(db_path, code) or {}
+    financial = _latest_financial(db_path, code) or {}
+    fund_flow = _latest_fund_flow(db_path, code) or {}
+    latest = kline[-1] if kline else {}
+    closes = [float(row["close"]) for row in kline if row.get("close") is not None]
+    ma20 = float(np.mean(closes[-20:])) if len(closes) >= 20 else None
+    close = float(latest["close"]) if latest.get("close") is not None else None
+    box_days = _number(signal.get("box_days"))
+    box_amp = _number(signal.get("box_amp"))
+    box_high = _number(signal.get("box_high"))
+    breakout_ratio = _number(
+        signal.get("breakout_vol_ratio")
+        if signal.get("breakout_vol_ratio") is not None
+        else signal.get("vol_ratio")
+    )
+    evidence: list[dict[str, Any]] = []
+    risks: list[dict[str, Any]] = []
+    if candidate:
+        evidence.append(
+            {
+                "code": "A_POOL_SIGNAL",
+                "label": "最新扫描为 A 池候选",
+                "value": f"总分 {float(candidate.get('total_score') or 0):.1f}",
+                "as_of": candidate.get("signal_date") or latest.get("trade_date"),
+            }
+        )
+    else:
+        risks.append(
+            {"code": "NO_CURRENT_A_SIGNAL", "label": "最新扫描中没有该股 A 池信号"}
+        )
+    if box_days is not None:
+        evidence.append(
+            {
+                "code": "BOX_STRUCTURE",
+                "label": "横盘结构",
+                "value": f"{int(box_days)} 日 / 振幅 {box_amp * 100:.1f}%" if box_amp is not None else f"{int(box_days)} 日",
+                "as_of": candidate.get("signal_date") if candidate else latest.get("trade_date"),
+            }
+        )
+    if breakout_ratio is not None:
+        evidence.append(
+            {
+                "code": "BREAKOUT_VOLUME",
+                "label": "突破量相对箱体均量",
+                "value": f"{breakout_ratio:.2f} 倍",
+                "as_of": candidate.get("signal_date") if candidate else latest.get("trade_date"),
+            }
+        )
+    if close is not None and ma20 is not None:
+        relation = close / ma20 - 1.0
+        target = evidence if relation >= 0 else risks
+        target.append(
+            {
+                "code": "MA20_RELATION",
+                "label": "现价相对 MA20",
+                "value": f"{relation * 100:+.2f}%",
+                "as_of": latest.get("trade_date"),
+            }
+        )
+    flow_value = _number(fund_flow.get("net_mf_amount"))
+    if flow_value is not None:
+        target = evidence if flow_value >= 0 else risks
+        target.append(
+            {
+                "code": "LATEST_MAIN_FLOW",
+                "label": "最新主力净额",
+                "value": f"{flow_value / 1e4:+.2f} 亿元",
+                "as_of": latest.get("trade_date"),
+            }
+        )
+    if close is not None and box_high is not None and close < box_high:
+        risks.append(
+            {
+                "code": "BACK_BELOW_BOX_HIGH",
+                "label": "最新收盘已回到箱体上沿下方",
+                "value": f"收盘 {close:.2f} / 箱顶 {box_high:.2f}",
+                "as_of": latest.get("trade_date"),
+            }
+        )
+    if not financial:
+        risks.append({"code": "FINANCIAL_DATA_MISSING", "label": "财务证据缺失"})
+
+    if not candidate:
+        verdict = "INSUFFICIENT_EVIDENCE"
+        verdict_label = "证据不足"
+    elif len(risks) >= len(evidence):
+        verdict = "MIXED_EVIDENCE"
+        verdict_label = "证据混合，先核对风险"
+    else:
+        verdict = "SUPPORTS_MONITORING"
+        verdict_label = "证据支持继续观察"
+    signal_date = str(
+        (candidate or {}).get("signal_date") or latest.get("trade_date") or ""
+    ).replace("-", "")[:8]
+    cached = get_insight(db_path, code, signal_date) if signal_date else None
+    return {
+        "ts_code": code,
+        "name": signal.get("name") or (basic or {}).get("name") or code,
+        "industry": signal.get("industry") or (basic or {}).get("industry") or "未分类",
+        "verdict": verdict,
+        "verdict_label": verdict_label,
+        "as_of": latest.get("trade_date"),
+        "signal_date": signal_date or None,
+        "evidence": evidence[:5],
+        "risks": risks[:5],
+        "data": {
+            "close": close,
+            "pe": _number(valuation.get("pe")),
+            "pb": _number(valuation.get("pb")),
+            "roe": _number(financial.get("roe")),
+            "box_high": box_high,
+            "box_days": box_days,
+            "breakout_vol_ratio": breakout_ratio,
+        },
+        "external_ai": cached,
+        "boundary": {
+            "read_only": True,
+            "changes_scan_or_signal": False,
+            "triggers_order": False,
+            "message": "AI 只解释本地证据，不改变每日选股、研究晋级或任何交易状态。",
+        },
+    }
+
+
+def _number(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if np.isfinite(result) else None

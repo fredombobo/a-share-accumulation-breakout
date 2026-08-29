@@ -149,6 +149,7 @@ def build_research_pit_snapshot(
     decision_at: str | None = None,
     history_days: int = 365,
     benchmark_code: str | None = None,
+    universe_codes: list[str] | tuple[str, ...] | None = None,
 ) -> ResearchPitSnapshot:
     """Freeze universe and daily revisions for one preregistered research run."""
     start = _date(study_start)
@@ -170,6 +171,17 @@ def build_research_pit_snapshot(
             study_end=end,
             decision_at=cutoff,
         )
+        if universe_codes is not None:
+            requested = tuple(sorted({str(code).strip().upper() for code in universe_codes if code}))
+            if not requested:
+                raise ResearchPitError("指定股票池不能为空")
+            available = {str(row["ts_code"]): row for row in universe_evidence}
+            unknown = sorted(set(requested) - set(available))
+            if unknown:
+                raise ResearchPitError(
+                    f"指定股票池包含研究窗口无有效生命周期证据的代码: {unknown[:10]}"
+                )
+            universe_evidence = [available[code] for code in requested]
         universe_evidence = universe_evidence[:max_codes]
         if not universe_evidence:
             raise ResearchPitError("PIT 生命周期在研究窗口内未形成股票宇宙")

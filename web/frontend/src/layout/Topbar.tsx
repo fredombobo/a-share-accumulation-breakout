@@ -7,8 +7,8 @@ import { IcoMoon, IcoRefresh, IcoSearch, IcoSun } from '../components/Icons'
 type PageMeta = { kicker: string; title: string; sub: string }
 
 export function pageMeta(pathname: string): PageMeta {
-  if (pathname.startsWith('/paper')) {
-    return { kicker: 'Paper Simulation', title: '纸面仿真', sub: '订单预览 · 仿真成交 · 持仓对账' }
+  if (pathname.startsWith('/backtest')) {
+    return { kicker: 'Professional Research', title: '专业回测', sub: '参数空间 · 样本外 · 成本压力' }
   }
   if (pathname.startsWith('/stock')) {
     return { kicker: 'Stock Detail', title: '个股详情', sub: 'K 线 · 箱体 · 资金流 · 交易卡片' }
@@ -95,7 +95,7 @@ export default function Topbar() {
         <div className="sync-capsule" title={syncing ? sync?.message : `最新行情日期：${sync?.latest_daily || '—'}`}>
           <span className={`sync-dot ${syncing ? 'spin' : ''}`} />
           <span className="sync-text num">
-            {syncing ? '同步行情中…' : (sync?.latest_daily ? `数据 ${sync.latest_daily}` : '数据 —')}
+            {syncing ? '同步行情中…' : (sync?.latest_daily ? `数据 ${sync.latest_daily}` : '数据 -')}
           </span>
           <button
             type="button"

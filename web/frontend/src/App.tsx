@@ -5,7 +5,7 @@ import Topbar from './layout/Topbar'
 
 const Overview = lazy(() => import('./pages/Overview'))
 const StockDetail = lazy(() => import('./pages/StockDetail'))
-const PaperTrading = lazy(() => import('./pages/PaperTrading'))
+const ProfessionalBacktest = lazy(() => import('./pages/ProfessionalBacktest'))
 
 export default function App() {
   return (
@@ -18,7 +18,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/stock/:tsCode" element={<StockDetail />} />
-              <Route path="/paper" element={<PaperTrading />} />
+              <Route path="/backtest" element={<ProfessionalBacktest />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>

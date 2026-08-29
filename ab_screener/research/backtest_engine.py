@@ -56,6 +56,7 @@ def run_single_backtest(
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
     allowed_signal_dates: frozenset[str] | set[str] | None = None,
+    horizon: int | None = None,
 ) -> dict[str, Any]:
     """对单组参数在 [start, end] 区间回放，返回逐笔明细与指标。
 
@@ -72,9 +73,23 @@ def run_single_backtest(
     from optimizer import research_universe
     from trade_sim import summarize
 
+    signal_options = signal_kwargs or {}
+    resolved_horizon = int(
+        horizon
+        or max(
+            260,
+            int(signal_options.get("box_max_days") or 0)
+            + int(signal_options.get("breakout_window_days") or 0)
+            + 60,
+        )
+    )
+    if resolved_horizon < 60:
+        raise ValueError("horizon 至少为 60 个交易日")
     if progress_cb:
         progress_cb("加载宇宙与行情…", 2)
-    load_start = (pd.to_datetime(start) - pd.Timedelta(days=365)).strftime("%Y%m%d")
+    load_start = (
+        pd.to_datetime(start) - pd.Timedelta(days=max(365, resolved_horizon * 2))
+    ).strftime("%Y%m%d")
     if research_snapshot is not None:
         codes = list(research_snapshot.universe)
         if max_codes is not None:
@@ -125,7 +140,7 @@ def run_single_backtest(
                 big,
                 sample_days,
                 cal,
-                160,
+                resolved_horizon,
                 strategy,
                 vr_levels,
                 combos,
@@ -153,7 +168,7 @@ def run_single_backtest(
                         big[big["ts_code"].isin(ch)].copy(),
                         sample_days,
                         cal,
-                        160,
+                        resolved_horizon,
                         strategy,
                         vr_levels,
                         combos,
@@ -280,6 +295,7 @@ def run_single_backtest(
             "signal": signal_kwargs or None,
             "costs": costs or None,
             "step": step,
+            "horizon": resolved_horizon,
         },
         "entry_definition": report_entry_fingerprint(_active_entry_definition_id()),
         "trades": trades,

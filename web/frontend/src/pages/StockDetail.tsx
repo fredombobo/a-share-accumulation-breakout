@@ -4,6 +4,7 @@ import { api, StockDetail as Detail, StockFlowResp } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from '../components/EChart'
 import FundFlowChart from '../components/FundFlowChart'
+import AIReviewPanel from '../components/AIReviewPanel'
 import { IcoArrowRight, IcoTarget } from '../components/Icons'
 import type { EChartsOption } from 'echarts'
 
@@ -150,11 +151,16 @@ export default function StockDetail() {
           <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>数据截至 {s.as_of}</div>
         </div>
         <div className="stock-hero-actions">
+          <button className="btn primary" onClick={() => document.getElementById('ai-review')?.scrollIntoView({ behavior: 'smooth' })}>
+            AI 证据评测
+          </button>
           <button className="btn" onClick={() => nav('/')}>
             返回总览 <IcoArrowRight size={13} style={{ transform: 'rotate(180deg)' }} />
           </button>
         </div>
       </div>
+
+      <AIReviewPanel tsCode={s.ts_code} />
 
       <div className="two-col section-gap" style={{ gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)' }}>
         {/* 左：K 线 */}

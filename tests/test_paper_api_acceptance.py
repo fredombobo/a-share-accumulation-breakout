@@ -6,6 +6,7 @@ import os
 import sqlite3
 from pathlib import Path
 
+from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from ab_screener.api.routers import legacy_paper
@@ -25,12 +26,21 @@ def _load_backend_without_scheduler():
     return module
 
 
+def _paper_client(db: Path) -> TestClient:
+    """Mount legacy paper contracts only for isolated regression tests.
+
+    The production 8001 app intentionally does not publish these routes.
+    """
+    legacy_paper._DB = db
+    legacy_paper._store = LocalStore(db_path=db)
+    app = FastAPI()
+    app.include_router(legacy_paper.router)
+    return TestClient(app)
+
+
 def test_paper_write_api_requires_and_replays_idempotency_key(tmp_path: Path) -> None:
-    backend = _load_backend_without_scheduler()
     db = tmp_path / "api.db"
-    backend._DB = legacy_paper._DB = db
-    backend._store = legacy_paper._store = LocalStore(db_path=db)
-    client = TestClient(backend.app)
+    client = _paper_client(db)
 
     missing = client.post("/api/paper/account", json={"initial_cash_fen": "10000"})
     assert missing.status_code == 409
@@ -53,11 +63,9 @@ def test_paper_write_api_requires_and_replays_idempotency_key(tmp_path: Path) ->
     assert conflict.json()["detail"]["code"] == "IDEMPOTENCY_KEY_REUSED"
 
 
-def test_feature_flag_and_legacy_portfolio_write_are_blocked(tmp_path: Path) -> None:
+def test_production_excludes_paper_and_legacy_portfolio_write_is_blocked(tmp_path: Path) -> None:
     backend = _load_backend_without_scheduler()
     db = tmp_path / "api.db"
-    backend._DB = legacy_paper._DB = db
-    backend._store = legacy_paper._store = LocalStore(db_path=db)
     client = TestClient(backend.app)
 
     legacy = client.post("/api/portfolio", json={"action": "remove", "ts_code": "000001.SZ"})
@@ -69,20 +77,20 @@ def test_feature_flag_and_legacy_portfolio_write_are_blocked(tmp_path: Path) -> 
     try:
         disabled = client.get("/api/paper/dashboard")
         status = client.get("/api/paper/gates/status")
+        internal_status = _paper_client(db).get("/api/paper/gates/status")
     finally:
         if previous is None:
             os.environ.pop("PAPER_TRADING_ENABLED", None)
         else:
             os.environ["PAPER_TRADING_ENABLED"] = previous
-    assert disabled.status_code == 503
-    assert disabled.json()["detail"]["code"] == "PAPER_TRADING_DISABLED"
-    assert status.status_code == 200
-    assert status.json()["paper_enabled"] is False
+    assert disabled.status_code == 404
+    assert status.status_code == 404
+    assert internal_status.status_code == 200
+    assert internal_status.json()["paper_enabled"] is False
 
 
-def test_openapi_contains_corporate_action_apply_endpoint() -> None:
-    backend = _load_backend_without_scheduler()
-    paths = backend.app.openapi()["paths"]
+def test_isolated_legacy_router_keeps_paper_contracts(tmp_path: Path) -> None:
+    paths = _paper_client(tmp_path / "contract.db").app.openapi()["paths"]
     assert "/api/paper/corporate-actions/{action_id}/apply" in paths
     assert "/api/paper/trading-calendar" in paths
     assert "/api/paper/orders/review" in paths
@@ -111,10 +119,8 @@ def test_health_exposes_guided_ui_feature_flag() -> None:
 
 
 def test_historical_manual_draft_api_uses_selected_execution_date(tmp_path: Path) -> None:
-    backend = _load_backend_without_scheduler()
     db = tmp_path / "historical-api.db"
-    backend._DB = legacy_paper._DB = db
-    backend._store = legacy_paper._store = LocalStore(db_path=db)
+    client = _paper_client(db)
     with sqlite3.connect(db) as conn:
         conn.executemany(
             "INSERT INTO daily (ts_code, trade_date, open, high, low, close, vol, amount)"
@@ -130,7 +136,6 @@ def test_historical_manual_draft_api_uses_selected_execution_date(tmp_path: Path
             [("20260805", 1), ("20260806", 1)],
         )
 
-    client = TestClient(backend.app)
     account = client.post(
         "/api/paper/account",
         json={"initial_cash_fen": "50000000"},
@@ -156,11 +161,8 @@ def test_historical_manual_draft_api_uses_selected_execution_date(tmp_path: Path
 
 
 def test_dashboard_hides_snapshots_invalidated_by_historical_replay(tmp_path: Path) -> None:
-    backend = _load_backend_without_scheduler()
     db = tmp_path / "dashboard-replay.db"
-    backend._DB = legacy_paper._DB = db
-    backend._store = legacy_paper._store = LocalStore(db_path=db)
-    client = TestClient(backend.app)
+    client = _paper_client(db)
     created = client.post(
         "/api/paper/account",
         json={"initial_cash_fen": "50000000"},
@@ -190,10 +192,8 @@ def test_dashboard_hides_snapshots_invalidated_by_historical_replay(tmp_path: Pa
 
 
 def test_tutorial_review_api_needs_no_idempotency_and_changes_no_ledger(tmp_path: Path) -> None:
-    backend = _load_backend_without_scheduler()
     db = tmp_path / "tutorial-review-api.db"
-    backend._DB = legacy_paper._DB = db
-    backend._store = legacy_paper._store = LocalStore(db_path=db)
+    client = _paper_client(db)
     with sqlite3.connect(db) as conn:
         conn.executemany(
             "INSERT INTO daily (ts_code,trade_date,open,high,low,close,vol,amount)"
@@ -210,7 +210,6 @@ def test_tutorial_review_api_needs_no_idempotency_and_changes_no_ledger(tmp_path
         )
         before = conn.execute("SELECT COUNT(*) FROM pt_audit_event").fetchone()[0]
 
-    client = TestClient(backend.app)
     response = client.post(
         "/api/paper/orders/review",
         json={

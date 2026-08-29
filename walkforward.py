@@ -107,6 +107,7 @@ def eval_combo(
     research_snapshot: ResearchPitSnapshot | None = None,
     capture_formal_series: bool = False,
     allowed_signal_dates: frozenset[str] | set[str] | None = None,
+    horizon: int | None = None,
 ) -> dict:
     """对单个参数组合在指定区间回测，返回统计行。"""
     df = run_grid(
@@ -124,6 +125,7 @@ def eval_combo(
         research_snapshot=research_snapshot,
         capture_formal_series=capture_formal_series,
         allowed_signal_dates=allowed_signal_dates,
+        horizon=horizon or 160,
     )
     if df.empty:
         return {"n_trades": 0}
@@ -350,6 +352,7 @@ def wf_recheck(
     portfolio_policy: PortfolioPolicy | None = None,
     research_snapshot: ResearchPitSnapshot | None = None,
     allowed_signal_dates: frozenset[str] | set[str] | None = None,
+    horizon: int | None = None,
 ) -> pd.DataFrame:
     """对 Top 组合做 3 窗口滚动复核，附 wf_pass 判定。windows 可覆盖（降级时传短窗）。"""
     wf_windows = windows or WF_WINDOWS
@@ -373,6 +376,7 @@ def wf_recheck(
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
                 allowed_signal_dates=allowed_signal_dates,
+                horizon=horizon,
             )
             completed_evaluations += 1
             if progress_cb:
@@ -389,6 +393,7 @@ def wf_recheck(
                 portfolio_policy=portfolio_policy,
                 research_snapshot=research_snapshot,
                 allowed_signal_dates=allowed_signal_dates,
+                horizon=horizon,
             )
             completed_evaluations += 1
             if progress_cb:

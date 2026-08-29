@@ -505,8 +505,14 @@ def run_grid(
         raise ValueError("正式收益序列必须使用版本化组合账户模型")
     if _is_cancelled(cancel_check):
         raise ResearchCancelled("用户取消")
-    # 加载区间前置扩展：箱体/建仓序列判定需要窗口前 horizon 日数据
-    load_start = (pd.to_datetime(start) - pd.Timedelta(days=365)).strftime("%Y%m%d")
+    if horizon < 60:
+        raise ValueError("horizon 至少为 60 个交易日")
+    # 交易日窗口换算为保守的日历日窗口；不能固定减 365 天，否则 200 日箱体在
+    # 春节/长假较多的区间会拿不到足够历史。2x 是明确的保守换算，不影响决策时点。
+    history_calendar_days = max(365, int(horizon) * 2)
+    load_start = (
+        pd.to_datetime(start) - pd.Timedelta(days=history_calendar_days)
+    ).strftime("%Y%m%d")
     if research_snapshot is not None:
         codes = list(research_snapshot.universe)
         if max_codes is not None:

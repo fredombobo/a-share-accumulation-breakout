@@ -1,121 +1,73 @@
-# 量价逻辑平台 · 使用说明（USER GUIDE）
+# AB-Screener 使用说明
 
-> 版本：v0.4.0（Phase 0~5 全链路） · 宿主：`E:\CODEX\Stock_selection\accumulation_breakout`
-> 定位：**研究信号平台，非买卖建议**（全链路 research_only，闸门拦截未过策略）
+> 产品：`accumulation_breakout`，端口 8001。研究辅助工具，不是投资建议，不连接券商。
 
----
+## 1. 产品入口
 
-## 1. 一分钟上手
+发布界面只有两项导航：
 
-```bat
-# 一键启动（重启后端 + 打开研究控制台）
-E:\CODEX\Stock_selection\accumulation_breakout\launch_logic_console.bat
-```
+- 每日选股：行情同步、收盘扫描、A/B 池、资金热力图与个股证据。
+- 专业回测：多参数网格、冻结股票池、IS/OOS、WF、基线和成本压力。
 
-打开的研究控制台（`runtime/logic_console.html`）提供三个视图：
+个股详情是每日候选的下钻页。旧单参数实验室、纸面交易和机构控制台不在 8001 发布面。
 
-| 视图 | 能力 |
-|------|------|
-| **策略库** | 已生成策略列表：状态徽章（draft/research/gated/rejected）+ 回测摘要；点击进详情 |
-| **策略详情** | DSL 源码 + 回测指标（总收益/胜率/盈亏比/回撤）+ 闸门逐条 + 出场分布 + 回测历史 |
-| **单股研究** | 13 只演示票（API 在线时全库可查）：K线+吸筹区间+突破点+特征卡+**预测条**（p_up/期望收益/失败风险） |
-| **生成策略** | 模板表单（参数/闸门阈值）→ 一键跑回测闭环 → 结果卡片（指标+闸门）→ 自动落库 |
+## 2. 每日选股
 
-> 控制台顶部徽标：`演示数据` = 后端未重启（8001 端口旧实例）；`API 实时` = 新后端已运行，所有视图用真实数据。
+1. 启动 `一键启动.bat`，打开 `http://127.0.0.1:8001/`。
+2. 确认顶部行情日期；需要时点“更新”。
+3. 点“扫描”，等待任务完成。
+4. 优先查看 A 池；B 池只作观察。防守环境下 A 池为空是正常风控。
+5. 首页资金热力图按方向分别展示净流入 Top 10 与净流出 Top 10。
+6. 候选卡点“查看详情”看 K 线和证据，点“AI 评测”直达本地证据评测。
 
----
+## 3. 个股 AI 证据评测
 
-## 2. 命令行（进阶）
+GET 评测是只读、确定性的本地计算，不调用模型、不写业务表：
 
-所有命令在项目根目录运行（先 `Remove-Item Env:PYTHONPATH` 清理环境）：
+- 支持证据：箱体、突破量、均线关系、资金与可用基本面。
+- 风险与缺口：回落、资金流出、缺失财务数据等已编码风险。
+- 结论：支持继续观察、证据混合或证据不足。
 
-### 2.1 单股解读
+“生成 AI 文字解读”是用户显式触发的可选增强。模型未配置或调用失败时，本地结论仍显示。AI 不改变扫描分数、A/B 池、回测晋级或任何交易状态。
 
-```powershell
-C:\Python314\python.exe -c "from logic_platform.service import explain; import json; from logic_platform.data.ab_store import ABStore; print(json.dumps(explain('002793.SZ', ABStore()), ensure_ascii=False, indent=2))"
-```
+## 4. 专业回测
 
-### 2.2 全市场结构扫描（研究候选）
+### 4.1 股票池
 
-```powershell
-C:\Python314\python.exe -m logic_platform.cli.run_logic_scan --limit 200 --top 15 --workers 6
-```
+- 不选择板块：冻结当前全市场，受“最多股票数”限制。
+- 多选板块：按当前 `stock_basic.industry` 选择，运行前固化代码集合与 SHA-256。
+- 指定股票：填写六位代码或完整代码，优先于板块选择；至少 20 只。
 
-### 2.3 模板 → 回测 → 闸门（闭环核心）
+当前数据库没有完整历史行业成员序列，因此报告会明确写“当前分类冻结股票池”，不得把它解释为历史行业分类 PIT。
 
-```powershell
-# 默认参数（200 只，约 3~4 分钟）
-C:\Python314\python.exe -m logic_platform.cli.run_logic_backtest --template vol_breakout_v1
+### 4.2 参数空间
 
-# 参数覆盖 + 闸门调整 + 指定输出
-C:\Python314\python.exe -m logic_platform.cli.run_logic_backtest --template pullback_volume_v1 `
-  --max-codes 200 --step 5 --workers 6 `
-  --set exit.stop_pct=0.08 --set exit.target_pct=0.15 `
-  --gate min_trades=20 --json runtime/logic_bt_result.json
-```
+每项参数支持：固定、范围步进、离散值。默认网格包括：
 
-退出码：闸门通过（gated）= 0，未通过 = 1。结果自动落库 `logic_strategies` / `logic_backtests`。
+- 横盘最长天数 60 至 200，步长 20；
+- 突破量相对箱体均量 1.4 / 1.6 / 1.8；
+- 止损 5% / 7%；
+- 二次出货观察窗 7 / 10 / 15 日。
 
-### 2.4 训练预测模型（Phase 2）
+默认共 144 组，上限 512 组。先点“检查参数空间”；调整任一输入后必须重新预览。动态历史预热不小于 260 个交易日，并覆盖最长箱体与突破观察窗。
 
-```powershell
-C:\Python314\python.exe -m logic_platform.cli.run_logic_train --codes 200 --horizon 10 --model histgb
-# 产物：runtime/logic_models/vN/（model.joblib + meta.json）；最新版本自动生效
-```
+### 4.3 运行与报告
 
-### 2.5 纸交易闭环（Phase 5）
+1. 预览确认组合数、冻结股票数、历史预热和 IS/OOS 窗口。
+2. 点“启动专业回测”。任务写入服务端，刷新、失焦或切换页面后可恢复。
+3. 运行依次完成数据冻结、IS/OOS 网格、WF、随机/MA20-60 基线、2 倍成本和报告。
+4. 报告先给人话结论，再展示 IS/OOS 指标、成本压力、基线和 Top 10 参数。
 
-```powershell
-# 当日信号观察卡（仅 gated 策略可投递）
-C:\Python314\python.exe -m logic_platform.cli.run_logic_paper --mode signals --strategy vol_breakout_v1
-# 历史信号后验命中率（signal_date 后 N 日实际涨跌）
-C:\Python314\python.exe -m logic_platform.cli.run_logic_paper --mode backfill --strategy vol_breakout_v1 --days-back 240 --horizon 10
-```
+参数第一名只按 IS 选择，OOS/WF 只用于验证。所有成交遵守“收盘信号最早下一交易日开盘成交”。报告固定 `candidate_eligible=false`、`can_claim_edge=false`；探索结果不会自动进入每日选股。
 
----
+## 5. 筹码条件扩展口
 
-## 3. API 一览（宿主 8001 端口，前缀 /api/logic）
+`chip_cost_concentration_v1` 已注册参数 schema 和 PIT 读取契约，但默认关闭且不可勾选。只有完成经济机制预登记、数据字段校验和覆盖率验收后才能纳入正式网格；缺数据或 `available_at > signal_at` 必须失败关闭。
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/health` | 功能开关 / lake 状态 / schema 版本 / as_of |
-| GET | `/features/{ts_code}` | 近窗特征 + 状态序列 |
-| GET | `/explain/{ts_code}` | 人话解读（状态/箱体/量能/预测/理由） |
-| POST | `/predict` | 批量推理 `{ts_codes:[...]}` |
-| GET | `/strategies` | 策略库列表（闸门状态+回测摘要） |
-| GET | `/strategies/{id}` | 策略详情（DSL+回测历史） |
-| GET | `/backtest/{run_id}` | 单次回测详情 |
-| POST | `/backtest` | 同步执行闭环 `{template, max_codes, step, set:[...], gates:[...]}` |
+## 6. 安全边界
 
-所有响应带 `research_only: true`；模型/数据缺失时降级提示，不报错。
-
----
-
-## 4. 内置模板（`logic_platform/dsl/templates/`）
-
-| 模板 | 入场逻辑 | 出场 |
-|------|---------|------|
-| `vol_breakout_v1` | 状态 ∈ {BREAKOUT, FOLLOW_THROUGH} 且 量比 5/20 ≥ 1.6 | 止损 7% / 止盈 12% / 15 日 |
-| `pullback_volume_v1` | 状态 ∈ {FOLLOW_THROUGH, TIGHTENING} 且 缩量 ≥ 3 且 量能分位 ≤ 0.5 且 收盘 ≥ 箱体中轴 | 止损 6% / 止盈 10% / 20 日 |
-
-DSL 语法详见 `docs/DSL-REFERENCE.md`。
-
----
-
-## 5. 状态机（L1 语义主轴）
-
-```
-IDLE → ACCUMULATION（横盘吸筹）→ TIGHTENING（收窄蓄势）→ BREAKOUT（突破）
-     → FOLLOW_THROUGH（突破延续）| FAIL（假突破）
-```
-
-唯一箱体计算在宿主 `signals.py`（本平台只适配不重算，保证与现网 A 池一致）。
-
----
-
-## 6. 安全与合规
-
-- **全链路 research_only**：所有输出带该标记；生成逻辑不得直接作为买卖指令（§1.3）
-- **闸门 fail-closed**：回测未过（交易数不足/回撤超限/胜率过低）→ rejected/draft，禁止投递纸交易
-- **预测降级**：模型缺失时 explain.prediction=None，不伪造结果
-- 展示文案禁"必涨/必跌/保证收益"等承诺表述
+- `LIVE_TRADING_ENABLED=false`。
+- 8001 不发布纸面或真实交易 API。
+- AI 不输出自动买卖指令。
+- 研究 FAIL/证据不足不得改写成 PASS。
+- Token 只放本地 `.env`，不得写入日志或提交版本库。

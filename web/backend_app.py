@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import os
 import sys
-import threading
-from datetime import datetime
 from pathlib import Path
 
 os.environ.pop("PYTHONPATH", None)
@@ -38,8 +36,6 @@ from fastapi.staticfiles import StaticFiles
 
 from ab_screener.api.legacy_state import (
     _DB,
-    _LOGGER,
-    _store,
 )
 
 if os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true":
@@ -53,10 +49,9 @@ assert_schema_compatible(_DB)
 
 app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
 
-# 精简产品装配：8001 只挂平台就绪度、纸面状态与系统审计底座。
-# 研究/情报/六形态等完整路由仍可由离线开发 app 显式装配，不进入日用产品。
+# 精简产品装配：8001 只挂专业回测、平台就绪度与系统审计底座。
+# 纸面、研究控制台和六形态等完整路由仍可由离线开发 app 显式装配，不进入日用产品。
 from ab_screener.api.app_factory import include_v2_routers
-from ab_screener.application.platform_config import flag_enabled
 
 include_v2_routers(app, include_scan_router=False, include_console_routers=False)
 # G2 拆路由：只读杂项（health/setup-status/manifests/today/release-readiness/kline）
@@ -72,11 +67,11 @@ from ab_screener.api.routers.legacy_scan import router as legacy_scan_router
 
 app.include_router(legacy_scan_router)
 
-# 精简产品只保留纸面与行情同步；实验室和交互回测改为离线命令。
-from ab_screener.api.routers.legacy_paper import router as legacy_paper_router
+# 精简产品保留行情同步，并发布只读/显式触发的个股 AI 证据评测。
+from ab_screener.api.routers.lean_ai_review import router as lean_ai_review_router
 from ab_screener.api.routers.legacy_sync import router as legacy_sync_router
 
-app.include_router(legacy_paper_router)
+app.include_router(lean_ai_review_router)
 app.include_router(legacy_sync_router)
 # 2026-08-16 整改：CORS 从 "*" 收敛为本机白名单（单端口 8001 + 开发前端 3001）。
 # 本服务只绑 127.0.0.1，但跨源读写在浏览器内即可完成——放开 "*" 等于让任意网页
@@ -92,25 +87,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-from ab_screener.api.legacy_state import _paper_enabled
-
-
-@app.middleware("http")
-async def paper_feature_gate(request: Request, call_next):
-    if (
-        request.url.path.startswith("/api/paper")
-        and request.url.path != "/api/paper/gates/status"
-        and not _paper_enabled()
-    ):
-        return JSONResponse(
-            status_code=503,
-            content={"detail": {"code": "PAPER_TRADING_DISABLED",
-                                 "message": "纸面交易模块已关闭", "details": {},
-                                 "retryable": False}},
-        )
-    return await call_next(request)
 
 
 @app.middleware("http")
@@ -186,55 +162,6 @@ def _spa_fallback(full_path: str):
     if candidate.is_file():
         return FileResponse(candidate)
     return FileResponse(_DIST / "index.html")
-
-
-# ── 自动日终调度器（阶段5）：交易日 16:15 后轮询，每账户/交易日最多成功一次 ──
-
-def _auto_settle_loop() -> None:
-    """后台线程：每日 16:15 后尝试对最近已完成交易日执行日结；幂等（已 DONE 跳过）。"""
-    import time as _t
-    from zoneinfo import ZoneInfo as _ZI
-
-    tz = _ZI("Asia/Shanghai")
-    while True:
-        try:
-            now = datetime.now(tz)
-            latest_local = _store.max_trade_date("daily") or ""
-            today = now.strftime("%Y%m%d")
-            after_close = now.hour > 16 or (now.hour == 16 and now.minute >= 15)
-            # 当天收盘后正常运行；周末/重启时补跑本地最新已完成交易日。
-            if latest_local and (after_close or latest_local < today):
-                from paper_trading.cal import is_open as _cal_is_open
-                from paper_trading.settlement import run_settlement
-
-                try:
-                    target = latest_local
-                    if _cal_is_open(_DB, target):
-                        from ab_screener.data.paper_query import last_done_cycle_date
-
-                        last_done = last_done_cycle_date(_DB)
-                        if last_done and last_done >= target:
-                            pass  # 已日结，跳过
-                        else:
-                            try:
-                                run_settlement(_DB, target)
-                            except Exception as exc:  # noqa: BLE001
-                                from tushare_init import sanitize_error
-                                _LOGGER.warning("纸面日结待重试 %s: %s", target,
-                                                sanitize_error(exc)[:240])
-                except Exception as exc:  # noqa: BLE001
-                    from tushare_init import sanitize_error
-                    _LOGGER.error("纸面调度检查失败: %s", sanitize_error(exc)[:240])
-        except Exception as exc:  # noqa: BLE001
-            from tushare_init import sanitize_error
-            _LOGGER.error("纸面调度循环失败: %s", sanitize_error(exc)[:240])
-        _t.sleep(60)  # 每分钟轮询
-
-
-if _paper_enabled() and flag_enabled(
-    app.state.platform_config, "DAILY_SCHEDULER_ENABLED"
-):
-    threading.Thread(target=_auto_settle_loop, daemon=True, name="paper-auto-settle").start()
 
 
 def _backend_port() -> int:

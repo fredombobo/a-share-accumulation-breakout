@@ -620,7 +620,7 @@ export default function Overview() {
         {data.items.map((it) => {
           const b = tierBadge(it.tier, it.pool, it.tradeable)
           return (
-            <div key={it.ts_code} className="stock-card" onClick={() => nav(`/stock/${it.ts_code}`)}>
+            <article key={it.ts_code} className="stock-card">
               <div className="head">
                 <div>
                   <span className="name">{it.name}</span>
@@ -649,7 +649,11 @@ export default function Overview() {
                   <span key={i}>{i === 0 ? <b>✓ </b> : <span className="sep">· </span>}{r}</span>
                 ))}
               </div>
-            </div>
+              <div className="stock-card-actions">
+                <button className="btn btn-sm" type="button" onClick={() => nav(`/stock/${it.ts_code}`)}>查看详情</button>
+                <button className="btn btn-sm" type="button" onClick={() => nav(`/stock/${it.ts_code}#ai-review`)}>AI 评测</button>
+              </div>
+            </article>
           )
         })}
       </div>

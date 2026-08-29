@@ -265,6 +265,15 @@ class ResearchRunStore:
             ).fetchone()
         return self._decode(row)
 
+    def latest_for_mode(self, research_mode: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM research_runs WHERE research_mode=? "
+                "ORDER BY COALESCE(updated_at,created_at) DESC LIMIT 1",
+                (research_mode,),
+            ).fetchone()
+        return self._decode(row)
+
     def completed_by_input_hash(self, input_hash: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(

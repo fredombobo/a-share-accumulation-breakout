@@ -30,12 +30,19 @@ $Stages = @(
             "$Root\ab_screener\domain\entry_definition_v2.py" `
             "$Root\ab_screener\research\backtest_engine.py" `
             "$Root\ab_screener\research\pit_reader.py" `
+            "$Root\ab_screener\research\professional_grid.py" `
+            "$Root\ab_screener\research\condition_plugins.py" `
+            "$Root\ab_screener\research\professional_runner.py" `
             "$Root\ab_screener\research\regime_filter.py" `
             "$Root\ab_screener\research\resilient_absorption.py" `
             "$Root\ab_screener\research\trusted_run.py" `
+            "$Root\ab_screener\api\routers\professional_backtest.py" `
+            "$Root\ab_screener\api\routers\lean_ai_review.py" `
+            "$Root\ab_screener\intelligence\ai_analysis.py" `
+            "$Root\ab_screener\application\today_guide.py" `
             "$Root\ab_screener\data\benchmark_pit_sync.py" `
             "$Root\paper_trading\rules.py" "$Root\paper_trading\engine.py" `
-            "$Root\backtest_custom.py"
+            "$Root\backtest_custom.py" "$Root\web\backend_app.py"
     } },
     @{ Name = "check_architecture"; Cmd = {
         $args = @("$Root\scripts\check_architecture.py")
@@ -46,9 +53,13 @@ $Stages = @(
 )
 
 if (-not $SkipFrontend) {
-    $Stages += @{ Name = "frontend_build"; Cmd = {
+    $Stages += @{ Name = "frontend_test_build"; Cmd = {
         Push-Location (Join-Path $Root "web\frontend")
-        try { & npm run build } finally { Pop-Location }
+        try {
+            & npm test
+            if ($LASTEXITCODE -ne 0) { throw "frontend tests exit=$LASTEXITCODE" }
+            & npm run build
+        } finally { Pop-Location }
     } }
 }
 
@@ -68,5 +79,5 @@ if ($Failed.Count -gt 0) {
     Write-Host "`nquality_gate FAILED stages: $($Failed -join ', ')" -ForegroundColor Red
     exit 1
 }
-Write-Host "`nquality_gate OK: ruff / mypy / check_architecture / pytest / frontend_build 全部通过" -ForegroundColor Green
+Write-Host "`nquality_gate OK: ruff / mypy / check_architecture / pytest / frontend tests + build 全部通过" -ForegroundColor Green
 exit 0

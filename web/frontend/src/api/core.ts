@@ -5,8 +5,6 @@
 export {
   ApiError,
   request,
-  paperWrite,
-  newIdempotencyKey,
   type ReqOpts,
 } from './client'
 

@@ -14,11 +14,11 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now:
-  - PROFESSIONAL-BACKTEST-AI-REVIEW
+ready_now: []
 tasks:
   PROFESSIONAL-BACKTEST-AI-REVIEW:
-    status: ready
+    status: in_progress
+    started_at: "2026-08-29T19:05:00+08:00"
     work_package: WP91
     dependencies:
       - LEAN-PRODUCT-PRUNING

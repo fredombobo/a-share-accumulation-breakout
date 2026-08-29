@@ -30,7 +30,12 @@ jobs:
             ab_screener/domain/costs.py ab_screener/domain/entry_definition.py \
             ab_screener/domain/entry_definition_v2.py \
             ab_screener/research/backtest_engine.py ab_screener/research/trusted_run.py \
-            paper_trading/rules.py paper_trading/engine.py backtest_custom.py
+            ab_screener/research/professional_grid.py ab_screener/research/condition_plugins.py \
+            ab_screener/research/professional_runner.py \
+            ab_screener/api/routers/professional_backtest.py \
+            ab_screener/api/routers/lean_ai_review.py \
+            ab_screener/intelligence/ai_analysis.py ab_screener/application/today_guide.py \
+            paper_trading/rules.py paper_trading/engine.py backtest_custom.py web/backend_app.py
 
       - name: Architecture boundaries
         run: python scripts/check_architecture.py --strict
@@ -55,6 +60,9 @@ jobs:
 
       - name: Install frontend deps
         run: npm ci
+
+      - name: Frontend unit tests
+        run: npm test
 
       - name: Type-check + build
         run: npm run build

@@ -1,4 +1,4 @@
-"""8001 只发布个人日用闭环，不暴露实验性工作台。"""
+"""8001 only publishes daily selection, detail, professional backtest and AI review."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,16 +15,16 @@ def test_product_openapi_keeps_core_and_excludes_immature_surfaces() -> None:
         "/api/overview",
         "/api/scan",
         "/api/sync/status",
-        "/api/paper/dashboard",
+        "/api/backtest/catalog",
+        "/api/ai-review/{ts_code}",
         "/api/v2/platform/status",
-        "/api/v2/paper/status",
         "/api/v2/system/health",
     }
     assert expected <= paths
 
     removed_prefixes = (
         "/api/lab",
-        "/api/backtest",
+        "/api/paper",
         "/api/logic",
         "/api/v2/desk",
         "/api/v2/intelligence",
@@ -45,16 +45,16 @@ def test_frontend_route_manifest_is_lean() -> None:
     )
     assert '<Route path="/"' in source
     assert '<Route path="/stock/:tsCode"' in source
-    assert '<Route path="/paper"' in source
-    for removed in ('path="/lab"', 'path="/backtest"', 'path="/v2/'):
+    assert '<Route path="/backtest"' in source
+    for removed in ('path="/lab"', 'path="/paper"', 'path="/v2/'):
         assert removed not in source
 
 
-def test_sidebar_has_only_two_daily_entries() -> None:
+def test_sidebar_has_only_two_product_entries() -> None:
     source = (ROOT / "web" / "frontend" / "src" / "layout" / "Sidebar.tsx").read_text(
         encoding="utf-8"
     )
     assert "每日选股" in source
-    assert "纸面仿真" in source
-    for removed in ("策略实验室", "回测工作台", "V2 控制台", "六形态"):
+    assert "专业回测" in source
+    for removed in ("纸面仿真", "策略实验室", "V2 控制台", "六形态"):
         assert removed not in source
