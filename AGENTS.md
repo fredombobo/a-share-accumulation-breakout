@@ -114,6 +114,6 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 - 身份接口：`GET /api/v2/platform/status`；必须返回
   `product=accumulation_breakout`、端口 8001、build/config 与 `LIVE=false`。
 - 七闸门：`GET /api/v2/readiness`；浏览器不得传入门禁结果。dirty、身份漂移、缺证据均 fail-closed。
-- 权威研究任务当前固定为 `v2auth20260829j`，结论 FAIL 时不得换读其它 PASS 或描述为已晋级。
+- 权威研究任务当前固定为 `v2auth20260829k`，结论 FAIL 时不得换读其它 PASS 或描述为已晋级。
 - 自动 DAG 只有 `DAILY_SCHEDULER_ENABLED=true` 才启动；五个真实完成交易日不足时保持关闭。
 - `runtime/v2/gates`、`runtime/v2/soak` 与真实数据库均是运行证据，不提交、不伪造。

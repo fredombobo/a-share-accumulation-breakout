@@ -342,10 +342,12 @@ v2_remediation_20260823:
   blocked:
     - V2R-P8
   research:
-    authoritative_task_id: "v2auth20260829j"
+    authoritative_task_id: "v2auth20260829k"
     current_identity_verdict: FAIL
     historical_verdict: FAIL
     candidate_eligible: false
+    authority_rebind_reason: "首页资金热力图发布改变 code_version；k 使用与 j 完全相同的研究、数据和成本口径重算"
+    authority_parity_evidence: "sample/IS/OOS/WF/baselines/sensitivity/anti_overfit/formal_evidence/v2_statistics/formal_promotion 全部相等"
   production_snapshot:
     trade_date: "20260828"
     code_version: "887238c9ce42"
@@ -381,3 +383,5 @@ v2_remediation_20260823:
         - "20260828 生产快照原绝对值 Top 24 仅含 3 流入/21 流出；新接口返回 10 流入/10 流出"
         - "tests/test_money_heatmap.py 覆盖每方向独立排序、截断与全量兼容行为"
         - "Vitest 20 passed；严格质量门 957 passed；TypeScript 与生产构建通过"
+        - "浏览器验收显示两个独立 treemap、实际 10/10、两个 canvas、控制台零错误"
+        - "v2auth20260829k 复跑完成，核心研究区块与 j 完全一致，结论仍为 FAIL/NO_CANDIDATE"

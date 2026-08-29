@@ -319,10 +319,10 @@ tasks:
     accepted_commit: "269ec71c58cb9e3aca36ad1000cf7731c5402d60"
     integration_commit: "6e52e4f3aead150da537ea151ccd5da2e4bf2320"
     manager_review: "docs/ACCEPTANCE-V2-REMEDIATION-WAVE2-SRN-2026-08-24.md#v2r-r"
-    authoritative_task_id: "v2auth20260829j"
+    authoritative_task_id: "v2auth20260829k"
     research_verdict: FAIL
     candidate_eligible: false
-    superseded_task_ids: ["1699927499ff", "0746a4108e15", "v2auth20260827e", "v2auth20260828a", "v2auth20260828b", "v2auth20260828c", "v2auth20260828d", "v2auth20260828e", "v2auth20260828f", "v2auth20260828g", "v2auth20260829h", "v2auth20260829i"]
+    superseded_task_ids: ["1699927499ff", "0746a4108e15", "v2auth20260827e", "v2auth20260828a", "v2auth20260828b", "v2auth20260828c", "v2auth20260828d", "v2auth20260828e", "v2auth20260828f", "v2auth20260828g", "v2auth20260829h", "v2auth20260829i", "v2auth20260829j"]
     remaining_defect_ids: []
     wave: 2
     agent_role: research-evidence-agent
