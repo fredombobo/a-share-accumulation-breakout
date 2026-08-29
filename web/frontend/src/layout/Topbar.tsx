@@ -1,41 +1,19 @@
 import { FormEvent, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
-import { api, LabStatusResp, SyncStatus } from '../api/client'
+import { api, SyncStatus } from '../api/client'
 import { useTheme } from '../theme/ThemeContext'
-import { IcoMoon, IcoPulse, IcoRefresh, IcoSearch, IcoSun } from '../components/Icons'
+import { IcoMoon, IcoRefresh, IcoSearch, IcoSun } from '../components/Icons'
 
 type PageMeta = { kicker: string; title: string; sub: string }
 
-const V2_PAGE_META: Record<string, PageMeta> = {
-  '/v2/desk': { kicker: 'V2 Desk', title: '指挥舱', sub: '今日唯一动作 · 门禁驱动' },
-  '/v2/intelligence': { kicker: 'Market Intelligence', title: '市场情报', sub: '档案 · 宽度 · 数据状态' },
-  '/v2/strategies': { kicker: 'Strategy Registry', title: '六形态', sub: '插件契约 · 研究状态' },
-  '/v2/signals': { kicker: 'Signal Observatory', title: '信号观察', sub: '不可变观察 · 生命周期' },
-  '/v2/research': { kicker: 'Research Governance', title: '研究治理', sub: '实验登记 · Trial Ledger' },
-  '/v2/monitor': { kicker: 'Operations Monitor', title: '监控', sub: '系统健康 · 告警' },
-  '/v2/review': { kicker: 'Decision Review', title: '复核', sub: '笔记 · 决策' },
-  '/v2/system': { kicker: 'System', title: '系统', sub: '健康 · 备份 · 深检' },
-  '/v2/compare': { kicker: 'Compare', title: '对比', sub: '2–6 标的 K 线' },
-}
-
 export function pageMeta(pathname: string): PageMeta {
-  const v2Path = Object.keys(V2_PAGE_META).find(
-    (path) => pathname === path || pathname.startsWith(`${path}/`),
-  )
-  if (v2Path) return V2_PAGE_META[v2Path]
   if (pathname.startsWith('/paper')) {
-    return { kicker: 'Paper Trading', title: '纸面交易', sub: '仿真撮合 · 持仓 · 对账 · 不下单' }
-  }
-  if (pathname.startsWith('/lab')) {
-    return { kicker: 'Research Lab', title: '策略实验室', sub: '验证策略是否值得继续研究 · 非下单' }
-  }
-  if (pathname.startsWith('/backtest')) {
-    return { kicker: 'Backtest Studio', title: '回测工作台', sub: '自定义参数 · 净成本样本内/样本外' }
+    return { kicker: 'Paper Simulation', title: '纸面仿真', sub: '订单预览 · 仿真成交 · 持仓对账' }
   }
   if (pathname.startsWith('/stock')) {
     return { kicker: 'Stock Detail', title: '个股详情', sub: 'K 线 · 箱体 · 资金流 · 交易卡片' }
   }
-  return { kicker: 'Overview', title: '选股总览', sub: '技术形态 + 资金流 + 基本面 三层筛选' }
+  return { kicker: 'Daily Workflow', title: '每日选股', sub: '更新行情 · 扫描候选 · 核对证据' }
 }
 
 function normalizeTsCode(input: string): string | null {
@@ -57,23 +35,7 @@ export default function Topbar() {
   const meta = pageMeta(loc.pathname)
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
-  const [labTask, setLabTask] = useState<LabStatusResp | null>(null)
   const [sync, setSync] = useState<SyncStatus | null>(null)
-
-  useEffect(() => {
-    let alive = true
-    const refreshTask = () => {
-      api.labStatus().then((task) => { if (alive) setLabTask(task) }).catch(() => undefined)
-    }
-    refreshTask()
-    const timer = window.setInterval(refreshTask, 5_000)
-    window.addEventListener('focus', refreshTask)
-    return () => {
-      alive = false
-      window.clearInterval(timer)
-      window.removeEventListener('focus', refreshTask)
-    }
-  }, [loc.pathname])
 
   // 数据同步状态轮询：idle 时慢速、running 时快速；完成后广播事件让页面刷新
   useEffect(() => {
@@ -129,23 +91,6 @@ export default function Topbar() {
         <div className="asof">{meta.sub}</div>
       </div>
       <div className="right">
-        {labTask?.task_id && ['pending', 'running', 'cancelling'].includes(labTask.status) && (
-          <button type="button" className="lab-global-task" onClick={() => navigate('/lab')}>
-            <IcoPulse size={13} />
-            实验进行中 {labTask.progress || 0}%
-          </button>
-        )}
-        {labTask?.task_id && labTask.status === 'done' && (
-          <button
-            type="button"
-            className="lab-global-task done"
-            onClick={() => navigate('/lab?view=results#lab-conclusion', {
-              state: { openLabConclusion: true, requestedAt: Date.now() },
-            })}
-          >
-            实验已完成 · 查看结论
-          </button>
-        )}
         {/* 数据新鲜度 + 手动更新 */}
         <div className="sync-capsule" title={syncing ? sync?.message : `最新行情日期：${sync?.latest_daily || '—'}`}>
           <span className={`sync-dot ${syncing ? 'spin' : ''}`} />

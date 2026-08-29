@@ -5,7 +5,7 @@
 import { useEffect, useRef } from 'react'
 import type { EChartsOption } from 'echarts'
 import * as echarts from 'echarts/core'
-import { BarChart, CandlestickChart, LineChart, PieChart, TreemapChart } from 'echarts/charts'
+import { BarChart, CandlestickChart, LineChart, ScatterChart, TreemapChart } from 'echarts/charts'
 import {
   DataZoomComponent,
   GridComponent,
@@ -13,7 +13,6 @@ import {
   MarkLineComponent,
   MarkPointComponent,
   TooltipComponent,
-  VisualMapComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 
@@ -21,7 +20,7 @@ echarts.use([
   LineChart,
   BarChart,
   CandlestickChart,
-  PieChart,
+  ScatterChart,
   TreemapChart,
   GridComponent,
   TooltipComponent,
@@ -29,7 +28,6 @@ echarts.use([
   DataZoomComponent,
   MarkLineComponent,
   MarkPointComponent,
-  VisualMapComponent,
   CanvasRenderer,
 ])
 

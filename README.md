@@ -93,28 +93,14 @@ python test_signals.py
 `000300.SH` 基准指数；新行情统一写入来源、可用时点和抓取时点。基准接口发生
 瞬时断连时会有限重试，超过次数后仍明确失败，不会把缺失数据当作同步成功。
 
-### 策略实验室（闭环优化，2026-08-06 新增）
+### 离线研究维护（不进入日用界面）
 
-界面「🧪 策略实验室」= **参数研究区**（非下单）。可交易候选仍在总览 **A 池**。  
-研究路线：`docs/RESEARCH-ROADMAP.md`。窗口由本地日线深度自动选择（不足则降级摸底）。
+发布产品只保留 **每日选股、个股详情、纸面仿真**。实验室、交互式回测台和机构控制台已退出
+8001 日用界面，避免把未通过研究门禁的功能包装成可用结论。
 
-```powershell
-python research_status.py             # 先看：mode=full|degraded|insufficient、Token、下一步
-python sync_history.py                # 历史日线扩容到 ~3 年（需有效 Token，约 2-4 小时，断点续传）
-python run_attribution.py             # 假突破归因 5/10/20 日（ENTRY v1）
-python run_evidence_report.py         # 成本后 IS/OOS 证据包（非买卖建议）
-python run_optimize_plan.py A 600 10  # 方案 A 优化（自动窗；600=样本数,10=采样步长）
-python backtest_custom.py --vol-ratio-min 1.6 --stop-pct 0.07 --exit-window 10 --strong-reset 3 --max-codes 600
-                                        # 自定义参数 → 净成本 IS/OOS 回测（可加形态阈值 --box-max-amp 等，见脚本头）
-python pipeline_seed.py A             # WF 复核 + 参数播种 + 擂台赛干跑
-python strategy_store.py --weights    # 查看 active 参数权重（选股排序回灌）
-```
-
-入场定义冻结：`docs/ENTRY-DEFINITION-V1.md` · 状态：`docs/STATUS.md`
-
-新模块：`bench_volume.py`（标杆量四象限引擎）、`entry_plan_b.py`（五步抓主升入场）、
-`trade_sim.py`（双模式出场模拟）、`optimizer.py`（网格优化）、`walkforward.py`（IS/OOS+滚动复核）、
-`strategy_store.py`（参数注册制+擂台赛）。说明见 `docs/HANDOFF-2026-08-06.md`。
+研究引擎、PIT 约束、成本模型、OOS/WF、基线和不可变报告仍保留为离线维护底座，只有维护者需要时
+才通过命令行运行。研究结果没有通过门禁时保持 `FAIL/NO_CANDIDATE`，不会进入 A 池或生成订单。
+研究定义与历史证据见 `docs/RESEARCH-ROADMAP.md`、`docs/ENTRY-DEFINITION-V1.md` 和历史验收文档。
 
 开发前端：
 

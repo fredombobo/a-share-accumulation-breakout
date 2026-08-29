@@ -32,14 +32,6 @@ export const IcoOverview = (p: P) => (
   </Svg>
 )
 
-export const IcoLab = (p: P) => (
-  <Svg {...p}>
-    <path d="M10 2v6.5L4.5 17a2.2 2.2 0 0 0 1.9 3.4h11.2a2.2 2.2 0 0 0 1.9-3.4L14 8.5V2" />
-    <path d="M8.5 2h7" />
-    <path d="M7.5 14.5h9" />
-  </Svg>
-)
-
 export const IcoPaper = (p: P) => (
   <Svg {...p}>
     <path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" />
@@ -98,12 +90,6 @@ export const IcoWarn = (p: P) => (
 export const IcoCheck = (p: P) => (
   <Svg {...p}>
     <path d="m5 12.5 4.5 4.5L19 7.5" />
-  </Svg>
-)
-
-export const IcoPulse = (p: P) => (
-  <Svg {...p}>
-    <path d="M3 12h4l2.5-6.5 4.5 13 2.5-6.5H21" />
   </Svg>
 )
 

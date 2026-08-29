@@ -26,21 +26,27 @@ from ab_screener.application.platform_config import (
 from ab_screener.domain.errors_v2 import V2Error
 from build_version import build_version
 
-V2_ROUTERS = (
+CORE_V2_ROUTERS = (
+    paper_router,
+    readiness_router,
+    system_router,
+)
+
+CONSOLE_V2_ROUTERS = (
     ai_insight_router,
     desk_router,
     intelligence_router,
     monitor_router,
-    paper_router,
-    readiness_router,
     research_router,
     review_router,
     risk_router,
     scan_profiles_router,
     signals_router,
     strategies_router,
-    system_router,
 )
+
+# 完整装配仍供离线契约测试和开发研究应用使用；8001 生产宿主只挂 CORE_V2_ROUTERS。
+V2_ROUTERS = CORE_V2_ROUTERS + CONSOLE_V2_ROUTERS
 
 
 def _install_platform_governance(app: FastAPI) -> None:
@@ -76,7 +82,12 @@ def _install_platform_governance(app: FastAPI) -> None:
         return response
 
 
-def include_v2_routers(app: FastAPI, *, include_scan_router: bool = True) -> None:
+def include_v2_routers(
+    app: FastAPI,
+    *,
+    include_scan_router: bool = True,
+    include_console_routers: bool = True,
+) -> None:
     """向现有 app 注册 v2 路由（独立 router；重复 path 由 OpenAPI 测试断言为 0）。
 
     include_scan_router=False：当宿主 app 已自带 legacy /api/scan 时跳过
@@ -85,5 +96,6 @@ def include_v2_routers(app: FastAPI, *, include_scan_router: bool = True) -> Non
     _install_platform_governance(app)
     if include_scan_router:
         app.include_router(scan_router)
-    for router in V2_ROUTERS:
+    routers = V2_ROUTERS if include_console_routers else CORE_V2_ROUTERS
+    for router in routers:
         app.include_router(router)

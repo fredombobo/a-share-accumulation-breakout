@@ -53,12 +53,12 @@ assert_schema_compatible(_DB)
 
 app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
 
-# P7.1 装配：v2 routers（与 legacy API 并存；重复 path 由 OpenAPI 测试断言为 0）。
-# 本文件已自带 legacy /api/scan 路由，故跳过 scan_router 避免重复 Operation ID。
+# 精简产品装配：8001 只挂平台就绪度、纸面状态与系统审计底座。
+# 研究/情报/六形态等完整路由仍可由离线开发 app 显式装配，不进入日用产品。
 from ab_screener.api.app_factory import include_v2_routers
 from ab_screener.application.platform_config import flag_enabled
 
-include_v2_routers(app, include_scan_router=False)
+include_v2_routers(app, include_scan_router=False, include_console_routers=False)
 # G2 拆路由：只读杂项（health/setup-status/manifests/today/release-readiness/kline）
 from ab_screener.api.routers.legacy_misc import router as legacy_misc_router
 
@@ -72,16 +72,12 @@ from ab_screener.api.routers.legacy_scan import router as legacy_scan_router
 
 app.include_router(legacy_scan_router)
 
-# G2 拆路由：纸面 / 实验室 / 同步 / 回测
-from ab_screener.api.routers.legacy_backtest import router as legacy_backtest_router
-from ab_screener.api.routers.legacy_lab import router as legacy_lab_router
+# 精简产品只保留纸面与行情同步；实验室和交互回测改为离线命令。
 from ab_screener.api.routers.legacy_paper import router as legacy_paper_router
 from ab_screener.api.routers.legacy_sync import router as legacy_sync_router
 
 app.include_router(legacy_paper_router)
-app.include_router(legacy_lab_router)
 app.include_router(legacy_sync_router)
-app.include_router(legacy_backtest_router)
 # 2026-08-16 整改：CORS 从 "*" 收敛为本机白名单（单端口 8001 + 开发前端 3001）。
 # 本服务只绑 127.0.0.1，但跨源读写在浏览器内即可完成——放开 "*" 等于让任意网页
 # 读取持仓/纸面账户并触发扫描。同源请求不需要 CORS，白名单只为 vite 开发代理服务。
@@ -96,20 +92,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-def _mount_logic_router() -> None:
-    """挂载 logic_platform 路由（延迟 import 防循环；失败仅告警不影响宿主）。"""
-    try:
-        from logic_platform.api.routes import router as _logic_router
-
-        app.include_router(_logic_router)
-        _LOGGER.info("logic_platform router 已挂载 /api/logic")
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.warning("logic_platform router 挂载失败: %s", exc)
-
-
-_mount_logic_router()
 
 
 from ab_screener.api.legacy_state import _paper_enabled

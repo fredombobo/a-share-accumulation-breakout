@@ -380,7 +380,7 @@ tasks:
 
   - id: LEAN-PRODUCT-PRUNING
     title: 收敛为每日选股、个股详情与纸面仿真的最小产品
-    status: ready
+    status: in_progress
     work_package: WP90
     phase: product-simplification
     dependencies:

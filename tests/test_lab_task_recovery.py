@@ -31,14 +31,17 @@ def test_status_without_id_prefers_persisted_active_task_over_terminal_task(
     assert result["status"] == "running"
 
 
-def test_strategy_lab_restores_and_refreshes_task_on_visibility() -> None:
-    source = Path("web/frontend/src/pages/StrategyLab.tsx").read_text(encoding="utf-8")
+def test_strategy_lab_is_offline_only_and_not_shipped_in_frontend() -> None:
+    """研究运行可恢复，但失败研究不再作为 8001 日用产品页面发布。"""
+    frontend_root = Path("web/frontend/src")
+    assert not (frontend_root / "pages/StrategyLab.tsx").exists()
 
-    assert "api.labStatus(tid)" in source
-    assert "const restoreTask" in source
-    assert "visibilitychange" in source
-    assert "window.addEventListener('focus'" in source
-    assert "void pollTask" in source
+    app_source = (frontend_root / "App.tsx").read_text(encoding="utf-8")
+    sidebar_source = (frontend_root / "layout/Sidebar.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert 'path="/lab"' not in app_source
+    assert "策略实验室" not in sidebar_source
 
 
 def test_status_and_report_can_be_restored_from_sqlite(monkeypatch, tmp_path) -> None:
