@@ -362,8 +362,8 @@ v2_remediation_20260823:
     live_trading_enabled: false
     real_data_gate_sha256: "runtime-generated; see latest identity-bound pt_gate_report"
   quality_snapshot:
-    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 956 offline tests, frontend build"
-    pytest: "956 passed in 203.69s"
+    strict_quality_gate: "PASS: Ruff, Mypy, strict architecture, 957 offline tests, frontend build"
+    pytest: "957 passed in 289.72s"
     pit_data: "70 passed"
     full_ruff: PASS
     full_mypy: "PASS: strict configured source set"
@@ -372,3 +372,12 @@ v2_remediation_20260823:
     playwright: "13 live routes + lab conclusion passed"
     frontend_build: PASS
     npm_audit: "0 vulnerabilities"
+  ui_hotfixes:
+    bidirectional_money_heatmap_top10:
+      status: complete
+      completed_at: "2026-08-29T08:12:00+08:00"
+      note: "首页资金热力图按方向独立取净流入 Top 10 与净流出 Top 10，并以两个等面积 treemap 展示；不足 10 项时显示实际数量，不伪造数据。"
+      evidence:
+        - "20260828 生产快照原绝对值 Top 24 仅含 3 流入/21 流出；新接口返回 10 流入/10 流出"
+        - "tests/test_money_heatmap.py 覆盖每方向独立排序、截断与全量兼容行为"
+        - "Vitest 20 passed；严格质量门 957 passed；TypeScript 与生产构建通过"

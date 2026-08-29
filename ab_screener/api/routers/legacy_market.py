@@ -529,6 +529,10 @@ def money_heatmap(top: int = 0):
     按行业聚合最新交易日 net_mf_amount（万元），返回：
       {trade_date, total_wan, items: [{name, value, net_wan, sector}]}
     value 用绝对值（treemap 面积），net_wan 保留符号（流入红/流出绿）。
+
+    ``top > 0`` 表示每个方向各取 Top N：流入按净额降序，流出按
+    净额升序（绝对流出最大优先）。这样单边极端行情不会挤掉另一方向。
+    ``top <= 0`` 保留兼容行为，返回全部非零行业并按绝对值排序。
     """
     try:
         dates, pivot = _load_sector_flow(1)
@@ -541,8 +545,13 @@ def money_heatmap(top: int = 0):
     trade_date = dates[-1]
     row = pd.to_numeric(pd.Series(pivot.iloc[-1]), errors="coerce").dropna()
     nonzero = row[row != 0]
-    ordered = nonzero.reindex(nonzero.abs().sort_values(ascending=False).index)
-    selected = ordered if top <= 0 else ordered.head(top)
+    if top <= 0:
+        selected = nonzero.reindex(nonzero.abs().sort_values(ascending=False).index)
+    else:
+        per_direction = min(top, 50)
+        inflows = nonzero[nonzero > 0].sort_values(ascending=False).head(per_direction)
+        outflows = nonzero[nonzero < 0].sort_values(ascending=True).head(per_direction)
+        selected = pd.concat([inflows, outflows])
     items = [
         {
             "name": str(k),

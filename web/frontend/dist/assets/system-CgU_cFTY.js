@@ -1,0 +1,1 @@
+import{a as e}from"./jsx-runtime-D3hokg-T.js";async function t(){return e(`/v2/system/health`)}async function n(){return e(`/v2/system/backups`)}async function r(t=50){return e(`/v2/alerts?limit=${t}`)}export{n,t as r,r as t};

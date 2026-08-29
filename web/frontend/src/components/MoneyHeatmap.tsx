@@ -1,8 +1,10 @@
 import { useMemo } from 'react'
-import { MoneyHeatmapResp } from '../api/client'
+import type { MoneyHeatmapResp } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from './EChart'
 import type { EChartsOption } from 'echarts'
+
+type HeatmapItem = MoneyHeatmapResp['items'][number]
 
 // 输入单位：万元 → 显示 亿/万
 const fmt = (v: number) => {
@@ -19,17 +21,22 @@ const fmt = (v: number) => {
 export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatmapResp; height?: number }) {
   const c = useChartColors()
 
-  const option = useMemo<EChartsOption>(() => {
-    const tree = data.items.map((it) => ({
-      name: it.name,
-      value: it.value,
-      // 流入红（up）/ 流出绿（down），颜色随净额比例渐变透明度
+  const { inflows, outflows } = useMemo(() => ({
+    inflows: data.items.filter((item) => item.net_wan > 0).sort((a, b) => b.net_wan - a.net_wan),
+    outflows: data.items.filter((item) => item.net_wan < 0).sort((a, b) => a.net_wan - b.net_wan),
+  }), [data])
+
+  const makeOption = (items: HeatmapItem[], direction: 'inflow' | 'outflow'): EChartsOption => {
+    const maxAbs = Math.max(...items.map((item) => Math.abs(item.net_wan)), 1)
+    const tree = items.map((item) => ({
+      name: item.name,
+      value: item.value,
       itemStyle: {
-        color: it.net_wan >= 0
-          ? `rgba(255, 77, 79, ${0.35 + 0.6 * Math.min(1, it.net_wan / (data.total_wan > 0 ? Math.max(data.total_wan, 1e6) : 1e6))})`
-          : `rgba(27, 191, 131, ${0.35 + 0.6 * Math.min(1, Math.abs(it.net_wan) / 1e6)})`,
+        color: direction === 'inflow'
+          ? `rgba(255, 77, 79, ${0.38 + 0.57 * Math.abs(item.net_wan) / maxAbs})`
+          : `rgba(27, 191, 131, ${0.38 + 0.57 * Math.abs(item.net_wan) / maxAbs})`,
       },
-      net_wan: it.net_wan,
+      net_wan: item.net_wan,
     }))
 
     return {
@@ -37,11 +44,11 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
       tooltip: {
         formatter: (p: any) => {
           const d = p.data
-          const direction = d.net_wan >= 0 ? '净流入' : '净流出'
-          return `<div style="color:#f8fafc"><b style="color:#fff">${d.name}</b><br/>${direction}：${fmt(Math.abs(d.net_wan))}<br/>日期：${data.trade_date}</div>`
+          const label = direction === 'inflow' ? '净流入' : '净流出'
+          return `<div style="color:#f8fafc"><b style="color:#fff">${d.name}</b><br/>${label}：${fmt(Math.abs(d.net_wan))}<br/>日期：${data.trade_date}</div>`
         },
         textStyle: { color: '#f8fafc' },
-        backgroundColor: 'rgba(0,0,0,0.75)',
+        backgroundColor: 'rgba(0,0,0,0.78)',
         borderColor: 'transparent',
       },
       series: [{
@@ -56,12 +63,11 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
           show: true,
           formatter: (p: any) => {
             const d = p.data
-            const sign = d.net_wan >= 0 ? '+' : ''
-            return `${d.name}\n${sign}${fmt(d.net_wan)}`
+            return `${d.name}\n${d.net_wan > 0 ? '+' : ''}${fmt(d.net_wan)}`
           },
           fontSize: 11,
           color: '#fff',
-          textShadowColor: 'rgba(0,0,0,0.6)',
+          textShadowColor: 'rgba(0,0,0,0.65)',
           textShadowBlur: 3,
         },
         upperLabel: { show: false },
@@ -75,7 +81,7 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
         },
       }],
     }
-  }, [data, c])
+  }
 
   return (
     <div style={{ position: 'relative' }}>
@@ -86,11 +92,28 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
         </div>
       </div>
       <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', margin: '6px 0 4px' }}>
-        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: '#ff4d4f', borderRadius: 2, marginRight: 4 }} />净流入（红）</span>
-        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: '#1bbf83', borderRadius: 2, marginRight: 4 }} />净流出（绿）</span>
+        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: '#ff4d4f', borderRadius: 2, marginRight: 4 }} />净流入 Top 10（红）</span>
+        <span><i style={{ display: 'inline-block', width: 10, height: 10, background: '#1bbf83', borderRadius: 2, marginRight: 4 }} />净流出 Top 10（绿）</span>
         <span>矩形面积 = 净额绝对值</span>
       </div>
-      <EChart option={option} height={height} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 10 }}>
+        <section style={{ minWidth: 0 }}>
+          <div style={{ color: 'var(--up-ink)', fontSize: 12, fontWeight: 700, margin: '4px 2px' }}>
+            净流入 Top 10（实际 {inflows.length}）
+          </div>
+          {inflows.length > 0
+            ? <EChart option={makeOption(inflows, 'inflow')} height={height} />
+            : <div className="muted" style={{ height, display: 'grid', placeItems: 'center' }}>当日无净流入行业</div>}
+        </section>
+        <section style={{ minWidth: 0 }}>
+          <div style={{ color: 'var(--down-ink)', fontSize: 12, fontWeight: 700, margin: '4px 2px' }}>
+            净流出 Top 10（实际 {outflows.length}）
+          </div>
+          {outflows.length > 0
+            ? <EChart option={makeOption(outflows, 'outflow')} height={height} />
+            : <div className="muted" style={{ height, display: 'grid', placeItems: 'center' }}>当日无净流出行业</div>}
+        </section>
+      </div>
     </div>
   )
 }

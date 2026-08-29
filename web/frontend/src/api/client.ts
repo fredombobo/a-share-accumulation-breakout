@@ -380,8 +380,8 @@ export const api = {
   paperGates: (opts?: ReqOpts) => request<Record<string, unknown>>('/paper/gates/status', opts),
   releaseReadiness: (opts?: ReqOpts) => request<ReleaseReadiness>('/release/readiness', opts),
 
-  // 最新交易日资金热力图（treemap）
-  moneyHeatmap: (top = 0, opts?: ReqOpts) => request<MoneyHeatmapResp>(`/money-heatmap?top=${top}`, opts),
+  // 最新交易日资金热力图；top 表示流入、流出每个方向各取多少项。
+  moneyHeatmap: (top = 10, opts?: ReqOpts) => request<MoneyHeatmapResp>(`/money-heatmap?top=${top}`, opts),
 
   // ── 数据同步（手动更新行情）──
   syncStart: (opts?: ReqOpts) => request<{ status: string; message: string }>('/sync', { ...opts, method: 'POST' }),

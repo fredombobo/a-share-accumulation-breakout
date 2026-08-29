@@ -129,7 +129,7 @@ export default function Overview() {
 
   // 最新交易日资金热力图（挂载 + 扫描完成后刷新）
   const loadHeatmap = useCallback(() => {
-    api.moneyHeatmap(24)
+    api.moneyHeatmap(10)
       .then((h) => { setHeatmap(h); setHeatErr('') })
       .catch((e: unknown) => {
         if ((e as { name?: string })?.name === 'AbortError') return
@@ -585,7 +585,7 @@ export default function Overview() {
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="h-sec">
           <h2 style={{ margin: 0 }}>市场资金热力图</h2>
-          <span className="hint">最新交易日 · 主力净流入分布</span>
+          <span className="hint">最新交易日 · 净流入 / 净流出各 Top 10</span>
         </div>
         {heatErr ? (
           <div className="muted" style={{ fontSize: 12 }}>资金热力图不可用：{heatErr}</div>
