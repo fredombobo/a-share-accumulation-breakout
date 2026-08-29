@@ -14,8 +14,28 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now: []
+ready_now:
+  - PROFESSIONAL-BACKTEST-AI-REVIEW
 tasks:
+  PROFESSIONAL-BACKTEST-AI-REVIEW:
+    status: ready
+    work_package: WP91
+    dependencies:
+      - LEAN-PRODUCT-PRUNING
+      - V2-P7.1-PORTFOLIO-BACKTEST
+      - V2-P7.2-RESEARCH-PIT-READER
+      - V2-P3-RESEARCH-GOVERNANCE
+    plan: docs/PROFESSIONAL-BACKTEST-AI-REVIEW-2026-08-29.md
+    planned_files:
+      - "ab_screener/research/professional_grid.py"
+      - "ab_screener/research/condition_plugins.py"
+      - "ab_screener/api/routers/professional_backtest.py"
+      - "ab_screener/intelligence/ai_analysis.py"
+      - "web/backend_app.py"
+      - "web/frontend/src/pages/ProfessionalBacktest.tsx"
+      - "web/frontend/src/pages/Overview.tsx"
+      - "web/frontend/src/pages/StockDetail.tsx"
+    note: "只推进 accumulation_breakout/8001；不恢复旧单参数页面，不启用纸面或实盘。"
   LEAN-PRODUCT-PRUNING:
     status: complete
     work_package: WP90

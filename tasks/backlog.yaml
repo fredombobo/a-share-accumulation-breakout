@@ -398,3 +398,23 @@ tasks:
       102 收敛至 47，960 Pytest、4 Vitest、Ruff、Mypy、架构检查、生产构建和
       浏览器验收全部通过。研究与安全底座保留离线，实盘保持关闭；机构七闸门仍
       BLOCKED，不因产品精简而改判。
+
+  - id: PROFESSIONAL-BACKTEST-AI-REVIEW
+    title: 收敛为每日选股、专业网格回测与个股 AI 证据评测
+    status: ready
+    work_package: WP91
+    phase: product-focus
+    dependencies:
+      - LEAN-PRODUCT-PRUNING
+      - V2-P7.1-PORTFOLIO-BACKTEST
+      - V2-P7.2-RESEARCH-PIT-READER
+      - V2-P3-RESEARCH-GOVERNANCE
+    plan: docs/PROFESSIONAL-BACKTEST-AI-REVIEW-2026-08-29.md
+    acceptance:
+      - 发布产品只有每日选股、个股详情与专业回测，纸面功能退出发布面但历史账本不删除
+      - 多参数固定值/范围步进/离散值网格、组合预算和动态回看窗口可复算
+      - 当前分类股票池固化代码与哈希并披露非历史 PIT 分类限制
+      - 筹码条件通过 PIT 插件接口接入且缺失数据 fail-closed
+      - 每日候选具有只读 AI 证据评测并可在无模型时本地降级
+      - OOS/WF/基线/成本压力和候选边界完整披露
+      - 全量质量门与 8001 浏览器验收通过
