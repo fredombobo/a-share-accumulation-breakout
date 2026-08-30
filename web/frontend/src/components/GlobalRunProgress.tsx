@@ -148,7 +148,7 @@ export default function GlobalRunProgress() {
       items.push({
         key: `backtest:${backtest.task_id}`,
         kind: 'backtest',
-        title: '专业回测',
+        title: '研究回测',
         statusLabel: statusLabel(backtest.status),
         stage: backtest.phase || '准备研究输入',
         message: backtest.message || '正在计算样本内与样本外证据',

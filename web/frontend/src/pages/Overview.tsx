@@ -6,6 +6,7 @@ import {
   type ClassificationKey,
   HealthResp,
   MoneyHeatmapResp,
+  ManualStrategyParameters,
   OverviewItem,
   OverviewResp,
   ScanStatus,
@@ -30,13 +31,40 @@ import {
 import type { EChartsOption } from 'echarts'
 
 function tierBadge(tier?: string, pool?: string, tradeable?: boolean) {
-  if (pool === 'A' && (tradeable || tier === 'strict')) return { text: '可交易', cls: 'pill ok' }
+  if (pool === 'A' && (tradeable || tier === 'strict')) return { text: '严格候选', cls: 'pill ok' }
   if (pool === 'A') return { text: 'A 池', cls: 'pill ok' }
   const t = (tier || '').toLowerCase()
   if (t === 'relaxed') return { text: '放宽观察', cls: 'pill warn' }
   if (t.includes('theme') || t === 'theme_fill') return { text: '主题观察', cls: 'pill' }
   if (t === 'unknown') return { text: '旧数据', cls: 'pill warn' }
   return { text: pool === 'B' ? '观察' : (tier || '—'), cls: 'pill' }
+}
+
+function manualParametersFromProfile(state: StrategyProfileState): ManualStrategyParameters {
+  const entry = state.active.entry
+  const exit = state.active.exit_reference
+  return {
+    box_min_days: Number(entry.box_min_days),
+    box_max_days: Number(entry.box_max_days),
+    box_max_amp: Number(entry.box_max_amp),
+    breakout_vol_ratio: Number(entry.breakout_vol_ratio),
+    breakout_chg_min: Number(entry.breakout_chg_min),
+    breakout_chg_max: Number(entry.breakout_chg_max),
+    breakout_vs_recent_vol_ratio: Number(entry.breakout_vs_recent_vol_ratio),
+    breakout_window_days: Number(entry.breakout_window_days),
+    require_structure: Boolean(entry.require_structure),
+    vol_ratio_min: Number(exit.vol_ratio_min),
+    stop_pct: Number(exit.stop_pct),
+    target_pct: Number(exit.target_pct ?? 0.12),
+    exit_window: Number(exit.exit_window),
+    strong_reset: Number(exit.strong_reset),
+  }
+}
+
+function profileSourceLabel(state: StrategyProfileState): string {
+  if (state.active.is_default) return '系统默认'
+  if (state.active.source.kind === 'MANUAL_RESEARCH') return '用户手工输入（未回测验证）'
+  return '回测验证后人工启用'
 }
 
 export default function Overview() {
@@ -67,6 +95,9 @@ export default function Overview() {
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
   const [profileState, setProfileState] = useState<StrategyProfileState | null>(null)
   const [profileErr, setProfileErr] = useState('')
+  const [manualProfileOpen, setManualProfileOpen] = useState(false)
+  const [manualProfile, setManualProfile] = useState<ManualStrategyParameters | null>(null)
+  const [manualSaving, setManualSaving] = useState(false)
   const [topN, setTopN] = useState(prefParams?.topN ?? 20)
   const [days, setDays] = useState(prefParams?.days ?? 160)
   const c = useChartColors()
@@ -174,6 +205,7 @@ export default function Overview() {
       .then((next) => {
         if (!next?.active?.entry || !next?.boundary) throw new Error('参数档案接口返回不完整')
         setProfileState(next)
+        setManualProfile(manualParametersFromProfile(next))
         setProfileErr('')
       })
       .catch((reason: unknown) => setProfileErr(reason instanceof Error ? reason.message : String(reason)))
@@ -364,9 +396,36 @@ export default function Overview() {
     try {
       const next = await api.resetBacktestProfile()
       setProfileState(next)
+      setManualProfile(manualParametersFromProfile(next))
       setCacheNote('已恢复系统默认参数；下一次扫描生效')
     } catch (reason) {
       setProfileErr(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+
+  const updateManualNumber = (key: keyof ManualStrategyParameters, raw: string, percentage = false) => {
+    const value = Number(raw)
+    setManualProfile((current) => current ? { ...current, [key]: percentage ? value / 100 : value } : current)
+  }
+
+  const onSaveManualProfile = async () => {
+    if (!manualProfile || scanning) return
+    const confirmed = window.confirm(
+      '确认把这些手工参数用于下一次今日研究扫描？\n\n这些参数未经过回测验证，不构成荐股或买入指令；当前正在运行或已经完成的扫描不会被改写。',
+    )
+    if (!confirmed) return
+    setManualSaving(true)
+    setProfileErr('')
+    try {
+      const next = await api.saveManualResearchProfile(manualProfile)
+      setProfileState(next)
+      setManualProfile(manualParametersFromProfile(next))
+      setManualProfileOpen(false)
+      setCacheNote('已保存手工研究参数；下一次扫描会冻结这组参数')
+    } catch (reason) {
+      setProfileErr(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setManualSaving(false)
     }
   }
 
@@ -528,7 +587,7 @@ export default function Overview() {
           </b>
           {regime?.allow_new_entries === false && <span className="badge badge-danger">禁止新开仓</span>}
         </span>
-        <span className="muted" style={{ fontSize: 12 }}>A 池 = 可交易 strict · B 池 = 观察（不混排）</span>
+        <span className="muted" style={{ fontSize: 12 }}>A 池 = 严格研究候选 · B 池 = 观察（均非荐股）</span>
       </div>
 
       {/* KPI 指标带 */}
@@ -549,7 +608,7 @@ export default function Overview() {
           <div className="kpi-ico"><IcoWallet size={16} /></div>
         </div>
         <div className="kpi accent-top">
-          <div className="kpi-label">可交易票</div>
+          <div className="kpi-label">严格候选</div>
           <div className="kpi-value">{tradeableCount}</div>
           <div className="kpi-ico"><IcoFlame size={16} /></div>
         </div>
@@ -565,7 +624,7 @@ export default function Overview() {
             <div className="seg" role="tablist" aria-label="股票池">
               {(['A', 'B', 'ALL'] as const).map((p) => (
                 <button key={p} className={`seg-item ${pool === p ? 'on' : ''}`} onClick={() => setPool(p)}>
-                  {p === 'A' ? 'A · 可交易' : p === 'B' ? 'B · 观察' : '全部'}
+                  {p === 'A' ? 'A · 严格候选' : p === 'B' ? 'B · 观察' : '全部'}
                 </button>
               ))}
             </div>
@@ -575,22 +634,59 @@ export default function Overview() {
         {profileState && (
           <div className={`scan-profile-strip ${profileState.active.is_default ? 'default' : 'custom'}`}>
             <div>
-              <span>本次扫描参数</span>
-              <b>{profileState.active.is_default ? '系统默认' : '专业回测人工启用'}</b>
+              <span>下一次扫描参数</span>
+              <b>{profileSourceLabel(profileState)}</b>
               <small>
                 横盘 {String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日 ·
                 突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)} ·
+                止损 {Number(profileState.active.exit_reference.stop_pct) * 100}% ·
+                止盈 {Number(profileState.active.exit_reference.target_pct ?? 0.12) * 100}% ·
                 <span className="mono"> {profileState.active.config_hash}</span>
               </small>
               <small>{profileState.boundary.notice}</small>
             </div>
             <div className="scan-profile-actions">
-              <button className="btn btn-sm" type="button" onClick={() => nav('/backtest')}>去回测与选择参数</button>
+              <button className="btn btn-sm primary" type="button" onClick={() => setManualProfileOpen((value) => !value)} disabled={scanning}>
+                {manualProfileOpen ? '收起手工参数' : '手动设置研究参数'}
+              </button>
+              <button className="btn btn-sm" type="button" onClick={() => nav('/backtest')}>用回测研究参数</button>
               {!profileState.active.is_default && (
                 <button className="btn btn-sm" type="button" onClick={onResetProfile} disabled={scanning}>恢复系统默认</button>
               )}
             </div>
           </div>
+        )}
+        {manualProfileOpen && manualProfile && (
+          <section className="manual-profile-editor" aria-label="手工今日研究参数">
+            <div className="config-heading">
+              <div>
+                <h3>手工今日研究参数</h3>
+                <p>无需先跑回测。保存后只影响下一次扫描，并永久标注“未回测验证”。</p>
+              </div>
+              <span className="pill warn">研究学习 · 非荐股</span>
+            </div>
+            <div className="manual-profile-grid">
+              <label><span>横盘最短（交易日）</span><input type="number" min="20" max="200" value={manualProfile.box_min_days} onChange={(event) => updateManualNumber('box_min_days', event.target.value)} /></label>
+              <label><span>横盘最长（交易日）</span><input type="number" min="40" max="240" value={manualProfile.box_max_days} onChange={(event) => updateManualNumber('box_max_days', event.target.value)} /></label>
+              <label><span>箱体最大振幅（%）</span><input type="number" min="5" max="60" step="0.5" value={manualProfile.box_max_amp * 100} onChange={(event) => updateManualNumber('box_max_amp', event.target.value, true)} /></label>
+              <label><span>突破量 / 箱体均量</span><input type="number" min="1" max="5" step="0.1" value={manualProfile.breakout_vol_ratio} onChange={(event) => updateManualNumber('breakout_vol_ratio', event.target.value)} /></label>
+              <label><span>突破最小涨幅（%）</span><input type="number" min="0.1" max="15" step="0.1" value={manualProfile.breakout_chg_min * 100} onChange={(event) => updateManualNumber('breakout_chg_min', event.target.value, true)} /></label>
+              <label><span>突破最大涨幅（%）</span><input type="number" min="1" max="30" step="0.1" value={manualProfile.breakout_chg_max * 100} onChange={(event) => updateManualNumber('breakout_chg_max', event.target.value, true)} /></label>
+              <label><span>突破量 / 前 5 日均量</span><input type="number" min="0.8" max="5" step="0.1" value={manualProfile.breakout_vs_recent_vol_ratio} onChange={(event) => updateManualNumber('breakout_vs_recent_vol_ratio', event.target.value)} /></label>
+              <label><span>近期突破观察窗（日）</span><input type="number" min="1" max="20" value={manualProfile.breakout_window_days} onChange={(event) => updateManualNumber('breakout_window_days', event.target.value)} /></label>
+              <label><span>建仓量 / 前 5 日均量</span><input type="number" min="1" max="4" step="0.1" value={manualProfile.vol_ratio_min} onChange={(event) => updateManualNumber('vol_ratio_min', event.target.value)} /></label>
+              <label className="risk-field"><span>止损（%）</span><input type="number" min="1" max="25" step="0.5" value={manualProfile.stop_pct * 100} onChange={(event) => updateManualNumber('stop_pct', event.target.value, true)} /></label>
+              <label className="risk-field"><span>止盈（%）</span><input type="number" min="2" max="100" step="0.5" value={manualProfile.target_pct * 100} onChange={(event) => updateManualNumber('target_pct', event.target.value, true)} /></label>
+              <label><span>二次出货观察窗（日）</span><input type="number" min="3" max="40" value={manualProfile.exit_window} onChange={(event) => updateManualNumber('exit_window', event.target.value)} /></label>
+              <label><span>强势日清零根数</span><input type="number" min="1" max="10" value={manualProfile.strong_reset} onChange={(event) => updateManualNumber('strong_reset', event.target.value)} /></label>
+              <label className="manual-checkbox"><input type="checkbox" checked={manualProfile.require_structure} onChange={(event) => setManualProfile((current) => current ? { ...current, require_structure: event.target.checked } : current)} /><span>要求完整吸筹结构</span></label>
+            </div>
+            <p className="config-note">止损和止盈不决定是否入选，只用于候选风险参考；回测页面中的同名参数会真实参与 T+1 退出模拟。</p>
+            <div className="scan-profile-actions">
+              <button className="btn primary" type="button" disabled={manualSaving || scanning} onClick={onSaveManualProfile}>{manualSaving ? '保存中...' : '确认保存手工参数'}</button>
+              <button className="btn" type="button" onClick={() => setManualProfileOpen(false)}>取消</button>
+            </div>
+          </section>
         )}
         {profileErr && <div className="err" style={{ marginBottom: 10 }}>参数档案读取失败：{profileErr}</div>}
         <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
@@ -710,7 +806,7 @@ export default function Overview() {
       {/* 股票卡片网格 */}
       <div className="h-sec" style={{ marginTop: 4 }}>
         <h2 style={{ margin: 0 }}>
-          {pool === 'A' ? 'A 池 · 可交易候选' : pool === 'B' ? 'B 池 · 观察名单' : '全部候选'}
+          {pool === 'A' ? 'A 池 · 严格研究候选' : pool === 'B' ? 'B 池 · 观察名单' : '全部候选'}
           <span className="tag">{data.items.length} 只</span>
         </h2>
       </div>

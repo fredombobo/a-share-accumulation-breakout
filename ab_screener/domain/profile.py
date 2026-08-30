@@ -30,6 +30,7 @@ class StrategyProfile:
     strong_reset: int = 3
     exit_window: int = 10
     stop_pct: float = 0.07
+    target_pct: float = 0.12
     # 池
     top_n_trade: int = 20
     top_n_watch: int = 30
@@ -59,6 +60,8 @@ class StrategyProfile:
             raise ValueError("breakout volume ratios must be positive")
         if not 0 < self.stop_pct < 1:
             raise ValueError("stop_pct must be between 0 and 1")
+        if not 0 < self.target_pct <= 1:
+            raise ValueError("target_pct must be greater than 0 and at most 1")
 
     @property
     def is_default(self) -> bool:
@@ -84,6 +87,7 @@ class StrategyProfile:
             "strong_reset": self.strong_reset,
             "exit_window": self.exit_window,
             "stop_pct": self.stop_pct,
+            "target_pct": self.target_pct,
         }
 
     def required_scan_days(self) -> int:
@@ -92,6 +96,10 @@ class StrategyProfile:
 
     def to_canonical_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        # schema v1/v2 档案创建时还没有止盈字段。保留其原始 canonical
+        # 形态，保证不可变历史行的 config_hash 仍可验证；新档案统一使用 v3。
+        if self.schema_version < 3:
+            d.pop("target_pct", None)
         # 稳定排序
         return {k: d[k] for k in sorted(d.keys())}
 
@@ -111,8 +119,8 @@ def default_profile() -> StrategyProfile:
         return StrategyProfile(
             profile_id="default",
             name="default-accumulation-breakout",
-            schema_version=1,
-            version="1.0.0",
+            schema_version=3,
+            version="1.1.0",
             status="active",
             box_min_days=int(getattr(cfg, "BOX_MIN_DAYS", 20)),
             box_max_days=int(getattr(cfg, "BOX_MAX_DAYS", 125)),
@@ -129,6 +137,7 @@ def default_profile() -> StrategyProfile:
             strong_reset=int(getattr(cfg, "BENCH_STRONG_RESET", 3)),
             exit_window=int(getattr(cfg, "BENCH_EXIT_WINDOW", 10)),
             stop_pct=float(getattr(cfg, "BENCH_STOP_PCT", 0.07)),
+            target_pct=float(getattr(cfg, "TARGET_PCT_1", 0.12)),
             top_n_trade=int(getattr(cfg, "TOP_N_TRADE", 20)),
             top_n_watch=int(getattr(cfg, "TOP_N_WATCH", 30)),
         )
@@ -136,8 +145,8 @@ def default_profile() -> StrategyProfile:
         return StrategyProfile(
             profile_id="default",
             name="default-accumulation-breakout",
-            schema_version=1,
-            version="1.0.0",
+            schema_version=3,
+            version="1.1.0",
             status="active",
         )
 

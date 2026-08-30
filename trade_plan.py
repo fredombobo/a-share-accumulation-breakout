@@ -18,6 +18,7 @@ def build_trade_card(
     regime: str = "neutral",
     score: float | None = None,
     stop_pct: float = 0.07,
+    target_pct: float = 0.12,
 ) -> dict[str, Any]:
     """生成单票交易计划。"""
     px = float(price) if price is not None and price == price else None
@@ -25,6 +26,7 @@ def build_trade_card(
     bl = float(box_low) if box_low is not None and box_low == box_low else None
 
     stop_pct = min(0.25, max(0.01, float(stop_pct)))
+    target_pct = min(1.0, max(0.02, float(target_pct)))
     stop_multiplier = 1.0 - stop_pct
     # 止损：箱体上沿下方 1% 与档案止损比例取更紧（对多头）
     stop = None
@@ -38,16 +40,11 @@ def build_trade_card(
     elif px:
         stop = px * stop_multiplier
 
-    # 目标：+12% 或 1.5R
+    # 目标 1 与回测档案止盈比例完全一致；目标 2 不再额外暗示推荐价。
     target1 = None
     target2 = None
     if px and stop and stop < px:
-        risk = px - stop
-        target1 = px + risk * 1.5
-        target2 = px + risk * 2.5
-        # 同时设百分比上限
-        target1 = min(target1, px * 1.12)
-        target2 = min(target2, px * 1.20)
+        target1 = px * (1.0 + target_pct)
 
     # 仓位：环境 + 层级
     base = 0.15
@@ -68,10 +65,10 @@ def build_trade_card(
         "entry_ref": round(px, 2) if px else None,
         "entry_note": "突破确认日尾盘或次日开盘弱转强（回测二选一）",
         "stop_loss": round(stop, 2) if stop else None,
-        "stop_rule": f"收盘跌破箱体上沿*0.99 或 -{stop_pct:.1%}（取触发先到者）",
+        "stop_rule": f"价格触及箱体上沿*0.99 或 -{stop_pct:.1%}（取触发先到者）",
         "target_1": round(target1, 2) if target1 else None,
         "target_2": round(target2, 2) if target2 else None,
-        "target_rule": "目标1≈1.5R且≤+12%；目标2≈2.5R且≤+20%",
+        "target_rule": f"研究档案止盈 +{target_pct:.1%}；仅作回测与风控参考",
         "position_pct": position_pct,
         "max_hold_days": 15,
         "invalidate_days": 5,
@@ -89,6 +86,7 @@ def attach_trade_cards(
     sig_by_code: dict | None = None,
     *,
     stop_pct: float = 0.07,
+    target_pct: float = 0.12,
 ):
     """为结果 DataFrame 增加交易字段列。"""
 
@@ -110,6 +108,7 @@ def attach_trade_cards(
             regime=regime,
             score=r.get("综合分") if "综合分" in r else r.get("total_score"),
             stop_pct=stop_pct,
+            target_pct=target_pct,
         )
         cards.append(card)
     out["止损价"] = [c["stop_loss"] for c in cards]

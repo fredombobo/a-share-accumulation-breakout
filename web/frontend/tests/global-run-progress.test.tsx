@@ -58,7 +58,7 @@ describe('全局运行进度', () => {
 
     renderProgress()
 
-    expect(await screen.findByRole('progressbar', { name: '专业回测进度' })).toHaveAttribute('aria-valuenow', '64')
+    expect(await screen.findByRole('progressbar', { name: '研究回测进度' })).toHaveAttribute('aria-valuenow', '64')
     expect(screen.getByText(/无进度变化，可能仍在重计算/)).toBeVisible()
   })
 

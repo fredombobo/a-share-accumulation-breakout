@@ -44,6 +44,7 @@ def _result(verdict: str = "EXPLORATORY_PROMISING") -> dict[str, Any]:
             "strong_reset": 3,
             "exit_window": 10,
             "stop_pct": 0.05,
+            "target_pct": 0.15,
         },
         "is": {"net_n_trades": 50, "portfolio_total_return": 0.12},
         "oos": {"net_n_trades": 42, "portfolio_total_return": 0.08},
@@ -135,6 +136,7 @@ def test_profile_activation_is_manual_idempotent_and_reversible(
     assert active["entry"]["box_max_days"] == 200
     assert active["entry"]["breakout_vol_ratio"] == 1.8
     assert active["exit_reference"]["stop_pct"] == 0.05
+    assert active["exit_reference"]["target_pct"] == 0.15
     assert active["required_scan_days"] == 210
     assert repeated.status_code == 200
     assert repeated.json()["idempotent"] is True
@@ -180,6 +182,67 @@ def test_weak_or_stale_backtest_is_fail_closed(tmp_path: Path, monkeypatch) -> N
     assert StrategyProfileRepository(path).effective()["profile"].is_default
 
 
+def test_manual_profile_does_not_require_backtest_and_is_validated(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "manual-profile.db"
+    client = _client(path)
+    monkeypatch.setattr(
+        "ab_screener.application.strategy_profile_service.build_version",
+        lambda: "code-manual-v1",
+    )
+    parameters = {
+        "box_min_days": 60,
+        "box_max_days": 180,
+        "box_max_amp": 0.24,
+        "breakout_vol_ratio": 1.7,
+        "breakout_chg_min": 0.02,
+        "breakout_chg_max": 0.095,
+        "breakout_vs_recent_vol_ratio": 1.3,
+        "breakout_window_days": 5,
+        "require_structure": True,
+        "vol_ratio_min": 1.5,
+        "stop_pct": 0.06,
+        "target_pct": 0.16,
+        "exit_window": 12,
+        "strong_reset": 3,
+    }
+
+    unacknowledged = client.post(
+        "/api/backtest/profile/manual",
+        json={"parameters": parameters, "acknowledge_research_only": False},
+    )
+    activated = client.post(
+        "/api/backtest/profile/manual",
+        json={"parameters": parameters, "acknowledge_research_only": True},
+    )
+    repeated = client.post(
+        "/api/backtest/profile/manual",
+        json={"parameters": parameters, "acknowledge_research_only": True},
+    )
+    invalid = client.post(
+        "/api/backtest/profile/manual",
+        json={
+            "parameters": {**parameters, "target_pct": 1.01},
+            "acknowledge_research_only": True,
+        },
+    )
+
+    assert unacknowledged.status_code == 409
+    assert unacknowledged.json()["detail"]["code"] == "MANUAL_PROFILE_ACKNOWLEDGEMENT_REQUIRED"
+    assert activated.status_code == 200
+    active = activated.json()["active"]
+    assert active["source"]["kind"] == "MANUAL_RESEARCH"
+    assert active["source"]["evidence"]["backtest_validated"] is False
+    assert active["entry"]["box_max_days"] == 180
+    assert active["exit_reference"]["stop_pct"] == 0.06
+    assert active["exit_reference"]["target_pct"] == 0.16
+    assert repeated.status_code == 200
+    assert repeated.json()["idempotent"] is True
+    assert invalid.status_code == 422
+    assert invalid.json()["detail"]["code"] == "PARAMETER_OUT_OF_RANGE"
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM strategy_profiles").fetchone()[0] == 1
+
+
 def test_profile_signal_contract_is_forwarded_unchanged_to_strict_detector(monkeypatch) -> None:
     profile = StrategyProfile(
         **{
@@ -211,3 +274,25 @@ def test_profile_signal_contract_is_forwarded_unchanged_to_strict_detector(monke
     assert hits == ["000001.SZ"]
     assert captured["kwargs"] == profile.signal_kwargs()
     assert signals["000001.SZ"]["is_breakout"] is True
+
+
+def test_legacy_profile_hash_remains_readable_after_target_parameter_upgrade(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-profile.db"
+    LocalStore(db_path=path)
+    legacy = StrategyProfile(
+        profile_id="legacy-profile",
+        name="旧参数档案",
+        schema_version=2,
+        version="legacy-v2",
+        status="active",
+        stop_pct=0.06,
+    )
+    assert "target_pct" not in legacy.to_canonical_dict()
+
+    repo = StrategyProfileRepository(path)
+    stored = repo.activate(legacy)
+    restored = repo.effective()
+
+    assert stored["config_hash"] == restored["config_hash"] == legacy.config_hash()
+    assert restored["profile"].target_pct == 0.12
+    assert "target_pct" not in restored["profile"].to_canonical_dict()

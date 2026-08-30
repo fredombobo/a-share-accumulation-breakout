@@ -212,7 +212,7 @@ export default function StockDetail() {
             <div className="card" style={{ borderColor: 'color-mix(in srgb, var(--accent) 40%, var(--border))' }}>
               <div className="h-sec" style={{ marginBottom: 10 }}>
                 <h2 style={{ margin: 0 }}>交易卡片</h2>
-                <span className={`pill ${s.trade.tradeable ? 'ok' : 'warn'}`}>{s.trade.tradeable ? '可交易' : '观察'}</span>
+                <span className={`pill ${s.trade.tradeable ? 'ok' : 'warn'}`}>{s.trade.tradeable ? '严格研究候选' : '观察'}</span>
               </div>
               <div className="sig-grid">
                 <div><span>入场参考</span><b className="num">{s.trade.entry_ref ?? '—'}</b></div>

@@ -51,7 +51,7 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
     dates = _distinct_dates(db_path)
     windows = _resolve_windows(payload.get("windows"), dates)
     normalized = {
-        "contract_version": "professional-backtest-v1.1.0",
+        "contract_version": "professional-backtest-v1.2.0",
         "strategy": strategy,
         "sample_step": step,
         "max_codes": max_codes,
@@ -63,6 +63,10 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
             "signal_group_count": len(parameter_space["signal_combinations"]),
             "exit_group_count": len(parameter_space["exit_combinations"]),
             "invalid_signal_combinations": parameter_space["invalid_signal_combinations"],
+            "long_running": parameter_space["long_running"],
+            "long_running_warning_combinations": parameter_space[
+                "long_running_warning_combinations"
+            ],
         },
         "universe": universe,
         "conditions": conditions,
@@ -379,6 +383,7 @@ def _exit_key(payload: dict[str, Any]) -> tuple[Any, ...]:
         int(payload["strong_reset"]),
         int(payload["exit_window"]),
         round(float(payload["stop_pct"]), 10),
+        round(float(payload["target_pct"]), 10),
     )
 
 

@@ -9,10 +9,10 @@ type PageMeta = { kicker: string; title: string; sub: string }
 
 export function pageMeta(pathname: string): PageMeta {
   if (pathname.startsWith('/guide')) {
-    return { kicker: 'Operating Manual', title: '使用说明', sub: '每日选股 · 专业回测 · 分类标准' }
+    return { kicker: 'Operating Manual', title: '使用说明', sub: '每日选股 · 研究回测 · 分类标准' }
   }
   if (pathname.startsWith('/backtest')) {
-    return { kicker: 'Professional Research', title: '专业回测', sub: '参数空间 · 样本外 · 成本压力' }
+    return { kicker: 'Research Backtest', title: '研究回测', sub: '参数空间 · 样本外 · 成本压力' }
   }
   if (pathname.startsWith('/stock')) {
     return { kicker: 'Stock Detail', title: '个股详情', sub: 'K 线 · 箱体 · 资金流 · 交易卡片' }

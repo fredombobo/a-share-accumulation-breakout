@@ -5,7 +5,7 @@ import { IcoLayers, IcoOverview, IcoPaper } from '../components/Icons'
 
 const items = [
   { path: '/', label: '每日选股', hint: '扫描 · 候选 · 资金', Icon: IcoOverview },
-  { path: '/backtest', label: '专业回测', hint: '多参数 · OOS · 成本', Icon: IcoLayers },
+  { path: '/backtest', label: '研究回测', hint: '多参数 · OOS · 成本', Icon: IcoLayers },
 ]
 
 const helpItem = { path: '/guide', label: '使用说明', hint: '逻辑 · 操作 · 术语', Icon: IcoPaper }

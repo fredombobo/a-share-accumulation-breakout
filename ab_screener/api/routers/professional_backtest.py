@@ -13,6 +13,7 @@ from ab_screener.api.deps import get_db_path
 from ab_screener.application.strategy_profile_service import (
     ProfileActivationError,
     activate_from_task,
+    activate_manual_profile,
     activation_status,
     profile_state,
     reset_profile,
@@ -47,6 +48,11 @@ class ProfileResetRequest(BaseModel):
     confirm: bool = False
 
 
+class ManualProfileRequest(BaseModel):
+    parameters: dict[str, Any]
+    acknowledge_research_only: bool = False
+
+
 def _store(db_path: str) -> ResearchRunStore:
     key = str(Path(db_path).resolve())
     with _LOCK:
@@ -73,8 +79,20 @@ def _raise_grid_error(exc: ProfessionalGridError) -> NoReturn:
 
 
 def _raise_profile_error(exc: ProfileActivationError | StrategyProfileRepositoryError) -> NoReturn:
+    invalid_request_codes = {
+        "INVALID_MANUAL_PARAMETERS",
+        "MISSING_MANUAL_PARAMETER",
+        "UNKNOWN_PARAMETER",
+        "INVALID_PARAMETER_VALUE",
+        "PARAMETER_OUT_OF_RANGE",
+        "EMPTY_PARAMETER_SPACE",
+    }
     raise HTTPException(
-        status_code=409 if exc.code not in {"STRATEGY_PROFILE_SCHEMA_MISSING"} else 503,
+        status_code=(
+            503
+            if exc.code == "STRATEGY_PROFILE_SCHEMA_MISSING"
+            else 422 if exc.code in invalid_request_codes else 409
+        ),
         detail={
             "code": exc.code,
             "message": str(exc),
@@ -129,7 +147,15 @@ def preview(
             "combinations": prepared["parameter_space"]["count"],
             "stocks": prepared["universe"]["count"],
             "sample_step": prepared["sample_step"],
-            "note": "耗时取决于组合数、股票数和采样步长；任务会在后台运行并持久化。",
+            "long_running": prepared["parameter_space"]["long_running"],
+            "warning_threshold": prepared["parameter_space"][
+                "long_running_warning_combinations"
+            ],
+            "note": (
+                "组合数超过常规阈值，可能持续数小时；任务会在后台运行并持久化。"
+                if prepared["parameter_space"]["long_running"]
+                else "耗时取决于组合数、股票数和采样步长；任务会在后台运行并持久化。"
+            ),
         },
     }
 
@@ -231,6 +257,21 @@ def restore_default_profile(
 ) -> dict[str, Any]:
     try:
         return reset_profile(db_path, confirm=body.confirm)
+    except (ProfileActivationError, StrategyProfileRepositoryError) as exc:
+        _raise_profile_error(exc)
+
+
+@router.post("/profile/manual")
+def activate_user_parameters(
+    body: ManualProfileRequest,
+    db_path: str = Depends(get_db_path),
+) -> dict[str, Any]:
+    try:
+        return activate_manual_profile(
+            db_path,
+            body.parameters,
+            acknowledge_research_only=body.acknowledge_research_only,
+        )
     except (ProfileActivationError, StrategyProfileRepositoryError) as exc:
         _raise_profile_error(exc)
 

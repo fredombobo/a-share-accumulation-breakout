@@ -25,9 +25,10 @@ from config import (
     BREAKOUT_VS_RECENT_VOL_RATIO,
 )
 
-MAX_COMBINATIONS = 512
+LONG_RUNNING_WARNING_COMBINATIONS = 512
+MAX_COMBINATIONS = 5_120
 MAX_UNIVERSE_CODES = 1500
-GRID_CONTRACT_VERSION = "professional-grid-v1.1.0"
+GRID_CONTRACT_VERSION = "professional-grid-v1.2.0"
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,9 @@ PARAMETERS: tuple[ParameterDefinition, ...] = (
                         {"mode": "fixed", "value": 1.5}, "用于二次出货基准量识别，不是突破量比"),
     ParameterDefinition("stop_pct", "止损比例", "exit", "number", 0.01, 0.25,
                         {"mode": "values", "values": [0.05, 0.07]}, "触发后按保守规则模拟"),
+    ParameterDefinition("target_pct", "止盈比例", "exit", "number", 0.02, 1.00,
+                        {"mode": "values", "values": [0.10, 0.12, 0.15]},
+                        "买入后下一交易日起触发；同日同时触及止损时优先按止损"),
     ParameterDefinition("exit_window", "二次出货观察窗", "exit", "integer", 3, 40,
                         {"mode": "values", "values": [7, 10, 15]}, "窗口内累计量达到基准后的退出检查"),
     ParameterDefinition("strong_reset", "强势日清零根数", "exit", "integer", 1, 10,
@@ -89,6 +93,7 @@ def parameter_catalog() -> dict[str, Any]:
     return {
         "version": GRID_CONTRACT_VERSION,
         "max_combinations": MAX_COMBINATIONS,
+        "long_running_warning_combinations": LONG_RUNNING_WARNING_COMBINATIONS,
         "parameters": [asdict(item) for item in PARAMETERS],
     }
 
@@ -156,9 +161,40 @@ def expand_parameter_space(
         "exit_combinations": exit_combos,
         "combinations": combos,
         "count": len(combos),
+        "long_running": len(combos) > LONG_RUNNING_WARNING_COMBINATIONS,
+        "long_running_warning_combinations": LONG_RUNNING_WARNING_COMBINATIONS,
         "invalid_signal_combinations": invalid_count,
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         "horizon": dynamic_horizon(valid_signal),
+    }
+
+
+def validate_fixed_parameters(raw: Any) -> dict[str, dict[str, Any]]:
+    """Validate one complete manual profile against the professional contract."""
+    if not isinstance(raw, dict):
+        raise ProfessionalGridError("INVALID_MANUAL_PARAMETERS", "手工参数必须是对象")
+    missing = sorted(set(_BY_KEY) - set(raw))
+    unknown = sorted(set(raw) - set(_BY_KEY))
+    if missing:
+        raise ProfessionalGridError(
+            "MISSING_MANUAL_PARAMETER",
+            "手工参数不完整",
+            {"keys": missing},
+        )
+    if unknown:
+        raise ProfessionalGridError(
+            "UNKNOWN_PARAMETER",
+            "存在不支持的参数",
+            {"keys": unknown},
+        )
+    expanded = expand_parameter_space(
+        {key: {"mode": "fixed", "value": raw[key]} for key in _BY_KEY},
+        max_combinations=1,
+    )
+    combination = expanded["combinations"][0]
+    return {
+        "signal": dict(combination["signal"]),
+        "exit": dict(combination["exit"]),
     }
 
 

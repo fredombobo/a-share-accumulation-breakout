@@ -124,6 +124,8 @@ def run_single_backtest(
         "exit_window": int((exit_params or {}).get("exit_window") or 10),
         "stop_pct": float((exit_params or {}).get("stop_pct") or 0.07),
     }
+    if (exit_params or {}).get("target_pct") is not None:
+        combo["target_pct"] = float((exit_params or {})["target_pct"])
     vr_levels = [combo["vol_ratio_min"]]
     combos = [combo]
 

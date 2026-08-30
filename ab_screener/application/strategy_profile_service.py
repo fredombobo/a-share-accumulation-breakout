@@ -1,6 +1,8 @@
 """Application service closing professional backtests into daily scan profiles."""
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -10,15 +12,21 @@ from ab_screener.data.strategy_profile_repository import (
 )
 from ab_screener.domain.profile import StrategyProfile
 from ab_screener.research.pit_reader import ResearchPitError, latest_research_cutoff
+from ab_screener.research.professional_grid import (
+    ProfessionalGridError,
+    validate_fixed_parameters,
+)
 from build_version import build_version
 
 PROFILE_ID = "professional-backtest-daily-scan"
-PROFILE_SCHEMA_VERSION = 2
+PROFILE_SCHEMA_VERSION = 3
+MANUAL_PROFILE_ID = "manual-daily-research-scan"
 PROFILE_BOUNDARY = {
     "scope": "DAILY_A_POOL_TECHNICAL_ENTRY",
     "manual_activation_required": True,
     "automatic_promotion": False,
     "b_pool_uses_profile": False,
+    "allowed_sources": ["BUILT_IN", "MANUAL_RESEARCH", "PROFESSIONAL_BACKTEST"],
     "daily_extra_gates": [
         "数据新鲜度",
         "市场环境",
@@ -27,8 +35,9 @@ PROFILE_BOUNDARY = {
         "流动性与评分",
     ],
     "notice": (
-        "档案统一 A 池技术入场参数；今日选股仍叠加生产候选门禁，"
-        "因此不承诺与回测逐只完全相同。B 池继续使用固定宽松观察规则。"
+        "用户可独立选择系统默认、手工研究参数或合格回测档案。档案只统一 A 池"
+        "技术入场和风险参考；今日扫描仍叠加数据与质量门禁，B 池继续使用固定"
+        "宽松观察规则。本平台只用于研究学习，不构成荐股或买入指令。"
     ),
 }
 
@@ -189,7 +198,7 @@ def _profile_from_task(task: dict[str, Any]) -> StrategyProfile:
             profile_id=PROFILE_ID,
             name="专业回测人工启用档案",
             schema_version=PROFILE_SCHEMA_VERSION,
-            version=str(task["task_id"]),
+            version=f"{task['task_id']}:profile-v3",
             status="active",
             box_min_days=int(signal["box_min_days"]),
             box_max_days=int(signal["box_max_days"]),
@@ -204,6 +213,7 @@ def _profile_from_task(task: dict[str, Any]) -> StrategyProfile:
             strong_reset=int(exit_params["strong_reset"]),
             exit_window=int(exit_params["exit_window"]),
             stop_pct=float(exit_params["stop_pct"]),
+            target_pct=float(exit_params.get("target_pct", 0.12)),
             notes=[
                 "仅用于每日 A 池技术入场参数；B 池与额外生产门禁不随档案变化。",
                 "这是人工启用的探索性候选档案，不代表正式研究晋级或收益承诺。",
@@ -253,6 +263,80 @@ def activate_from_task(
         "activation": activation_status(db_path, task),
         "idempotent": False,
     }
+
+
+def activate_manual_profile(
+    db_path: str | Path,
+    parameters: dict[str, Any],
+    *,
+    acknowledge_research_only: bool,
+) -> dict[str, Any]:
+    """Activate one user-entered research profile without claiming backtest evidence."""
+    if not acknowledge_research_only:
+        raise ProfileActivationError(
+            "MANUAL_PROFILE_ACKNOWLEDGEMENT_REQUIRED",
+            "请先确认：手工参数未经回测验证，只用于个人研究学习",
+        )
+    try:
+        normalized = validate_fixed_parameters(parameters)
+    except ProfessionalGridError as exc:
+        raise ProfileActivationError(exc.code, str(exc), exc.details) from exc
+
+    canonical = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    parameter_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    code_version = str(build_version())
+    version_seed = f"{PROFILE_SCHEMA_VERSION}:{parameter_hash}:{code_version}"
+    version_hash = hashlib.sha256(version_seed.encode("utf-8")).hexdigest()[:16]
+    signal = normalized["signal"]
+    exit_params = normalized["exit"]
+    profile = StrategyProfile(
+        profile_id=MANUAL_PROFILE_ID,
+        name="用户手工研究参数",
+        schema_version=PROFILE_SCHEMA_VERSION,
+        version=f"manual-{version_hash}",
+        status="active",
+        box_min_days=int(signal["box_min_days"]),
+        box_max_days=int(signal["box_max_days"]),
+        box_max_amp=float(signal["box_max_amp"]),
+        breakout_vol_ratio=float(signal["breakout_vol_ratio"]),
+        breakout_chg_min=float(signal["breakout_chg_min"]),
+        breakout_chg_max=float(signal["breakout_chg_max"]),
+        breakout_vs_recent_vol_ratio=float(signal["breakout_vs_recent_vol_ratio"]),
+        breakout_window_days=int(signal["breakout_window_days"]),
+        require_structure=bool(signal["require_structure"]),
+        vol_ratio_min=float(exit_params["vol_ratio_min"]),
+        strong_reset=int(exit_params["strong_reset"]),
+        exit_window=int(exit_params["exit_window"]),
+        stop_pct=float(exit_params["stop_pct"]),
+        target_pct=float(exit_params["target_pct"]),
+        notes=[
+            "由用户直接输入，未经过 IS/OOS、WF、基线或成本压力验证。",
+            "只用于下一次 A 池研究扫描和风险参考，不构成荐股或买入指令。",
+            "B 池和数据新鲜度、市场环境、资金流、基本面、流动性门禁保持不变。",
+        ],
+        source_kind="MANUAL_RESEARCH",
+        source_code_version=code_version,
+        source_input_hash=parameter_hash,
+        source_evidence={
+            "user_supplied": True,
+            "backtest_validated": False,
+            "research_only": True,
+        },
+    )
+    repo = StrategyProfileRepository(db_path)
+    effective = repo.effective()
+    if effective["config_hash"] == profile.config_hash():
+        return {**profile_state(db_path), "idempotent": True}
+    try:
+        repo.activate(profile)
+    except StrategyProfileRepositoryError as exc:
+        raise ProfileActivationError(exc.code, str(exc), exc.details) from exc
+    return {**profile_state(db_path), "idempotent": False}
 
 
 def reset_profile(db_path: str | Path, *, confirm: bool) -> dict[str, Any]:

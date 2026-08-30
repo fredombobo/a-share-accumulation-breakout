@@ -214,6 +214,8 @@ def _validated_combo_overrides(
             "exit_window": int(raw["exit_window"]),
             "stop_pct": float(raw["stop_pct"]),
         }
+        if raw.get("target_pct") is not None:
+            combo["target_pct"] = float(raw["target_pct"])
         normalized[param_id(strategy, combo)] = combo
     return [normalized[key] for key in sorted(normalized)]
 
@@ -374,6 +376,7 @@ def _replay_params(df: pd.DataFrame, signals: list[dict], combos: list[dict]) ->
                     "stop_pct": combo["stop_pct"],
                     "exit_window": combo["exit_window"],
                     "strong_reset": combo["strong_reset"],
+                    "target_pct": combo.get("target_pct"),
                 },
             )
             if sim.get("ok"):

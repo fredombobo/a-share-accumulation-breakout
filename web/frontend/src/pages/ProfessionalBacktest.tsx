@@ -23,10 +23,10 @@ const PRIMARY_KEYS = new Set([
   'box_min_days',
   'box_max_days',
   'breakout_vol_ratio',
-  'stop_pct',
   'exit_window',
   'strong_reset',
 ])
+const RISK_KEYS = new Set(['stop_pct', 'target_pct'])
 
 const PHASES = [
   ['DATA', '冻结数据'],
@@ -84,21 +84,29 @@ function ParameterEditor({
   definition,
   spec,
   onChange,
+  percentage = false,
 }: {
   definition: BacktestParameterDefinition
   spec: ParameterSpec
   onChange: (next: ParameterSpec) => void
+  percentage?: boolean
 }) {
-  const numberValue = (raw: string) => definition.value_type === 'integer'
-    ? Number.parseInt(raw || '0', 10)
-    : Number(raw || '0')
+  const numberValue = (raw: string) => {
+    const parsed = definition.value_type === 'integer'
+      ? Number.parseInt(raw || '0', 10)
+      : Number(raw || '0')
+    return percentage ? parsed / 100 : parsed
+  }
+  const displayValue = (value: number | boolean) => (
+    typeof value === 'number' && percentage ? value * 100 : value
+  )
   const switchMode = (mode: ParameterSpec['mode']) => {
     const fallback = definition.default
     if (mode === fallback.mode) return onChange(cloneSpec(fallback))
     const first = spec.mode === 'fixed' ? spec.value : spec.mode === 'values' ? spec.values[0] : spec.start
     if (mode === 'fixed') onChange({ mode, value: first ?? (definition.value_type === 'boolean' ? true : 0) })
     else if (mode === 'values') onChange({ mode, values: [first ?? (definition.value_type === 'boolean' ? true : 0)] })
-    else onChange({ mode, start: Number(first || 0), stop: Number(first || 0), step: 1 })
+    else onChange({ mode, start: Number(first || 0), stop: Number(first || 0), step: percentage ? 0.01 : 1 })
   }
   const allowedModes = definition.value_type === 'boolean' ? ['fixed', 'values'] : ['fixed', 'range', 'values']
 
@@ -133,10 +141,10 @@ function ParameterEditor({
         <input
           className="input num"
           type="number"
-          min={definition.minimum ?? undefined}
-          max={definition.maximum ?? undefined}
+          min={definition.minimum == null ? undefined : Number(displayValue(definition.minimum))}
+          max={definition.maximum == null ? undefined : Number(displayValue(definition.maximum))}
           step={definition.value_type === 'integer' ? 1 : 'any'}
-          value={String(spec.value)}
+          value={String(displayValue(spec.value))}
           onChange={(event) => onChange({ mode: 'fixed', value: numberValue(event.target.value) })}
           aria-label={definition.title}
         />
@@ -150,7 +158,7 @@ function ParameterEditor({
                 className="input num"
                 type="number"
                 step={definition.value_type === 'integer' ? 1 : 'any'}
-                value={String(spec[key])}
+                value={String(displayValue(spec[key]))}
                 onChange={(event) => onChange({ ...spec, [key]: numberValue(event.target.value) })}
               />
             </label>
@@ -160,7 +168,7 @@ function ParameterEditor({
       {spec.mode === 'values' && (
         <input
           className="input num"
-          value={spec.values.map(String).join(', ')}
+          value={spec.values.map((value) => String(displayValue(value))).join(', ')}
           onChange={(event) => {
             const parts = event.target.value.split(/[,，\s]+/).filter(Boolean)
             const values = definition.value_type === 'boolean'
@@ -173,7 +181,9 @@ function ParameterEditor({
         />
       )}
       {definition.minimum != null && (
-        <small>允许范围 {definition.minimum} 至 {definition.maximum}</small>
+        <small>
+          允许范围 {String(displayValue(definition.minimum))} 至 {String(displayValue(definition.maximum!))}{percentage ? '%' : ''}
+        </small>
       )}
     </div>
   )
@@ -221,7 +231,7 @@ function BacktestResultView({
         <div>
           <span className="guide-eyebrow">探索性结论</span>
           <h2>{result.verdict_label}</h2>
-          <p>本结果不会自动改变每日选股，也不能直接晋级生产参数。</p>
+          <p>本结果不会自动改变每日研究扫描，也不能直接晋级生产参数。</p>
         </div>
         {result.report_markdown && <button className="btn" type="button" onClick={downloadReport}>下载 Markdown 报告</button>}
       </section>
@@ -237,12 +247,13 @@ function BacktestResultView({
               ? '这组参数已用于今日 A 池扫描'
               : activation?.can_activate
                 ? '证据门槛通过，可人工启用'
-                : '当前结果不能用于今日选股'}
+                : '当前结果不能作为回测档案启用'}
           </h3>
           <p>
             {activation?.boundary.notice
               || '只统一 A 池技术入场参数；资金、基本面和市场环境门禁仍会继续执行。'}
           </p>
+          <small>你也可以在首页独立填写手工研究参数；那条路径不会冒充已通过回测验证。</small>
           {!activation?.can_activate && (activation?.reasons || []).slice(0, 3).map((item) => (
             <div className="profile-check-fail" key={item.code}>{item.label}：{item.message}</div>
           ))}
@@ -303,13 +314,14 @@ function Leaderboard({ rows }: { rows: BacktestLeaderboardRow[] }) {
   return (
     <div className="table-scroll">
       <table className="data">
-        <thead><tr><th>排名</th><th>横盘最长</th><th>突破量比</th><th>止损</th><th>退出窗</th><th>IS PF</th><th>OOS PF</th><th>OOS 净收益</th><th>OOS 成交</th></tr></thead>
+        <thead><tr><th>排名</th><th>横盘最长</th><th>突破量比</th><th>止损</th><th>止盈</th><th>退出窗</th><th>IS PF</th><th>OOS PF</th><th>OOS 净收益</th><th>OOS 成交</th></tr></thead>
         <tbody>{rows.map((row, index) => (
           <tr key={row.param_id}>
             <td className="num">{index + 1}</td>
             <td className="num">{String(row.signal.box_max_days)}</td>
             <td className="num">{String(row.signal.breakout_vol_ratio)}</td>
             <td className="num">{formatPercent(Number(row.exit.stop_pct))}</td>
+            <td className="num">{formatPercent(Number(row.exit.target_pct))}</td>
             <td className="num">{String(row.exit.exit_window)}</td>
             <td className="num">{formatNumber(row.is.net_profit_factor)}</td>
             <td className="num">{formatNumber(row.oos.net_profit_factor)}</td>
@@ -424,7 +436,12 @@ export default function ProfessionalBacktest() {
 
   const handleRun = async () => {
     if (!preview) return
-    const confirmed = window.confirm(`将运行 ${preview.prepared.parameter_space.count} 组参数，冻结 ${preview.prepared.universe.count} 只股票。是否继续？`)
+    const count = preview.prepared.parameter_space.count
+    const confirmed = window.confirm(
+      preview.estimated_work.long_running
+        ? `长耗时提醒：将运行 ${count} 组参数（常规提醒线 ${preview.estimated_work.warning_threshold} 组），并冻结 ${preview.prepared.universe.count} 只股票。\n\n这可能持续数小时并占用大量 CPU/内存，但可切换页面后继续查看进度。确认启动？`
+        : `将运行 ${count} 组参数，冻结 ${preview.prepared.universe.count} 只股票。是否继续？`,
+    )
     if (!confirmed) return
     setBusy('run')
     setError('')
@@ -445,7 +462,7 @@ export default function ProfessionalBacktest() {
   }
 
   const handleCancel = async () => {
-    if (!task || !window.confirm('取消当前专业回测？已完成的运行记录会保留。')) return
+    if (!task || !window.confirm('取消当前研究回测？已完成的运行记录会保留。')) return
     setBusy('cancel')
     try {
       setTask(await api.backtestCancel(task.task_id))
@@ -515,20 +532,20 @@ export default function ProfessionalBacktest() {
   const groupLabel = universe?.group_label || '板块'
   const activeTask = task && ACTIVE_STATUSES.includes(task.status)
 
-  if (busy === 'load') return <div className="loading">正在读取专业回测契约和本地股票池...</div>
-  if (!catalog || !universe) return <div className="err">专业回测初始化失败：{error || '接口不可用'}</div>
+  if (busy === 'load') return <div className="loading">正在读取研究回测契约和本地股票池...</div>
+  if (!catalog || !universe) return <div className="err">研究回测初始化失败：{error || '接口不可用'}</div>
 
   return (
     <div className="backtest-shell fade-up">
       <section className="backtest-intro">
         <div>
           <span className="guide-eyebrow">AB 横盘吸筹突破</span>
-          <h1>多参数专业回测</h1>
+          <h1>多参数研究回测</h1>
           <p>一次冻结参数空间和股票池。只用 IS 选参，再用 OOS、滚动窗口、基线与成本压力核验。</p>
         </div>
         <div className="research-boundary">
-          <b>研究边界</b>
-          <span>探索结果不自动进入每日选股</span>
+          <b>个人研究学习平台</b>
+          <span>结果不是荐股或买入指令</span>
           <span>不连接券商，不生成订单</span>
         </div>
       </section>
@@ -540,7 +557,7 @@ export default function ProfessionalBacktest() {
         <section className="active-profile-banner" aria-label="当前今日选股参数">
           <div>
             <span className="guide-eyebrow">今日选股当前参数</span>
-            <h2>{profileState.active.is_default ? '系统默认参数' : '专业回测人工启用参数'}</h2>
+            <h2>{profileState.active.is_default ? '系统默认参数' : profileState.active.source.kind === 'MANUAL_RESEARCH' ? '用户手工研究参数' : '回测验证后人工启用参数'}</h2>
             <p>
               横盘 {String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日 ·
               突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)} ·
@@ -548,7 +565,11 @@ export default function ProfessionalBacktest() {
             </p>
           </div>
           <span className={`pill ${profileState.active.is_default ? '' : 'ok'}`}>
-            {profileState.active.is_default ? '内置默认' : `来源 ${profileState.active.source.task_id}`}
+            {profileState.active.is_default
+              ? '内置默认'
+              : profileState.active.source.kind === 'MANUAL_RESEARCH'
+                ? '来源 手工输入（未回测验证）'
+                : `来源 ${profileState.active.source.task_id}`}
           </span>
         </section>
       )}
@@ -643,7 +664,19 @@ export default function ProfessionalBacktest() {
 
         <main className="backtest-workspace">
           <section className="card">
-            <div className="h-sec"><h2>2. 设置参数空间</h2><span className="pill">上限 {catalog.max_combinations} 组</span></div>
+            <div className="h-sec"><h2>2. 设置参数空间</h2><span className="pill">硬上限 {catalog.max_combinations} 组</span></div>
+            <section className="risk-parameter-panel" aria-label="止盈止损百分比参数">
+              <div className="config-heading">
+                <h3>止损与止盈（百分比）</h3>
+                <span>会真实参与回测退出</span>
+              </div>
+              <p className="config-note">买入后下一交易日起检查；同日同时触及时先按止损，避免乐观偏差。</p>
+              <div className="parameter-grid">
+                {catalog.parameters.filter((item) => RISK_KEYS.has(item.key)).map((definition) => (
+                  <ParameterEditor percentage key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
+                ))}
+              </div>
+            </section>
             <div className="parameter-grid">
               {catalog.parameters.filter((item) => PRIMARY_KEYS.has(item.key)).map((definition) => (
                 <ParameterEditor key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
@@ -652,7 +685,7 @@ export default function ProfessionalBacktest() {
             <details className="advanced-parameters">
               <summary>其余信号条件与约束</summary>
               <div className="parameter-grid">
-                {catalog.parameters.filter((item) => !PRIMARY_KEYS.has(item.key)).map((definition) => (
+                {catalog.parameters.filter((item) => !PRIMARY_KEYS.has(item.key) && !RISK_KEYS.has(item.key)).map((definition) => (
                   <ParameterEditor key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
                 ))}
               </div>
@@ -667,7 +700,7 @@ export default function ProfessionalBacktest() {
             </div>
             <div className="run-actions">
               <button className="btn" type="button" onClick={handlePreview} disabled={busy === 'preview' || Boolean(activeTask)}>{busy === 'preview' ? '检查中...' : '检查参数空间'}</button>
-              <button className="btn primary" type="button" onClick={handleRun} disabled={!preview || busy === 'run' || Boolean(activeTask)}>{busy === 'run' ? '正在启动...' : '启动专业回测'}</button>
+              <button className="btn primary" type="button" onClick={handleRun} disabled={!preview || busy === 'run' || Boolean(activeTask)}>{busy === 'run' ? '正在启动...' : '启动研究回测'}</button>
             </div>
           </section>
 
@@ -678,6 +711,11 @@ export default function ProfessionalBacktest() {
               <div><span>动态预热</span><b>{preview.prepared.parameter_space.horizon} 日</b></div>
               <div><span>研究窗口</span><b>{formatDate(preview.prepared.windows.is[0])} 至 {formatDate(preview.prepared.windows.oos[1])}</b></div>
               <p>{preview.prepared.universe.classification_title}：{preview.prepared.universe.groups.length ? preview.prepared.universe.groups.join('、') : '全市场'}。{preview.prepared.universe.classification_note}</p>
+              {preview.estimated_work.long_running && (
+                <p className="long-run-warning" role="alert">
+                  长耗时任务：已超过 {preview.estimated_work.warning_threshold} 组常规提醒线。启动时会再次确认；可离开页面，后台进度会保留。
+                </p>
+              )}
             </section>
           )}
 
@@ -691,7 +729,7 @@ export default function ProfessionalBacktest() {
             />
           )}
           {!task?.result && !activeTask && (
-            <div className="empty section-gap"><strong>等待一次专业回测</strong>默认参数会搜索横盘 60 至 200 天，并核验突破量比、止损和退出窗口。</div>
+            <div className="empty section-gap"><strong>等待一次研究回测</strong>默认参数会搜索横盘 60 至 200 天，并核验突破量比、止损、止盈和退出窗口。</div>
           )}
         </main>
       </div>

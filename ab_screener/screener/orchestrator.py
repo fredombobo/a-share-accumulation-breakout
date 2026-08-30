@@ -473,12 +473,14 @@ def run_scan(
         regime=regime.regime,
         sig_by_code=sig_by_code,
         stop_pct=active_profile.stop_pct,
+        target_pct=active_profile.target_pct,
     )
     b_df = attach_trade_cards(
         b_df,
         regime=regime.regime,
         sig_by_code=sig_by_code,
         stop_pct=active_profile.stop_pct,
+        target_pct=active_profile.target_pct,
     )
 
     # 默认输出 A 池；合并导出时 A 在前

@@ -66,12 +66,34 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     )
 
     assert catalog.status_code == universe.status_code == preview.status_code == 200
+    assert catalog.json()["max_combinations"] == 5_120
+    assert catalog.json()["long_running_warning_combinations"] == 512
     payload = preview.json()["prepared"]
-    assert payload["parameter_space"]["count"] == 144
+    assert payload["parameter_space"]["count"] == 432
+    assert payload["parameter_space"]["long_running"] is False
+    assert payload["parameters"]["target_pct"]["values"] == [0.1, 0.12, 0.15]
     assert payload["parameter_space"]["horizon"] >= 265
     assert payload["universe"]["count"] == 25
     assert len(payload["universe"]["sha256"]) == 64
     assert payload["research_boundary"]["candidate_eligible"] is False
+
+    long_preview = client.post(
+        "/api/backtest/preview",
+        json={
+            "parameters": {
+                "breakout_vol_ratio": {
+                    "mode": "values",
+                    "values": [1.2, 1.4, 1.6, 1.8],
+                }
+            },
+            "universe": {"industries": ["半导体"], "codes": []},
+            "max_codes": 25,
+        },
+    )
+    assert long_preview.status_code == 200
+    assert long_preview.json()["prepared"]["parameter_space"]["count"] == 576
+    assert long_preview.json()["estimated_work"]["long_running"] is True
+    assert "数小时" in long_preview.json()["estimated_work"]["note"]
 
 
 def test_professional_universe_catalog_and_preview_support_market_groups(tmp_path: Path) -> None:

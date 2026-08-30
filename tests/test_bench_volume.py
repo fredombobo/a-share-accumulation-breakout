@@ -203,6 +203,57 @@ class TestTradeSimFixed(unittest.TestCase):
 
 
 class TestTradeSimBench(unittest.TestCase):
+    def test_target_is_real_t1_bench_exit(self):
+        n = 20
+        highs = [10.1] * n
+        highs[12] = 11.3
+        bars = pd.DataFrame(
+            {
+                "open": [10.0] * n,
+                "high": highs,
+                "low": [9.9] * n,
+                "close": [10.0] * n,
+                "vol": [100] * n,
+                "pct_chg": [0.0] * n,
+            }
+        )
+        result = simulate_trade(
+            bars,
+            entry_i=10,
+            mode="bench",
+            params={"bench_vol": 400, "stop_pct": 0.07, "target_pct": 0.12, "max_hold": 8},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["entry_index"], 11)
+        self.assertEqual(result["exit_index"], 12)
+        self.assertEqual(result["exit"], "target")
+        self.assertAlmostEqual(result["ret"], 0.12, places=4)
+
+    def test_stop_has_priority_when_stop_and_target_touch_same_day(self):
+        n = 20
+        highs = [10.1] * n
+        lows = [9.9] * n
+        highs[12] = 11.3
+        lows[12] = 9.2
+        bars = pd.DataFrame(
+            {
+                "open": [10.0] * n,
+                "high": highs,
+                "low": lows,
+                "close": [10.0] * n,
+                "vol": [100] * n,
+                "pct_chg": [0.0] * n,
+            }
+        )
+        result = simulate_trade(
+            bars,
+            entry_i=10,
+            mode="bench",
+            params={"bench_vol": 400, "stop_pct": 0.07, "target_pct": 0.12, "max_hold": 8},
+        )
+        self.assertEqual(result["exit"], "stop")
+        self.assertAlmostEqual(result["ret"], -0.07, places=4)
+
     def test_bench_exit_next_open(self):
         """二次出货确认后次日开盘卖出"""
         n = 20

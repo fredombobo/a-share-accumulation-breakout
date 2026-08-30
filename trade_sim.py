@@ -2,8 +2,8 @@
 
 - mode="fixed"：旧固定规则（止损 -stop_pct / 止盈 +target_pct / 最长 max_hold 日），
   与 backtest_signals._simulate_trade 逐数字一致（作为对比基线，P2 回归验证用）。
-- mode="bench"：标杆量二次出货出场（bench_volume），固定止损兜底 + 最长持有强平。
-  优先级（保守序）：stop → bench → time。
+- mode="bench"：标杆量二次出货出场（bench_volume），可选止盈、固定止损兜底
+  与最长持有强平。优先级（保守序）：stop → target → bench → time。
 
 入场统一（ENTRY-DEFINITION-V1）：
   entry_i = **信号日**索引；成交价 = 下一交易日开盘（无 open 用 close）。
@@ -102,8 +102,10 @@ def simulate_trade(
         if not bench_vol:
             return {"ok": False, "reason": "bench 模式需要 params['bench_vol']"}
         stop_pct = p.get("stop_pct", BENCH_STOP_PCT)
+        target_pct = p.get("target_pct")
         max_hold = p.get("max_hold", BENCH_MAX_HOLD_DAYS)
         stop = entry * (1 - stop_pct)
+        target = entry * (1 + float(target_pct)) if target_pct is not None else None
         ev = bench_exit_events(
             bars,
             entry_i,
@@ -118,7 +120,7 @@ def simulate_trade(
         # 买入日内即使触发止损也不可卖出；从下一交易日起检查卖出条件。
         for j in range(execution_i + 1, exit_j + 1):
             row = bars.iloc[j]
-            lo, cl = float(row["low"]), float(row["close"])
+            lo, hi, cl = float(row["low"]), float(row["high"]), float(row["close"])
             if lo <= stop:  # 止损优先（保守）
                 ret = stop / entry - 1
                 return {
@@ -129,6 +131,20 @@ def simulate_trade(
                     "win": False,
                     "entry": entry,
                     "exit_price": stop,
+                    "max_dd": round(max_dd, 4),
+                    "entry_index": execution_i,
+                    "exit_index": j,
+                }
+            if target is not None and hi >= target:
+                ret = target / entry - 1
+                return {
+                    "ok": True,
+                    "ret": ret,
+                    "days": j - entry_i,
+                    "exit": "target",
+                    "win": True,
+                    "entry": entry,
+                    "exit_price": target,
                     "max_dd": round(max_dd, 4),
                     "entry_index": execution_i,
                     "exit_index": j,

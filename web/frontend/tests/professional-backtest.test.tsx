@@ -13,7 +13,8 @@ import ProfessionalBacktest from '../src/pages/ProfessionalBacktest'
 
 const catalog: BacktestCatalog = {
   version: 'test-v1',
-  max_combinations: 512,
+  max_combinations: 5120,
+  long_running_warning_combinations: 512,
   parameters: [
     {
       key: 'box_max_days', title: '横盘最长天数', group: 'signal', value_type: 'integer',
@@ -25,6 +26,16 @@ const catalog: BacktestCatalog = {
       minimum: 1, maximum: 5, default: { mode: 'values', values: [1.4, 1.6, 1.8] },
       description: '突破量相对箱体均量',
     },
+    {
+      key: 'stop_pct', title: '止损比例', group: 'exit', value_type: 'number',
+      minimum: 0.01, maximum: 0.25, default: { mode: 'values', values: [0.05, 0.07] },
+      description: '保守止损',
+    },
+    {
+      key: 'target_pct', title: '止盈比例', group: 'exit', value_type: 'number',
+      minimum: 0.02, maximum: 1, default: { mode: 'values', values: [0.1, 0.12] },
+      description: 'T+1 止盈',
+    },
   ],
   conditions: [],
   research_boundary: 'EXPLORATORY_ONLY',
@@ -34,7 +45,7 @@ const catalog: BacktestCatalog = {
 
 const preview: BacktestPreview = {
   can_run: true,
-  estimated_work: { combinations: 24, stocks: 30, sample_step: 10, note: '后台运行' },
+  estimated_work: { combinations: 24, stocks: 30, sample_step: 10, long_running: false, warning_threshold: 512, note: '后台运行' },
   prepared: {
     contract_version: 'test-v1', strategy: 'A', sample_step: 10, max_codes: 600,
     parameters: Object.fromEntries(catalog.parameters.map((item) => [item.key, item.default])),
@@ -46,7 +57,7 @@ const preview: BacktestPreview = {
     },
     conditions: [],
     windows: { mode: 'auto', is: ['20230101', '20241231'], oos: ['20250101', '20260828'], wf: [], n_dates: 800 },
-    parameter_space: { count: 24, sha256: 'grid', horizon: 280, signal_group_count: 24, exit_group_count: 1, invalid_signal_combinations: 0 },
+    parameter_space: { count: 24, sha256: 'grid', horizon: 280, signal_group_count: 24, exit_group_count: 1, invalid_signal_combinations: 0, long_running: false, long_running_warning_combinations: 512 },
     input_hash: 'input-hash',
   },
 }
@@ -70,7 +81,7 @@ function profileState(isDefault = true): StrategyProfileState {
       schema_version: 2, is_default: isDefault, status: 'active', storage_status: isDefault ? 'built_in' : 'active',
       config_hash: isDefault ? 'default-hash' : 'custom-hash', activated_at: null,
       entry: { box_min_days: 60, box_max_days: 200, breakout_vol_ratio: 1.8 },
-      exit_reference: { stop_pct: 0.05 }, required_scan_days: 210,
+      exit_reference: { stop_pct: 0.05, target_pct: 0.15 }, required_scan_days: 210,
       source: { kind: isDefault ? 'BUILT_IN' : 'PROFESSIONAL_BACKTEST', task_id: isDefault ? null : 'probt-good' },
       notes: [],
     },
@@ -86,13 +97,13 @@ const completedTask: BacktestTask = {
     candidate_eligible: false, can_claim_edge: false, request: preview.prepared,
     leaderboard: [{
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
-      exit: { stop_pct: 0.05, exit_window: 10 },
+      exit: { stop_pct: 0.05, target_pct: 0.15, exit_window: 10 },
       is: { net_n_trades: 50, portfolio_total_return: 0.1 },
       oos: { net_n_trades: 40, portfolio_total_return: 0.08 },
     }],
     selected: {
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
-      exit: { stop_pct: 0.05, exit_window: 10 },
+      exit: { stop_pct: 0.05, target_pct: 0.15, exit_window: 10 },
       is: { net_n_trades: 50, portfolio_total_return: 0.1 },
       oos: { net_n_trades: 40, portfolio_total_return: 0.08 },
     },
@@ -124,7 +135,9 @@ describe('专业回测工作台', () => {
     const runSpy = vi.spyOn(api, 'backtestRun')
 
     render(<ProfessionalBacktest />)
-    await screen.findByRole('heading', { name: '多参数专业回测' })
+    await screen.findByRole('heading', { name: '多参数研究回测' })
+    expect(screen.getByRole('heading', { name: '止损与止盈（百分比）' })).toBeVisible()
+    expect(screen.getByLabelText('止盈比例离散值')).toHaveValue('10, 12')
     expect(screen.getByLabelText('交易日采样间隔')).toHaveValue(10)
     expect(screen.getByText(/每隔 N 个交易日生成一个研究决策截面/)).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
@@ -158,7 +171,7 @@ describe('专业回测工作台', () => {
     const previewSpy = vi.spyOn(api, 'backtestPreview').mockResolvedValue(preview)
 
     render(<ProfessionalBacktest />)
-    await screen.findByRole('heading', { name: '多参数专业回测' })
+    await screen.findByRole('heading', { name: '多参数研究回测' })
     fireEvent.change(screen.getByLabelText('分类标准'), { target: { value: 'market' } })
     const group = await screen.findByRole('checkbox', { name: /创业板/ })
     fireEvent.click(group)
@@ -194,5 +207,46 @@ describe('专业回测工作台', () => {
 
     await waitFor(() => expect(activate).toHaveBeenCalledWith('probt-good'))
     expect(await screen.findByText(/下一次今日扫描会冻结并使用/)).toBeVisible()
+  })
+
+  it('超过 512 组不拦截但启动前弹出长耗时确认', async () => {
+    const longPreview: BacktestPreview = {
+      ...preview,
+      estimated_work: {
+        ...preview.estimated_work,
+        combinations: 576,
+        long_running: true,
+        warning_threshold: 512,
+        note: '组合数超过常规阈值，可能持续数小时',
+      },
+      prepared: {
+        ...preview.prepared,
+        parameter_space: {
+          ...preview.prepared.parameter_space,
+          count: 576,
+          long_running: true,
+        },
+      },
+    }
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+      classifications: [], groups: [], industries: [], stocks: [], stock_count: 30,
+    })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task: null, profile_activation: eligible })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState(true))
+    vi.spyOn(api, 'backtestPreview').mockResolvedValue(longPreview)
+    vi.spyOn(api, 'backtestRun').mockResolvedValue({ task_id: 'probt-good', status: 'done', cached: true })
+    vi.spyOn(api, 'backtestStatus').mockResolvedValue(completedTask)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    render(<ProfessionalBacktest />)
+    await screen.findByRole('heading', { name: '多参数研究回测' })
+    fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
+    await screen.findByText(/长耗时任务：已超过 512 组/)
+    fireEvent.click(screen.getByRole('button', { name: '启动研究回测' }))
+
+    await waitFor(() => expect(confirm).toHaveBeenCalledWith(expect.stringContaining('长耗时提醒：将运行 576 组参数')))
   })
 })

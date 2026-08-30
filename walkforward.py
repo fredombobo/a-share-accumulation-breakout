@@ -46,7 +46,10 @@ def split_windows() -> dict:
 
 
 def _single_grid(combo: dict) -> dict:
-    return {k: [combo[k]] for k in ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")}
+    keys = ["vol_ratio_min", "strong_reset", "exit_window", "stop_pct"]
+    if combo.get("target_pct") is not None:
+        keys.append("target_pct")
+    return {key: [combo[key]] for key in keys}
 
 
 _PARAMETER_KEYS = ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")

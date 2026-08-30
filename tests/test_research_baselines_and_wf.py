@@ -7,7 +7,7 @@ import pandas as pd
 from ab_screener.domain.costs import NOTIONAL, FillResult, summarize_fills
 from ab_screener.research.baselines import random_baseline_trades
 from ab_screener.research.portfolio_accounting import PortfolioPolicy
-from walkforward import predeclared_parameter_neighborhood, run_is_oos, wf_recheck
+from walkforward import eval_combo, predeclared_parameter_neighborhood, run_is_oos, wf_recheck
 
 
 def _fill(net_return: float) -> FillResult:
@@ -97,6 +97,30 @@ def test_wf_missing_metric_is_incomplete_and_cannot_pass() -> None:
     assert not bool(row["evidence_complete"])
     assert events[0] == ("WF1 训练窗", 0)
     assert events[-1] == ("WF3 完成", 100)
+
+
+def test_wf_single_combo_preserves_optional_target_percentage() -> None:
+    captured: dict = {}
+
+    def fake_grid(*_args, grid=None, **_kwargs):
+        captured.update(grid or {})
+        return pd.DataFrame([{"net_n_trades": 40, "net_profit_factor": 1.2}])
+
+    with patch("walkforward.run_grid", side_effect=fake_grid):
+        eval_combo(
+            {
+                "strategy": "A",
+                "vol_ratio_min": 1.5,
+                "strong_reset": 3,
+                "exit_window": 10,
+                "stop_pct": 0.07,
+                "target_pct": 0.15,
+            },
+            "20250101",
+            "20251231",
+        )
+
+    assert captured["target_pct"] == [0.15]
 
 
 def test_is_oos_progress_is_monotonic_and_identifies_oos_phase() -> None:

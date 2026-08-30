@@ -349,6 +349,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ confirm: true }),
     }),
+  saveManualResearchProfile: (parameters: ManualStrategyParameters, opts?: ReqOpts) =>
+    request<StrategyProfileState & { idempotent: boolean }>('/backtest/profile/manual', {
+      ...opts,
+      method: 'POST',
+      body: JSON.stringify({ parameters, acknowledge_research_only: true }),
+    }),
 
   // ── 个股 AI 证据评测 ──
   aiReview: (tsCode: string, opts?: ReqOpts) => request<AIReview>(`/ai-review/${encodeURIComponent(tsCode)}`, opts),
@@ -427,6 +433,7 @@ export interface BacktestParameterDefinition {
 export interface BacktestCatalog {
   version: string
   max_combinations: number
+  long_running_warning_combinations: number
   parameters: BacktestParameterDefinition[]
   conditions: {
     id: string
@@ -479,6 +486,8 @@ export interface PreparedBacktestRequest extends Omit<BacktestRequest, 'windows'
     signal_group_count: number
     exit_group_count: number
     invalid_signal_combinations: number
+    long_running: boolean
+    long_running_warning_combinations: number
   }
   universe: BacktestRequest['universe'] & {
     source: string
@@ -505,7 +514,31 @@ export interface PreparedBacktestRequest extends Omit<BacktestRequest, 'windows'
 export interface BacktestPreview {
   can_run: boolean
   prepared: PreparedBacktestRequest
-  estimated_work: { combinations: number; stocks: number; sample_step: number; note: string }
+  estimated_work: {
+    combinations: number
+    stocks: number
+    sample_step: number
+    long_running: boolean
+    warning_threshold: number
+    note: string
+  }
+}
+
+export interface ManualStrategyParameters {
+  box_min_days: number
+  box_max_days: number
+  box_max_amp: number
+  breakout_vol_ratio: number
+  breakout_chg_min: number
+  breakout_chg_max: number
+  breakout_vs_recent_vol_ratio: number
+  breakout_window_days: number
+  require_structure: boolean
+  vol_ratio_min: number
+  stop_pct: number
+  target_pct: number
+  exit_window: number
+  strong_reset: number
 }
 
 export interface BacktestMetrics {
@@ -584,6 +617,7 @@ export interface StrategyProfileSnapshot {
   strong_reset: number
   exit_window: number
   stop_pct: number
+  target_pct: number
   source_kind: string
   source_task_id?: string | null
 }

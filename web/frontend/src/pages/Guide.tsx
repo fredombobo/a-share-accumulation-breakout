@@ -7,8 +7,8 @@ const contents = [
   ['selection-logic', '系统怎么选股'],
   ['pools', 'A 池和 B 池'],
   ['classifications', '板块分类标准'],
-  ['backtest', '专业回测'],
-  ['profile-loop', '回测参数用于选股'],
+  ['backtest', '研究回测'],
+  ['profile-loop', '今日扫描参数怎么选'],
   ['results', '如何阅读结果'],
   ['progress', '进度与异常'],
   ['boundaries', '系统边界'],
@@ -71,14 +71,14 @@ export default function Guide() {
           <section id="pools" className="manual-section">
             <h2>A 池和 B 池怎么理解</h2>
             <div className="manual-compare">
-              <article><b>A 池，可交易候选</b><p>通过严格筛选和当日市场环境检查。它只是研究候选，仍需人工核对风险，不等于买入指令。</p></article>
+              <article><b>A 池，严格研究候选</b><p>通过严格筛选和当日市场环境检查。它仍只是学习与研究结果，不是荐股或买入指令。</p></article>
               <article><b>B 池，观察名单</b><p>可能是条件放宽、主题补充或尚未确认的形态。用于跟踪，不应冒充 A 池。</p></article>
             </div>
           </section>
 
           <section id="classifications" className="manual-section">
             <h2>板块分类标准</h2>
-            <p>首页资金图和专业回测使用同一套分类定义。切换分类只改变如何分组，不改变原始资金流或股票行情。</p>
+            <p>首页资金图和研究回测使用同一套分类定义。切换分类只改变如何分组，不改变原始资金流或股票行情。</p>
             <div className="classification-manual" aria-label="当前分类能力">
               {(catalog?.items || []).map((item) => (
                 <article key={item.key}>
@@ -97,23 +97,24 @@ export default function Guide() {
           </section>
 
           <section id="backtest" className="manual-section">
-            <h2>专业回测怎么操作</h2>
+            <h2>研究回测怎么操作</h2>
             <ol className="manual-steps">
               <li><b>冻结股票池</b><span>选择细分行业、上市板块或地域，再多选分组。也可直接填写股票代码，代码优先。</span></li>
-              <li><b>设置参数空间</b><span>默认搜索横盘最长 60 至 200 日、突破量比、止损和退出窗口。组合上限 512。</span></li>
+              <li><b>设置参数空间</b><span>默认搜索横盘最长 60 至 200 日、突破量比、止损、止盈和退出窗口。止损/止盈输入直接按百分比显示。</span></li>
               <li><b>检查参数空间</b><span>先看有效组合、冻结股票数、动态预热和研究窗口。任何输入变化后都要重新预览。</span></li>
-              <li><b>启动并等待</b><span>任务依次完成数据冻结、IS/OOS、WF、基准、成本压力和结论。切页不会中断。</span></li>
+              <li><b>启动并等待</b><span>硬上限为 5,120 组；超过 512 组会弹出长耗时确认而不是直接拒绝。任务依次完成数据冻结、IS/OOS、WF、基准、成本压力和结论，切页不会中断。</span></li>
             </ol>
             <p className="manual-note">收盘信号最早在下一交易日开盘模拟成交，不存在同一收盘价无摩擦成交路径。</p>
           </section>
 
           <section id="profile-loop" className="manual-section">
-            <h2>怎样把回测参数用于今日选股</h2>
+            <h2>今日扫描参数可以怎么选</h2>
             <ol className="manual-steps">
-              <li><b>先取得合格证据</b><span>结果必须完成 OOS、WF、随机与均线基线以及 2 倍成本压力；只看 IS 排名不算“好参数”。</span></li>
-              <li><b>人工启用参数</b><span>回测结论达到候选门槛且代码、数据身份仍有效时，结果页才会出现“人工启用为今日选股参数”。系统绝不自动上线最佳曲线。</span></li>
+              <li><b>直接手工输入</b><span>首页点“手动设置研究参数”，可以独立填写横盘、突破、量比、止损和止盈，无需先跑回测。系统会永久标记“未回测验证”。</span></li>
+              <li><b>也可使用回测档案</b><span>回测结论达到探索候选门槛且代码、数据身份仍有效时，结果页才会出现人工启用按钮。系统绝不自动上线最佳曲线。</span></li>
+              <li><b>或恢复系统默认</b><span>默认、手工、回测三种来源互相独立且清楚标记；切换不会删除历史档案和扫描审计。</span></li>
               <li><b>运行今日扫描</b><span>首页会显示当前参数版本。扫描启动时冻结该快照和哈希，A 池技术入场检测使用同一组横盘、突破和量能参数。</span></li>
-              <li><b>核对并可回退</b><span>资金流、基本面、流动性和市场环境仍会额外过滤候选；B 池仍是固定宽松观察规则。可随时恢复系统默认，历史审计不会删除。</span></li>
+              <li><b>理解止盈止损</b><span>它们不决定股票是否进入 A 池；首页用于风险参考，研究回测中才会按 T+1 和保守触发顺序真正模拟退出。</span></li>
             </ol>
             <div className="manual-warning">
               <b>为什么回测结果与 A 池不一定逐只相同</b>
@@ -131,7 +132,7 @@ export default function Guide() {
               <div><dt>成本压力</dt><dd>提高滑点和费用后复算，检验收益是否脆弱。</dd></div>
               <div><dt>最大回撤</dt><dd>历史模拟中从高点到低点的最大跌幅。</dd></div>
             </dl>
-            <p>回测页的结论是探索证据。只有门槛通过后，用户才能人工启用为每日 A 池技术参数；它不会自动改变选股，也不会自动晋级正式研究参数。</p>
+            <p>回测页的结论是探索证据。只有门槛通过后，用户才能把它作为“回测来源”的每日 A 池技术参数；用户仍可独立采用手工参数，但手工参数不会冒充已验证结论。</p>
           </section>
 
           <section id="progress" className="manual-section">
@@ -140,7 +141,7 @@ export default function Guide() {
               <div><dt>看不到进度</dt><dd>没有活动任务时全局进度自动隐藏。启动扫描、回测或同步后会重新出现。</dd></div>
               <div><dt>三分钟无变化</dt><dd>界面会提示“可能仍在重计算”。点“查看任务”检查，不要反复启动。</dd></div>
               <div><dt>A 池为空</dt><dd>先看市场环境、数据新鲜度和扫描状态。防守期清空 A 池属于正常门禁。</dd></div>
-              <div><dt>回测无法预览</dt><dd>常见原因是股票少于 20 只、未知分组、参数组合超过 512 或历史窗口不足。</dd></div>
+              <div><dt>回测无法预览</dt><dd>常见原因是股票少于 20 只、未知分组、参数组合超过 5,120 或历史窗口不足。超过 512 但不超过 5,120 只会触发耗时确认。</dd></div>
               <div><dt>分类找不到</dt><dd>当前只开放本地有真实字段的分类。未接入历史成员的数据不会显示。</dd></div>
             </dl>
           </section>
@@ -148,7 +149,7 @@ export default function Guide() {
           <section id="boundaries" className="manual-section manual-boundary">
             <h2>系统边界</h2>
             <ul>
-              <li>这是研究和选股辅助工具，不是投资建议。</li>
+              <li>这是个人研究学习平台，不是机构荐股服务，也不是投资建议。</li>
               <li>系统不连接券商，不生成真实订单，真实交易开关保持关闭。</li>
               <li>AI 只解释本地证据，不改变分数、A/B 池或回测结论。</li>
               <li>当前分类是当前快照。历史分类无 PIT 数据时不得宣称行业回测无未来信息。</li>
