@@ -57,7 +57,7 @@ def test_sidebar_has_two_product_entries_and_one_help_entry() -> None:
         encoding="utf-8"
     )
     assert "每日选股" in source
-    assert "专业回测" in source
+    assert "研究回测" in source
     assert "使用说明" in source
     for removed in ("纸面仿真", "策略实验室", "V2 控制台", "六形态"):
         assert removed not in source

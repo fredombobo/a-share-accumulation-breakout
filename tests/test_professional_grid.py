@@ -75,12 +75,16 @@ def test_grid_allows_ten_times_budget_with_warning_then_rejects_hard_cap() -> No
     with pytest.raises(ProfessionalGridError) as caught:
         expand_parameter_space(
             {
-                "box_min_days": {"mode": "range", "start": 20, "stop": 200, "step": 10},
-                "box_max_days": {"mode": "range", "start": 40, "stop": 240, "step": 10},
-                "breakout_vol_ratio": {"mode": "range", "start": 1.0, "stop": 4.0, "step": 0.1},
+                "breakout_vol_ratio": {
+                    "mode": "range",
+                    "start": 1.0,
+                    "stop": 4.5,
+                    "step": 0.1,
+                },
             }
         )
     assert caught.value.code == "COMBINATION_LIMIT_EXCEEDED"
+    assert caught.value.details["count"] == 5_184
     assert caught.value.details["limit"] == 5_120
 
 
