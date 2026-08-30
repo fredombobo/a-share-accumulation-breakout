@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T10:03:49+08:00"
+updated_at: "2026-08-30T10:12:18+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -16,6 +16,35 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  BACKTEST-TO-DAILY-PROFILE-CLOSED-LOOP:
+    status: in_progress
+    started_at: "2026-08-30T10:12:18+08:00"
+    work_package: WP94
+    dependencies:
+      - PROFESSIONAL-BACKTEST-AI-REVIEW
+      - IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS
+    plan: "docs/BACKTEST-DAILY-PROFILE-CLOSED-LOOP-PLAN-2026-08-30.md"
+    planned_files:
+      - "ab_screener/domain/profile.py"
+      - "ab_screener/data/strategy_profile_repository.py"
+      - "ab_screener/application/strategy_profile_service.py"
+      - "ab_screener/screener/evaluator.py"
+      - "ab_screener/screener/orchestrator.py"
+      - "ab_screener/application/scan_spawn.py"
+      - "ab_screener/application/scan_job_runner.py"
+      - "ab_screener/api/routers/legacy_scan.py"
+      - "ab_screener/api/routers/professional_backtest.py"
+      - "web/frontend/src/api/client.ts"
+      - "web/frontend/src/pages/Overview.tsx"
+      - "web/frontend/src/pages/ProfessionalBacktest.tsx"
+      - "web/frontend/src/pages/Guide.tsx"
+      - "tests/test_strategy_profile_closed_loop.py"
+      - "web/frontend/src/pages/ProfessionalBacktest.test.tsx"
+      - "web/frontend/tests/v2-guided-flow.spec.ts"
+    note: >
+      仅把通过现有 OOS/WF/基线/成本结论且身份未过期的专业回测参数作为
+      可人工启用的每日研究扫描档案；不自动上线，不降低正式研究晋级硬门，
+      不恢复纸面交易或启用真实交易。
   IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS:
     status: complete
     started_at: "2026-08-30T09:37:00+08:00"

@@ -467,3 +467,22 @@ tasks:
       首页资金热力图/资金流和专业回测均可切换，回测冻结分类、分组、代码与哈希。
       974 Pytest、10 Vitest、8 Playwright、Ruff、Mypy、严格架构检查和生产构建
       全部通过；真实 8001 桌面/390px 无溢出、浏览器错误为零，实盘保持关闭。
+
+  - id: BACKTEST-TO-DAILY-PROFILE-CLOSED-LOOP
+    title: 专业回测参数与今日选股闭环
+    status: ready
+    work_package: WP94
+    phase: product-closure
+    dependencies:
+      - PROFESSIONAL-BACKTEST-AI-REVIEW
+      - IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS
+    plan: docs/BACKTEST-DAILY-PROFILE-CLOSED-LOOP-PLAN-2026-08-30.md
+    acceptance:
+      - 合格且身份未过期的专业回测结果可经人工确认启用为每日扫描参数档案
+      - 弱结论、未完成任务、代码或数据版本过期时必须 fail-closed
+      - 每次扫描冻结精确参数快照，子进程、结果和审计哈希完全一致
+      - A 池共享全部技术入场参数，B 池和每日额外门禁明确披露边界
+      - 可恢复内置默认且不删除历史参数与扫描审计
+      - 前端展示当前版本、来源、关键参数、阻断原因和闭环说明
+      - 严格质量门与真实 8001 桌面、390px 浏览器验收通过
+      - LIVE_TRADING_ENABLED 保持 false
