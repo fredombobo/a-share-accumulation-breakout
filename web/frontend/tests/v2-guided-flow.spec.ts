@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 
 /** 精简产品 E2E：每日选股 + 研究回测，旧入口回首页。 */
 
-async function mockBackendApi(page: Page, options: { activeScan?: boolean; onPreview?: (body: any) => void; onManualProfile?: (body: any) => void } = {}) {
+async function mockBackendApi(page: Page, options: { activeScan?: boolean; completedBacktest?: boolean; onPreview?: (body: any) => void; onManualProfile?: (body: any) => void } = {}) {
   await page.route(
     (url) => url.pathname.startsWith('/api/'),
     async (route) => {
@@ -53,7 +53,49 @@ async function mockBackendApi(page: Page, options: { activeScan?: boolean; onPre
         groups: classification === 'market' ? [{ name: '创业板', count: 30 }, { name: '主板', count: 60 }] : [{ name: '半导体', count: 30 }],
         industries: classification === 'industry' ? [{ name: '半导体', count: 30 }] : [], stocks: [], stock_count: 90,
       }
-      else if (path === '/api/backtest/latest') body = { task: null }
+      else if (path === '/api/backtest/latest') body = options.completedBacktest ? {
+        task: {
+          task_id: 'probt-visual', research_run_id: 'probt-visual', research_mode: 'professional_grid',
+          status: 'done', phase: 'DONE', progress: 100, message: '专业回测完成',
+          created_at: '2026-08-30T10:00:00+08:00', updated_at: '2026-08-30T10:30:00+08:00',
+          code_version: 'test', dataset_version: '20260828', input_hash: 'visual-input',
+          request: {
+            contract_version: 'test-v1', strategy: 'A', sample_step: 10, max_codes: 30,
+            parameters: {}, conditions: [], input_hash: 'visual-input',
+            parameter_space: { count: 3, sha256: 'grid', horizon: 265, signal_group_count: 3, exit_group_count: 1, invalid_signal_combinations: 0, long_running: false, long_running_warning_combinations: 512 },
+            universe: {
+              classification: 'industry', classification_title: '细分行业', group_label: '行业', groups: [], industries: [], codes: ['000001.SZ'],
+              source: 'CURRENT_ALL', count: 1, sha256: 'universe', classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+            },
+            windows: { mode: 'full', is: ['20230101', '20241231'], oos: ['20250101', '20260828'], wf: [], n_dates: 800 },
+          },
+          result: {
+            verdict: 'EXPLORATORY_WEAK', verdict_label: '探索结果未达到预登记候选条件',
+            verdict_reasons: ['滚动窗口稳定性未通过'], candidate_eligible: false, can_claim_edge: false,
+            request: {
+              contract_version: 'test-v1', strategy: 'A', sample_step: 10, max_codes: 30,
+              parameters: {}, conditions: [], input_hash: 'visual-input',
+              parameter_space: { count: 3, sha256: 'grid', horizon: 265, signal_group_count: 3, exit_group_count: 1, invalid_signal_combinations: 0, long_running: false, long_running_warning_combinations: 512 },
+              universe: {
+                classification: 'industry', classification_title: '细分行业', group_label: '行业', groups: [], industries: [], codes: ['000001.SZ'],
+                source: 'CURRENT_ALL', count: 1, sha256: 'universe', classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+              },
+              windows: { mode: 'full', is: ['20230101', '20241231'], oos: ['20250101', '20260828'], wf: [], n_dates: 800 },
+            },
+            leaderboard: [
+              { param_id: 'p1', signal: { box_max_days: 120, breakout_vol_ratio: 1.8 }, exit: { stop_pct: 0.07, target_pct: 0.15, exit_window: 10 }, is: { net_n_trades: 50, net_profit_factor: 1.4, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 }, oos: { net_n_trades: 40, net_profit_factor: 1.2, portfolio_total_return: 0.06, portfolio_max_drawdown: 0.09 } },
+              { param_id: 'p2', signal: { box_max_days: 160, breakout_vol_ratio: 2 }, exit: { stop_pct: 0.07, target_pct: 0.12, exit_window: 12 }, is: { net_n_trades: 45, net_profit_factor: 1.3, portfolio_total_return: 0.08, portfolio_max_drawdown: 0.08 }, oos: { net_n_trades: 33, net_profit_factor: 0.95, portfolio_total_return: -0.02, portfolio_max_drawdown: 0.14 } },
+            ],
+            evaluated_combinations: 3,
+            selected: { param_id: 'p1', signal: { box_max_days: 120, breakout_vol_ratio: 1.8 }, exit: { stop_pct: 0.07, target_pct: 0.15, exit_window: 10 }, is: { net_n_trades: 50, net_profit_factor: 1.4, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 }, oos: { net_n_trades: 40, net_profit_factor: 1.2, portfolio_total_return: 0.06, portfolio_max_drawdown: 0.09 } },
+            wf: { evidence_complete: true, wf_pass: false, oos_mean_pf: 1.05, wf_detail: [{ window: 'WF1', train_pf: 1.3, test_pf: 1.1, test_dd: 0.1, test_n: 35 }, { window: 'WF2', train_pf: 1.2, test_pf: 1, test_dd: 0.12, test_n: 31 }] },
+            baselines: { random: { portfolio_total_return: 0.01 }, ma20_60: { portfolio_total_return: -0.04 } },
+            cost_stress: { multiplier: '2x', metrics: { portfolio_total_return: 0.03 } },
+            warnings: ['当前分类只用于选择'], report_markdown: '# 测试报告',
+          },
+        },
+        profile_activation: { task_id: 'probt-visual', can_activate: false, already_active: false, checks: [], reasons: [], boundary: { scope: 'DAILY_A_POOL_TECHNICAL_ENTRY', manual_activation_required: true, automatic_promotion: false, b_pool_uses_profile: false, daily_extra_gates: ['资金流'], notice: '只统一 A 池技术参数。' } },
+      } : { task: null }
       else if (path === '/api/backtest/profile/manual') {
         const requestBody = route.request().postDataJSON()
         options.onManualProfile?.(requestBody)
@@ -177,7 +219,7 @@ test('首页和研究回测可切换上市板块分类并冻结选择', async ({
   await expect(growthBoard).toBeVisible()
   await growthBoard.check()
   await page.getByRole('button', { name: '检查参数空间' }).click()
-  await expect(page.getByText('有效组合').locator('..').getByText('432')).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '参数检查通过' }).getByText('432')).toBeVisible()
   expect(previewBody.universe).toEqual({ classification: 'market', groups: ['创业板'], codes: [] })
 })
 
@@ -206,8 +248,29 @@ test('研究回测必须先预览参数空间', async ({ page }) => {
   const run = page.getByRole('button', { name: '启动研究回测' })
   await expect(run).toBeDisabled()
   await page.getByRole('button', { name: '检查参数空间' }).click()
+  const dialog = page.getByRole('dialog', { name: '参数检查通过' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('没有启动回测')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
   await expect(page.getByText('有效组合').locator('..').getByText('432')).toBeVisible()
   await expect(run).toBeEnabled()
+})
+
+test('完成结果展示真实图谱并在窄屏保持单列无溢出', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockBackendApi(page, { completedBacktest: true })
+  await page.goto('/backtest')
+
+  await expect(page.getByRole('heading', { name: '结果图谱' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '净收益对照' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Profit Factor 对照' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '参数风险收益分布' })).toBeVisible()
+  await expect(page.getByRole('region', { name: '排行榜前十的 OOS 收益' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'WF 窗口稳定性' })).toBeVisible()
+  await expect(page.locator('.result-chart-panel canvas')).toHaveCount(5)
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
+  expect(overflow).toBe(false)
 })
 
 test('@a11y 扫描进度切页后仍显眼可见且窄屏不溢出', async ({ page }) => {

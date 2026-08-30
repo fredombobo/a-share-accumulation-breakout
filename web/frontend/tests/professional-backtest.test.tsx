@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  ApiError,
   api,
   type BacktestCatalog,
   type BacktestPreview,
@@ -10,6 +11,11 @@ import {
   type StrategyProfileState,
 } from '../src/api/client'
 import ProfessionalBacktest from '../src/pages/ProfessionalBacktest'
+import BacktestResultCharts from '../src/components/BacktestResultCharts'
+
+vi.mock('../src/components/EChart', () => ({
+  default: ({ height }: { height?: number }) => <div data-testid="result-echart" data-height={height} />,
+}))
 
 const catalog: BacktestCatalog = {
   version: 'test-v1',
@@ -98,16 +104,26 @@ const completedTask: BacktestTask = {
     leaderboard: [{
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
       exit: { stop_pct: 0.05, target_pct: 0.15, exit_window: 10 },
-      is: { net_n_trades: 50, portfolio_total_return: 0.1 },
-      oos: { net_n_trades: 40, portfolio_total_return: 0.08 },
+      is: { net_n_trades: 50, net_profit_factor: 1.42, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 },
+      oos: { net_n_trades: 40, net_profit_factor: 1.22, portfolio_total_return: 0.08, portfolio_max_drawdown: 0.09 },
     }],
     selected: {
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
       exit: { stop_pct: 0.05, target_pct: 0.15, exit_window: 10 },
-      is: { net_n_trades: 50, portfolio_total_return: 0.1 },
-      oos: { net_n_trades: 40, portfolio_total_return: 0.08 },
+      is: { net_n_trades: 50, net_profit_factor: 1.42, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 },
+      oos: { net_n_trades: 40, net_profit_factor: 1.22, portfolio_total_return: 0.08, portfolio_max_drawdown: 0.09 },
     },
-    wf: { evidence_complete: true, wf_pass: true }, baselines: {},
+    wf: {
+      evidence_complete: true, wf_pass: true, train_mean_pf: 1.35, oos_mean_pf: 1.18,
+      wf_detail: [
+        { window: 'WF1', train_pf: 1.4, test_pf: 1.2, test_dd: 0.08, test_n: 35 },
+        { window: 'WF2', train_pf: 1.3, test_pf: 1.16, test_dd: 0.1, test_n: 32 },
+      ],
+    },
+    baselines: {
+      random: { net_n_trades: 40, portfolio_total_return: 0.01, portfolio_max_drawdown: 0.12 },
+      ma20_60: { net_n_trades: 36, portfolio_total_return: -0.02, portfolio_max_drawdown: 0.16 },
+    },
     cost_stress: { multiplier: '2x', metrics: { portfolio_total_return: 0.04 } }, warnings: [],
   },
   created_at: '2026-08-30T10:00:00+08:00', updated_at: '2026-08-30T10:01:00+08:00',
@@ -143,9 +159,83 @@ describe('专业回测工作台', () => {
     fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
 
     await waitFor(() => expect(previewSpy).toHaveBeenCalledOnce())
+    const dialog = await screen.findByRole('dialog', { name: '参数检查通过' })
+    expect(dialog).toHaveTextContent('检查通过不代表策略有效，也没有启动回测')
+    fireEvent.click(screen.getByRole('button', { name: '查看冻结预览' }))
     expect(previewSpy.mock.calls[0][0].parameters.box_max_days).toEqual({ mode: 'range', start: 60, stop: 200, step: 20 })
     expect(await screen.findByText('24')).toBeVisible()
     expect(runSpy).not.toHaveBeenCalled()
+  })
+
+  it('参数检查失败时弹出人话结果并允许返回修改', async () => {
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+      classifications: [], groups: [], industries: [], stocks: [], stock_count: 30,
+    })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task: null, profile_activation: eligible })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState(true))
+    vi.spyOn(api, 'backtestPreview').mockRejectedValue(new ApiError({
+      code: 'TOO_MANY_COMBINATIONS', message: '参数组合 5184 组，超过硬上限 5120 组', status: 422,
+    }))
+
+    render(<ProfessionalBacktest />)
+    await screen.findByRole('heading', { name: '多参数研究回测' })
+    fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
+
+    const dialog = await screen.findByRole('dialog', { name: '参数检查未通过' })
+    expect(dialog).toHaveTextContent('超过硬上限 5120 组')
+    fireEvent.click(screen.getByRole('button', { name: '返回修改参数' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('已完成结果用真实字段生成五类图谱和可读参数摘要', async () => {
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+      classifications: [], groups: [], industries: [], stocks: [], stock_count: 30,
+    })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task: completedTask, profile_activation: eligible })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState(true))
+
+    render(<ProfessionalBacktest />)
+
+    expect(await screen.findByRole('heading', { name: '结果图谱' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '净收益对照' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Profit Factor 对照' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '参数风险收益分布' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '排行榜前十的 OOS 收益' })).toBeVisible()
+    expect(screen.getByRole('region', { name: 'WF 窗口稳定性' })).toBeVisible()
+    expect(screen.getAllByTestId('result-echart')).toHaveLength(5)
+    expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('止盈')
+    expect(screen.getAllByText('15.00%')).toHaveLength(2)
+    expect(screen.getByText(/不绘制或推测净值曲线/)).toBeVisible()
+  })
+
+  it('缺失指标保持空状态，不把 null 画成零收益', () => {
+    const base = completedTask.result!
+    const missingMetrics = {
+      net_n_trades: 0,
+      net_avg_return: null,
+      net_total_return: null,
+      net_profit_factor: null,
+      net_max_drawdown: null,
+      portfolio_total_return: null,
+      portfolio_max_drawdown: null,
+    }
+    render(<BacktestResultCharts result={{
+      ...base,
+      selected: { ...base.selected!, is: missingMetrics, oos: missingMetrics },
+      leaderboard: [{ ...base.leaderboard[0], is: missingMetrics, oos: missingMetrics }],
+      wf: { evidence_complete: false, wf_pass: false, wf_detail: [{ window: 'WF1', train_pf: null, test_pf: null }] },
+      baselines: { random: missingMetrics, ma20_60: missingMetrics },
+      cost_stress: { multiplier: '2x', metrics: missingMetrics },
+    }} />)
+
+    expect(screen.queryAllByTestId('result-echart')).toHaveLength(0)
+    expect(screen.getAllByText('暂无可绘制数据')).toHaveLength(5)
   })
 
   it('切换分类标准后把所选细分方向写入预览请求', async () => {
@@ -244,6 +334,7 @@ describe('专业回测工作台', () => {
     render(<ProfessionalBacktest />)
     await screen.findByRole('heading', { name: '多参数研究回测' })
     fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
+    fireEvent.click(await screen.findByRole('button', { name: '查看冻结预览' }))
     await screen.findByText(/长耗时任务：已超过 512 组/)
     fireEvent.click(screen.getByRole('button', { name: '启动研究回测' }))
 

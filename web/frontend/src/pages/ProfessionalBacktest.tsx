@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiError,
   api,
@@ -17,6 +17,8 @@ import {
   StrategyProfileState,
 } from '../api/client'
 import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
+import BacktestResultCharts from '../components/BacktestResultCharts'
+import ParameterCheckDialog, { type ParameterCheckResult } from '../components/ParameterCheckDialog'
 
 const ACTIVE_STATUSES: BacktestTask['status'][] = ['pending', 'running', 'cancelling']
 const PRIMARY_KEYS = new Set([
@@ -70,13 +72,42 @@ function formatNumber(value: number | null | undefined, digits = 2): string {
   return value == null ? 'n/a' : value.toFixed(digits)
 }
 
+const PARAMETER_LABELS: Record<string, string> = {
+  box_min_days: '横盘最短',
+  box_max_days: '横盘最长',
+  box_max_amp: '箱体振幅上限',
+  breakout_vol_ratio: '突破量比',
+  breakout_chg_min: '突破涨幅下限',
+  breakout_chg_max: '突破涨幅上限',
+  breakout_vs_recent_vol_ratio: '近期放量倍数',
+  breakout_window_days: '突破确认窗',
+  require_structure: '结构要求',
+  vol_ratio_min: '建仓量比',
+  stop_pct: '止损',
+  target_pct: '止盈',
+  exit_window: '最长持有',
+  strong_reset: '强势重置',
+}
+
+const PERCENT_PARAMETER_KEYS = new Set(['box_max_amp', 'breakout_chg_min', 'breakout_chg_max', 'stop_pct', 'target_pct'])
+const DAY_PARAMETER_KEYS = new Set(['box_min_days', 'box_max_days', 'breakout_window_days', 'exit_window'])
+
+function formatParameterValue(key: string, value: number | boolean): string {
+  if (typeof value === 'boolean') return value ? '启用' : '关闭'
+  if (PERCENT_PARAMETER_KEYS.has(key)) return formatPercent(value)
+  if (DAY_PARAMETER_KEYS.has(key)) return `${value} 日`
+  return String(value)
+}
+
 function metricRows(metrics: BacktestMetrics | null | undefined) {
+  const totalReturn = metrics?.portfolio_total_return ?? metrics?.net_total_return ?? metrics?.net_avg_return
+  const maxDrawdown = metrics?.portfolio_max_drawdown ?? metrics?.net_max_drawdown
   return [
     ['净成交', metrics?.net_n_trades == null ? 'n/a' : `${metrics.net_n_trades} 笔`],
     ['净胜率', formatPercent(metrics?.net_win_rate)],
     ['净 Profit Factor', formatNumber(metrics?.net_profit_factor)],
-    ['组合净收益', formatPercent(metrics?.portfolio_total_return)],
-    ['组合最大回撤', formatPercent(metrics?.portfolio_max_drawdown)],
+    ['组合净收益', formatPercent(totalReturn)],
+    ['组合最大回撤', formatPercent(maxDrawdown)],
   ]
 }
 
@@ -274,6 +305,7 @@ function BacktestResultView({
             <ResultMetrics title="OOS 样本外" metrics={selected.oos} />
             <ResultMetrics title="2 倍成本压力" metrics={result.cost_stress?.metrics} />
           </div>
+          <BacktestResultCharts result={result} />
           <section className="card section-gap">
             <div className="h-sec"><h2>基准与滚动窗口</h2></div>
             <div className="baseline-grid">
@@ -293,10 +325,19 @@ function BacktestResultView({
               <h2>入选参数与排行榜</h2>
               <span className="pill">已评估 {result.evaluated_combinations ?? result.leaderboard.length} 组</span>
             </div>
-            <div className="selected-params">
-              <code>{JSON.stringify(selected.signal)}</code>
-              <code>{JSON.stringify(selected.exit)}</code>
+            <div className="selected-parameter-grid" aria-label="入选参数摘要">
+              {[...Object.entries(selected.signal), ...Object.entries(selected.exit)].map(([key, value]) => (
+                <div key={key}>
+                  <span>{PARAMETER_LABELS[key] || key}</span>
+                  <b>{formatParameterValue(key, value)}</b>
+                </div>
+              ))}
             </div>
+            <details className="selected-technical-detail">
+              <summary>查看原始参数与技术身份</summary>
+              <code>{JSON.stringify({ signal: selected.signal, exit: selected.exit })}</code>
+              <code>参数 ID: {selected.param_id} · 输入: {result.request.input_hash}</code>
+            </details>
             <Leaderboard rows={result.leaderboard.slice(0, 10)} />
           </section>
         </>
@@ -347,11 +388,13 @@ export default function ProfessionalBacktest() {
   const [sampleStep, setSampleStep] = useState(10)
   const [conditionFlags, setConditionFlags] = useState<Record<string, boolean>>({})
   const [preview, setPreview] = useState<BacktestPreview | null>(null)
+  const [checkDialog, setCheckDialog] = useState<ParameterCheckResult | null>(null)
   const [task, setTask] = useState<BacktestTask | null>(null)
   const [profileState, setProfileState] = useState<StrategyProfileState | null>(null)
   const [profileFeedback, setProfileFeedback] = useState('')
   const [busy, setBusy] = useState<'load' | 'preview' | 'run' | 'cancel' | ''>('load')
   const [error, setError] = useState('')
+  const previewRef = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     let active = true
@@ -419,6 +462,7 @@ export default function ProfessionalBacktest() {
   const mutate = (action: () => void) => {
     action()
     setPreview(null)
+    setCheckDialog(null)
     setError('')
   }
 
@@ -426,9 +470,13 @@ export default function ProfessionalBacktest() {
     setBusy('preview')
     setError('')
     try {
-      setPreview(await api.backtestPreview(request))
+      const next = await api.backtestPreview(request)
+      setPreview(next)
+      setCheckDialog({ kind: 'success', preview: next })
     } catch (reason) {
-      setError(errorMessage(reason))
+      const message = errorMessage(reason)
+      setError(message)
+      setCheckDialog({ kind: 'error', message })
     } finally {
       setBusy('')
     }
@@ -537,6 +585,20 @@ export default function ProfessionalBacktest() {
 
   return (
     <div className="backtest-shell fade-up">
+      {checkDialog && (
+        <ParameterCheckDialog
+          result={checkDialog}
+          onClose={() => setCheckDialog(null)}
+          onViewPreview={() => {
+            setCheckDialog(null)
+            window.requestAnimationFrame(() => {
+              if (typeof previewRef.current?.scrollIntoView === 'function') {
+                previewRef.current.scrollIntoView({ block: 'nearest' })
+              }
+            })
+          }}
+        />
+      )}
       <section className="backtest-intro">
         <div>
           <span className="guide-eyebrow">AB 横盘吸筹突破</span>
@@ -705,7 +767,7 @@ export default function ProfessionalBacktest() {
           </section>
 
           {preview && (
-            <section className="preview-grid" aria-label="回测预览">
+            <section ref={previewRef} className="preview-grid" aria-label="回测预览">
               <div><span>有效组合</span><b>{preview.prepared.parameter_space.count}</b></div>
               <div><span>冻结股票</span><b>{preview.prepared.universe.count}</b></div>
               <div><span>动态预热</span><b>{preview.prepared.parameter_space.horizon} 日</b></div>

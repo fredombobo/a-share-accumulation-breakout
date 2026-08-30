@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T13:04:37+08:00"
+updated_at: "2026-08-30T14:41:37+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -16,6 +16,36 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI:
+    status: complete
+    started_at: "2026-08-30T14:15:14+08:00"
+    work_package: WP96
+    dependencies:
+      - MANUAL-RESEARCH-PARAMETERS-LARGE-GRID
+      - GLOBAL-RUN-PROGRESS-VISIBILITY
+    plan: "docs/BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI-PLAN-2026-08-30.md"
+    planned_files:
+      - "web/frontend/src/pages/ProfessionalBacktest.tsx"
+      - "web/frontend/src/pages/Guide.tsx"
+      - "web/frontend/src/components/ParameterCheckDialog.tsx"
+      - "web/frontend/src/components/BacktestResultCharts.tsx"
+      - "web/frontend/src/api/client.ts"
+      - "web/frontend/src/styles/theme.css"
+      - "web/frontend/tests/professional-backtest.test.tsx"
+      - "web/frontend/tests/v2-guided-flow.spec.ts"
+      - "docs/小白使用手册.md"
+    note: >
+      仅做 accumulation_breakout/8001 的表现层与只读结果可视化，不修改研究算法、
+      任务状态机、生产参数或数据库；正在运行的专业回测不得被重启或取消。
+    completed_at: "2026-08-30T14:41:37+08:00"
+    result: "docs/ACCEPTANCE-BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI-2026-08-30.md"
+    completed_evidence:
+      - "参数检查成功/失败原生模态弹窗；Escape、初始焦点、焦点回归及冻结预览保留通过"
+      - "净收益、Profit Factor、风险收益、排行榜 OOS 与 WF 五类真实图谱；null 不补零"
+      - "旧弱证据任务只绘制字段充分的 2 张图，其余诚实空状态；未伪造净值曲线"
+      - "严格质量门 PASS：988 Pytest、15 Vitest、Ruff、Mypy、strict architecture、frontend build"
+      - "Playwright 10/10；真实 8001 深浅主题、390px、弹窗和历史结果浏览器验收 PASS"
+      - "accumulation_breakout/8001 健康，LIVE_TRADING_ENABLED=false；活动回测未中断"
   MANUAL-RESEARCH-PARAMETERS-LARGE-GRID:
     status: complete
     started_at: "2026-08-30T11:20:00+08:00"

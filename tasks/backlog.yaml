@@ -517,3 +517,27 @@ tasks:
       Vitest、Ruff、Mypy、严格架构及构建通过；Playwright 9/9 与真实 8001
       桌面/390px 通过。生产档案保持 default、历史 0，LIVE_TRADING_ENABLED=false。
       证据见 docs/ACCEPTANCE-MANUAL-RESEARCH-PARAMETERS-LARGE-GRID-2026-08-30.md。
+
+  - id: BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI
+    title: 参数检查弹窗、真实回测图谱与界面精修
+    status: complete
+    work_package: WP96
+    phase: product-usability
+    dependencies:
+      - MANUAL-RESEARCH-PARAMETERS-LARGE-GRID
+      - GLOBAL-RUN-PROGRESS-VISIBILITY
+    plan: docs/BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI-PLAN-2026-08-30.md
+    acceptance:
+      - 参数检查成功或失败均以可访问弹窗反馈且不自动启动任务
+      - 图表只使用真实 IS、OOS、成本、基线、WF 与排行榜结果且不伪造净值曲线
+      - 缺失图表字段有诚实空状态，不以零值替代
+      - 入选参数改为人类可读摘要并保留技术身份
+      - 深浅主题、键盘、减少动态和 390px 窄屏通过
+      - 严格质量门与真实 8001 浏览器验收通过
+      - LIVE_TRADING_ENABLED 保持 false
+    completion_note: >
+      WP96 完成参数检查成功/失败模态弹窗、真实收益/PF/风险收益/Top OOS/WF 五类图谱、
+      缺失值不补零和入选参数可读摘要；深浅主题与 390px 完成保留式精修。严格质量门
+      988 Pytest、15 Vitest、Ruff、Mypy、严格架构和构建通过，Playwright 10/10 及
+      真实 8001 验收通过。运行中的 probt-0503a30ccdef 未被重启或取消，实盘保持关闭。
+      证据见 docs/ACCEPTANCE-BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI-2026-08-30.md。

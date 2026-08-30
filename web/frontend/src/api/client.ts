@@ -545,6 +545,7 @@ export interface BacktestMetrics {
   net_n_trades?: number
   net_win_rate?: number | null
   net_avg_return?: number | null
+  net_total_return?: number | null
   net_profit_factor?: number | null
   net_max_drawdown?: number | null
   portfolio_status?: string | null
@@ -561,6 +562,17 @@ export interface BacktestLeaderboardRow {
   oos: BacktestMetrics
 }
 
+export interface BacktestWalkForwardWindow {
+  window?: string
+  train_pf?: number | null
+  test_pf?: number | null
+  test_dd?: number | null
+  test_wr?: number | null
+  test_n?: number | null
+  train_portfolio_status?: string | null
+  test_portfolio_status?: string | null
+}
+
 export interface BacktestResult {
   verdict: string
   verdict_label: string
@@ -571,7 +583,13 @@ export interface BacktestResult {
   leaderboard: BacktestLeaderboardRow[]
   selected: BacktestLeaderboardRow | null
   evaluated_combinations?: number
-  wf: { evidence_complete?: boolean; wf_pass?: boolean; oos_mean_pf?: number | null } | null
+  wf: {
+    evidence_complete?: boolean
+    wf_pass?: boolean
+    train_mean_pf?: number | null
+    oos_mean_pf?: number | null
+    wf_detail?: BacktestWalkForwardWindow[]
+  } | null
   baselines: Record<string, BacktestMetrics & { baseline?: string }> | null
   cost_stress: { multiplier: string; metrics: BacktestMetrics } | null
   warnings: string[]
