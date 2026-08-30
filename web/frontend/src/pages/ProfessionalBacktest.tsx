@@ -253,6 +253,9 @@ function BacktestResultView({
   const selected = result.selected
   const verdictClass = result.verdict === 'EXPLORATORY_PROMISING' ? 'ok' : 'warn'
   const baselineEntries = Object.entries(result.baselines || {})
+  const hasIndependentPaths = Boolean(
+    result.path_analysis?.evidence_complete && result.independent_leaderboard,
+  )
   const downloadReport = () => {
     const blob = new Blob([result.report_markdown || '报告内容不可用'], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -340,7 +343,7 @@ function BacktestResultView({
           </section>
           <section className="card section-gap">
             <div className="h-sec">
-              <h2>入选参数与独立路径排行榜</h2>
+              <h2>{hasIndependentPaths ? '入选参数与独立路径排行榜' : '入选参数与历史名义排行榜'}</h2>
               <span className="pill">
                 名义 {result.path_analysis?.nominal_combinations ?? result.evaluated_combinations ?? result.leaderboard.length} 组
                 {result.path_analysis?.evidence_complete && result.path_analysis.independent_joint_paths != null
@@ -361,7 +364,16 @@ function BacktestResultView({
               <code>{JSON.stringify({ signal: selected.signal, exit: selected.exit })}</code>
               <code>参数 ID: {selected.param_id} · 输入: {result.request.input_hash}</code>
             </details>
-            <Leaderboard rows={(result.independent_leaderboard || result.leaderboard).slice(0, 10)} />
+            {!hasIndependentPaths && (
+              <div className="guide-feedback warning" role="note">
+                <b>旧任务缺少权益路径哈希，排行榜未去重</b>
+                <span>保留原始名义参数结果，不根据相同的四舍五入指标猜测它们是否等效；请以 v1.3 新任务复验。</span>
+              </div>
+            )}
+            <Leaderboard
+              rows={(hasIndependentPaths ? result.independent_leaderboard! : result.leaderboard).slice(0, 10)}
+              hasIndependentPaths={hasIndependentPaths}
+            />
           </section>
         </>
       ) : <div className="empty section-gap"><strong>没有可入选组合</strong>当前样本没有达到最低成交证据要求。</div>}
@@ -373,16 +385,22 @@ function BacktestResultView({
   )
 }
 
-function Leaderboard({ rows }: { rows: BacktestLeaderboardRow[] }) {
+function Leaderboard({
+  rows,
+  hasIndependentPaths,
+}: {
+  rows: BacktestLeaderboardRow[]
+  hasIndependentPaths: boolean
+}) {
   if (!rows.length) return <div className="empty">暂无排行榜数据</div>
   return (
     <div className="table-scroll">
       <table className="data">
-        <thead><tr><th>排名</th><th>等效参数</th><th>横盘最长</th><th>突破量比</th><th>止损</th><th>止盈</th><th>最长持有</th><th>二次出货窗</th><th>IS PF</th><th>OOS PF</th><th>OOS 净收益</th><th>OOS 成交</th></tr></thead>
+        <thead><tr><th>排名</th><th>{hasIndependentPaths ? '等效参数' : '路径证据'}</th><th>横盘最长</th><th>突破量比</th><th>止损</th><th>止盈</th><th>最长持有</th><th>二次出货窗</th><th>IS PF</th><th>OOS PF</th><th>OOS 净收益</th><th>OOS 成交</th></tr></thead>
         <tbody>{rows.map((row, index) => (
           <tr key={row.param_id}>
             <td className="num">{index + 1}</td>
-            <td className="num">{row.equivalent_parameter_count ?? 1} 组</td>
+            <td className="num">{hasIndependentPaths ? `${row.equivalent_parameter_count ?? 1} 组` : '未去重'}</td>
             <td className="num">{String(row.signal.box_max_days)}</td>
             <td className="num">{String(row.signal.breakout_vol_ratio)}</td>
             <td className="num">{formatPercent(Number(row.exit.stop_pct))}</td>

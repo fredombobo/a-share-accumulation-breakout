@@ -136,6 +136,15 @@ const completedTask: BacktestTask = {
   code_version: 'code', dataset_version: 'dataset', input_hash: 'input', profile_activation: eligible,
 }
 
+completedTask.result!.path_analysis = {
+  method: 'combined_portfolio_equity_sha256', evidence_complete: true,
+  nominal_combinations: 2, independent_is_paths: 1, independent_oos_paths: 1,
+  independent_joint_paths: 1, duplicate_group_count: 1,
+}
+completedTask.result!.independent_leaderboard = [{
+  ...completedTask.result!.leaderboard[0], equivalent_parameter_count: 2,
+}]
+
 afterEach(() => vi.restoreAllMocks())
 
 describe('专业回测工作台', () => {
@@ -220,11 +229,41 @@ describe('专业回测工作台', () => {
     expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('二次出货观察窗')
     expect(screen.getByRole('heading', { name: '入选参数与独立路径排行榜' })).toBeVisible()
     expect(screen.getByRole('columnheader', { name: '等效参数' })).toBeVisible()
+    expect(screen.getByText('2 组', { exact: true })).toBeVisible()
     expect(screen.getAllByText('8.00%').length).toBeGreaterThan(0)
     expect(screen.getByText('0 笔（无验证证据）')).toBeVisible()
     expect(screen.getByText(/这是抽样研究，不是逐日完整回测/)).toBeVisible()
     expect(screen.getAllByText('15.00%')).toHaveLength(2)
     expect(screen.getByText(/不绘制或推测净值曲线/)).toBeVisible()
+  })
+
+  it('旧任务缺少权益哈希时明确保留名义排行榜且不推测去重', async () => {
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+      classifications: [], groups: [], industries: [], stocks: [], stock_count: 30,
+    })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({
+      task: {
+        ...completedTask,
+        result: {
+          ...completedTask.result!,
+          path_analysis: undefined,
+          independent_leaderboard: undefined,
+        },
+      },
+      profile_activation: eligible,
+    })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState(true))
+
+    render(<ProfessionalBacktest />)
+
+    expect(await screen.findByRole('heading', { name: '入选参数与历史名义排行榜' })).toBeVisible()
+    expect(screen.getByText('旧任务缺少权益路径哈希，排行榜未去重')).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: '路径证据' })).toBeVisible()
+    expect(screen.getAllByText('未去重').length).toBeGreaterThan(0)
+    expect(screen.getByRole('region', { name: '历史名义参数前十的 OOS 收益' })).toBeVisible()
   })
 
   it('缺失指标保持空状态，不把 null 画成零收益', () => {
@@ -242,6 +281,7 @@ describe('专业回测工作台', () => {
       ...base,
       selected: { ...base.selected!, is: missingMetrics, oos: missingMetrics },
       leaderboard: [{ ...base.leaderboard[0], is: missingMetrics, oos: missingMetrics }],
+      independent_leaderboard: [{ ...base.leaderboard[0], is: missingMetrics, oos: missingMetrics }],
       wf: { evidence_complete: false, wf_pass: false, wf_detail: [{ window: 'WF1', train_pf: null, test_pf: null }] },
       baselines: { random: missingMetrics, ma20_60: missingMetrics },
       cost_stress: { multiplier: '2x', metrics: missingMetrics },

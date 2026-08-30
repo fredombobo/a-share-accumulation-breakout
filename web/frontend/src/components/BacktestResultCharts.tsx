@@ -50,7 +50,12 @@ function wfRows(result: BacktestResult): BacktestWalkForwardWindow[] {
 export default function BacktestResultCharts({ result }: { result: BacktestResult }) {
   const colors = useChartColors()
   const selected = result.selected
-  const rankedRows = result.independent_leaderboard || result.leaderboard
+  const hasIndependentPaths = Boolean(
+    result.path_analysis?.evidence_complete && result.independent_leaderboard,
+  )
+  const rankedRows = hasIndependentPaths
+    ? result.independent_leaderboard!
+    : result.leaderboard
 
   const comparison = useMemo(() => {
     const rows: { label: string; value: number }[] = []
@@ -270,14 +275,18 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
         />
         <ResultChartPanel
           title="参数风险收益分布"
-          description="每个点是一条独立收益路径；横轴越小、纵轴越高越有利，点大小代表成交数。"
+          description={hasIndependentPaths
+            ? '每个点是一条独立收益路径；横轴越小、纵轴越高越有利，点大小代表成交数。'
+            : '历史结果缺少权益哈希，每个点仍是一个名义参数；不能据此判断独立路径数量。'}
           sample={`${riskRows.length} 组有效数据`}
           option={riskOption}
           empty="独立路径排行榜没有同时提供 OOS 组合净收益和最大回撤。"
         />
         <ResultChartPanel
-          title="独立路径前十的 OOS 收益"
-          description="按精确 IS+OOS 权益路径折叠等效参数，并保持 IS 选参顺序；不按 OOS 重新挑选。"
+          title={hasIndependentPaths ? '独立路径前十的 OOS 收益' : '历史名义参数前十的 OOS 收益'}
+          description={hasIndependentPaths
+            ? '按精确 IS+OOS 权益路径折叠等效参数，并保持 IS 选参顺序；不按 OOS 重新挑选。'
+            : '旧任务没有保存权益哈希，因此保持原名义参数顺序并明确不做推测去重。'}
           sample={`${topRows.length} 组可绘制`}
           option={topOption}
           height={330}
