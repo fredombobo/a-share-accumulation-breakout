@@ -42,6 +42,7 @@ def spawn_scan_runner(
     progress: Path,
     result: Path,
     cancel_file: Path,
+    profile: Path,
     cwd: Path | None = None,
 ) -> ScanChild:
     root = cwd or ROOT
@@ -54,6 +55,7 @@ def spawn_scan_runner(
         "--progress", str(progress),
         "--result", str(result),
         "--cancel-file", str(cancel_file),
+        "--profile", str(profile),
     ]
     creationflags = 0
     if os.name == "nt":

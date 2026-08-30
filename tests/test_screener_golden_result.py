@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from ab_screener.domain.profile import StrategyProfile, default_profile
 from ab_screener.screener.orchestrator import run_scan
 from local_store import LocalStore
 
@@ -253,3 +254,38 @@ def test_scanner_single_and_multi_worker_same_result(frozen_market_store):
     single = normalize(run_scan(store=frozen_market_store, as_of=AS_OF, workers=1, days=160, force=True))
     multi = normalize(run_scan(store=frozen_market_store, as_of=AS_OF, workers=2, days=160, force=True))
     assert single == multi
+
+
+def test_scanner_freezes_custom_profile_into_result_and_pool_report(frozen_market_store):
+    custom = StrategyProfile(
+        **{
+            **default_profile().to_canonical_dict(),
+            "profile_id": "professional-backtest-daily-scan",
+            "name": "test activated profile",
+            "version": "probt-test",
+            "source_kind": "PROFESSIONAL_BACKTEST",
+            "source_task_id": "probt-test",
+        }
+    )
+
+    result = run_scan(
+        store=frozen_market_store,
+        as_of=AS_OF,
+        workers=1,
+        days=160,
+        force=True,
+        profile=custom,
+    )
+
+    assert result["strategy_profile"] == custom.to_canonical_dict()
+    assert result["strategy_profile_hash"] == custom.config_hash()
+    assert result["pool_report"]["strategy_profile"] == {
+        "profile_id": custom.profile_id,
+        "version": custom.version,
+        "config_hash": custom.config_hash(),
+        "a_pool_uses_profile": True,
+        "b_pool_uses_profile": False,
+        "daily_extra_gates": [
+            "market_regime", "fund_flow", "fundamentals", "liquidity", "score"
+        ],
+    }

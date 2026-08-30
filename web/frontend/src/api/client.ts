@@ -292,6 +292,8 @@ export interface ScanStatus {
   updated_at?: string | null
   heartbeat_at?: string | null
   finished_at?: string | null
+  strategy_profile?: StrategyProfileSnapshot | null
+  config_hash?: string | null
 }
 
 export const api = {
@@ -306,7 +308,7 @@ export const api = {
   sectorFlow: (days = 10, classification: ClassificationKey = 'industry', opts?: ReqOpts) =>
     request<SectorFlowResp>(`/sector-flow?days=${days}&classification=${encodeURIComponent(classification)}`, opts),
   scan: (top = 15, days = 160, force = false, opts?: ReqOpts) =>
-    request<{ status: string; task_id: string; top: number; days: number }>('/scan', {
+    request<{ status: string; task_id: string; top: number; days: number; requested_days: number; config_hash: string; strategy_profile: StrategyProfileSnapshot }>('/scan', {
       ...opts,
       method: 'POST',
       body: JSON.stringify({ top, days, force }),
@@ -331,9 +333,22 @@ export const api = {
     request<BacktestPreview>('/backtest/preview', { ...opts, method: 'POST', body: JSON.stringify(body) }),
   backtestRun: (body: BacktestRequest, opts?: ReqOpts) =>
     request<{ task_id: string; status: string; cached: boolean }>('/backtest/run', { ...opts, method: 'POST', body: JSON.stringify(body) }),
-  backtestLatest: (opts?: ReqOpts) => request<{ task: BacktestTask | null }>('/backtest/latest', opts),
+  backtestLatest: (opts?: ReqOpts) => request<{ task: BacktestTask | null; profile_activation: ProfileActivation }>('/backtest/latest', opts),
   backtestStatus: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/status/${encodeURIComponent(taskId)}`, opts),
   backtestCancel: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/${encodeURIComponent(taskId)}/cancel`, { ...opts, method: 'POST' }),
+  backtestProfile: (opts?: ReqOpts) => request<StrategyProfileState>('/backtest/profile', opts),
+  activateBacktestProfile: (taskId: string, opts?: ReqOpts) =>
+    request<StrategyProfileState & { activation: ProfileActivation; idempotent: boolean }>('/backtest/profile/activate', {
+      ...opts,
+      method: 'POST',
+      body: JSON.stringify({ task_id: taskId, acknowledge_exploratory: true }),
+    }),
+  resetBacktestProfile: (opts?: ReqOpts) =>
+    request<StrategyProfileState & { retired_count: number }>('/backtest/profile/reset', {
+      ...opts,
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }),
 
   // ── 个股 AI 证据评测 ──
   aiReview: (tsCode: string, opts?: ReqOpts) => request<AIReview>(`/ai-review/${encodeURIComponent(tsCode)}`, opts),
@@ -544,6 +559,90 @@ export interface BacktestTask {
   started_at?: string | null
   updated_at: string
   heartbeat_at?: string | null
+  code_version: string
+  dataset_version: string
+  input_hash: string
+  profile_activation?: ProfileActivation
+}
+
+export interface StrategyProfileSnapshot {
+  profile_id: string
+  name: string
+  schema_version: number
+  version: string
+  status: string
+  box_min_days: number
+  box_max_days: number
+  box_max_amp: number
+  breakout_vol_ratio: number
+  breakout_chg_min: number
+  breakout_chg_max: number
+  breakout_vs_recent_vol_ratio: number
+  breakout_window_days: number
+  require_structure: boolean
+  vol_ratio_min: number
+  strong_reset: number
+  exit_window: number
+  stop_pct: number
+  source_kind: string
+  source_task_id?: string | null
+}
+
+export interface StrategyProfileView {
+  profile_id: string
+  name: string
+  version: string
+  schema_version: number
+  is_default: boolean
+  status: string
+  storage_status: string
+  config_hash: string
+  activated_at?: string | null
+  entry: Record<string, number | boolean>
+  exit_reference: Record<string, number>
+  required_scan_days: number
+  source: {
+    kind: string
+    task_id?: string | null
+    param_id?: string | null
+    code_version?: string | null
+    dataset_version?: string | null
+    input_hash?: string | null
+    evidence?: Record<string, unknown>
+  }
+  notes: string[]
+}
+
+export interface StrategyProfileBoundary {
+  scope: string
+  manual_activation_required: boolean
+  automatic_promotion: boolean
+  b_pool_uses_profile: boolean
+  daily_extra_gates: string[]
+  notice: string
+}
+
+export interface StrategyProfileState {
+  active: StrategyProfileView
+  history: StrategyProfileView[]
+  boundary: StrategyProfileBoundary
+  live_trading_enabled: false
+}
+
+export interface ProfileActivationCheck {
+  code: string
+  label: string
+  passed: boolean
+  message: string
+}
+
+export interface ProfileActivation {
+  task_id?: string | null
+  can_activate: boolean
+  already_active: boolean
+  checks: ProfileActivationCheck[]
+  reasons: ProfileActivationCheck[]
+  boundary: StrategyProfileBoundary
 }
 
 // ── AI 证据评测 ──

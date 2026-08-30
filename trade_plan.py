@@ -17,23 +17,26 @@ def build_trade_card(
     tier: str = "strict",
     regime: str = "neutral",
     score: float | None = None,
+    stop_pct: float = 0.07,
 ) -> dict[str, Any]:
     """生成单票交易计划。"""
     px = float(price) if price is not None and price == price else None
     bh = float(box_high) if box_high is not None and box_high == box_high else None
     bl = float(box_low) if box_low is not None and box_low == box_low else None
 
-    # 止损：箱体上沿下方 1% 与 -7% 取更紧（对多头）
+    stop_pct = min(0.25, max(0.01, float(stop_pct)))
+    stop_multiplier = 1.0 - stop_pct
+    # 止损：箱体上沿下方 1% 与档案止损比例取更紧（对多头）
     stop = None
     if px and bh:
         stop_box = bh * 0.99
-        stop_pct = px * 0.93
-        stop = max(stop_box, stop_pct) if stop_box < px else stop_pct
-        # 若箱顶已低于现价很多，用 -7%
+        stop_by_pct = px * stop_multiplier
+        stop = max(stop_box, stop_by_pct) if stop_box < px else stop_by_pct
+        # 若箱顶已低于现价很多，用档案止损比例
         if stop >= px:
-            stop = px * 0.93
+            stop = stop_by_pct
     elif px:
-        stop = px * 0.93
+        stop = px * stop_multiplier
 
     # 目标：+12% 或 1.5R
     target1 = None
@@ -65,7 +68,7 @@ def build_trade_card(
         "entry_ref": round(px, 2) if px else None,
         "entry_note": "突破确认日尾盘或次日开盘弱转强（回测二选一）",
         "stop_loss": round(stop, 2) if stop else None,
-        "stop_rule": "收盘跌破箱体上沿*0.99 或 -7%（取触发先到者）",
+        "stop_rule": f"收盘跌破箱体上沿*0.99 或 -{stop_pct:.1%}（取触发先到者）",
         "target_1": round(target1, 2) if target1 else None,
         "target_2": round(target2, 2) if target2 else None,
         "target_rule": "目标1≈1.5R且≤+12%；目标2≈2.5R且≤+20%",
@@ -80,7 +83,13 @@ def build_trade_card(
     }
 
 
-def attach_trade_cards(df, regime: str = "neutral", sig_by_code: dict | None = None):
+def attach_trade_cards(
+    df,
+    regime: str = "neutral",
+    sig_by_code: dict | None = None,
+    *,
+    stop_pct: float = 0.07,
+):
     """为结果 DataFrame 增加交易字段列。"""
 
     if df is None or getattr(df, "empty", True):
@@ -100,6 +109,7 @@ def attach_trade_cards(df, regime: str = "neutral", sig_by_code: dict | None = N
             tier=tier,
             regime=regime,
             score=r.get("综合分") if "综合分" in r else r.get("total_score"),
+            stop_pct=stop_pct,
         )
         cards.append(card)
     out["止损价"] = [c["stop_loss"] for c in cards]

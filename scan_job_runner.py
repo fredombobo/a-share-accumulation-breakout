@@ -95,6 +95,7 @@ def main() -> int:
     p.add_argument("--progress", type=Path, required=True)
     p.add_argument("--result", type=Path, required=True)
     p.add_argument("--cancel-file", type=Path, required=True)
+    p.add_argument("--profile", type=Path, required=True)
     args = p.parse_args()
 
     def cancelled() -> bool:
@@ -119,6 +120,9 @@ def main() -> int:
 
     try:
         import run_screener
+        from ab_screener.domain.profile import load_profile_json
+
+        profile = load_profile_json(args.profile)
 
         result = run_screener.run_scan(
             top=args.top,
@@ -126,6 +130,7 @@ def main() -> int:
             force=False,
             progress_cb=progress_cb,
             cancel_check=cancelled,
+            profile=profile,
         )
         if cancelled() or (isinstance(result, dict) and result.get("cancelled")):
             _write_json(args.result, {"cancelled": True, "status": "cancelled"})
@@ -151,6 +156,10 @@ def main() -> int:
             "pool_report": result.get("pool_report"),
             "elapsed_sec": result.get("elapsed_sec"),
             "workers": result.get("workers"),
+            "strategy_profile": result.get("strategy_profile"),
+            "strategy_profile_hash": result.get("strategy_profile_hash"),
+            "requested_days": result.get("requested_days"),
+            "effective_days": result.get("effective_days"),
         }
         _write_json(args.result, out)
         progress_cb("完成", 100, f"A={count_a} B={count_b}")

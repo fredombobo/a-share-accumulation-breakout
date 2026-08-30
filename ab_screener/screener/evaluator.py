@@ -457,6 +457,7 @@ def _detect_on_codes(
     sig_by_code: dict[str, dict],
     *,
     relaxed: bool = False,
+    strict_kwargs: dict[str, Any] | None = None,
     workers: int | None = None,
     progress_cb=None,
     cancel_check=None,
@@ -480,7 +481,7 @@ def _detect_on_codes(
     if not pending:
         return hits
 
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = dict(strict_kwargs or {}) if not relaxed else {}
     if relaxed:
         kwargs = {
             "box_max_amp": RELAXED_BOX_MAX_AMP,

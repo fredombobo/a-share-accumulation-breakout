@@ -17,13 +17,14 @@ from ab_screener.data.scan_run_repository import (
     get_scan_run,
     list_scan_runs,
 )
+from ab_screener.data.strategy_profile_repository import StrategyProfileRepository
 
 router = APIRouter(tags=["scan"])
 
 
 class ScanRequest(BaseModel):
     top: int = Field(20, ge=5, le=50)
-    days: int = Field(160, ge=30, le=250)
+    days: int = Field(160, ge=30, le=400)
     force: bool = False
 
 
@@ -41,6 +42,8 @@ def start_scan(req: ScanRequest) -> dict[str, Any]:
             detail=f"已有扫描进行中（task_id={latest['task_id']}），请先等待完成或取消后再发起",
         )
     task_id = store.create(top_n=req.top, days=req.days)
+    profile_record = StrategyProfileRepository(default_db_path()).effective()
+    profile = profile_record["profile"]
     if os.environ.get("SCAN_WORKER_ENABLED", "true").lower() in ("0", "false", "no"):
 
         def _once() -> None:
@@ -52,6 +55,8 @@ def start_scan(req: ScanRequest) -> dict[str, Any]:
             root = Path(__file__).resolve().parents[2]
             runtime = root / "runtime"
             tid = job["task_id"]
+            profile_path = runtime / f"scan_{tid}.profile.json"
+            profile_path.write_text(profile.to_json(), encoding="utf-8")
             spawn_scan_runner(
                 task_id=tid,
                 top=int(job.get("top_n") or req.top),
@@ -59,6 +64,7 @@ def start_scan(req: ScanRequest) -> dict[str, Any]:
                 progress=runtime / f"scan_{tid}.progress.json",
                 result=runtime / f"scan_{tid}.result.json",
                 cancel_file=runtime / f"scan_{tid}.cancel",
+                profile=profile_path,
                 cwd=root,
             )
 
@@ -70,7 +76,7 @@ def start_scan(req: ScanRequest) -> dict[str, Any]:
         "top": req.top,
         "days": req.days,
         "run_id": None,
-        "config_hash": None,
+        "config_hash": profile_record["config_hash"],
         "as_of": None,
         "dataset_version": None,
     }

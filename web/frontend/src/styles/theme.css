@@ -1052,6 +1052,33 @@
   .result-verdict h2 { margin: 3px 0; font-size: 20px; }
   .result-verdict p { margin: 0; color: var(--muted); }
   .result-reasons { display: grid; gap: 5px; padding: 10px 0 3px; color: var(--muted); font-size: 12px; }
+  .active-profile-banner {
+    display: flex; align-items: center; justify-content: space-between; gap: 18px;
+    margin-bottom: 18px; padding: 14px 18px; border: 1px solid var(--border);
+    border-radius: var(--radius); background: var(--surface-2);
+  }
+  .active-profile-banner h2 { margin: 2px 0; font-size: 16px; }
+  .active-profile-banner p { margin: 0; color: var(--muted); font-size: 12px; }
+  .profile-promotion-card {
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+    margin-top: 12px; padding: 16px 18px; border: 1px solid var(--border);
+    border-left: 4px solid var(--warn); background: var(--surface);
+  }
+  .profile-promotion-card.eligible { border-left-color: var(--ok); background: var(--ok-soft); }
+  .profile-promotion-card h3 { margin: 2px 0 3px; font-size: 16px; }
+  .profile-promotion-card p { max-width: 800px; margin: 0 0 5px; color: var(--muted); font-size: 12px; }
+  .profile-check-fail { color: var(--muted); font-size: 11.5px; }
+  .scan-profile-strip {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    margin-bottom: 12px; padding: 12px 14px; border: 1px solid var(--border);
+    border-left: 3px solid var(--faint); background: var(--surface-2);
+  }
+  .scan-profile-strip.custom { border-left-color: var(--ok); background: var(--ok-soft); }
+  .scan-profile-strip > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; min-width: 0; }
+  .scan-profile-strip span { color: var(--muted); font-size: 11px; }
+  .scan-profile-strip b { font-size: 13px; }
+  .scan-profile-strip small { flex-basis: 100%; color: var(--muted); line-height: 1.5; }
+  .scan-profile-actions { display: flex; gap: 7px; flex-shrink: 0; }
   .metric-compare, .baseline-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
   .baseline-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 0; }
   .metric-compare-block { min-width: 0; border: 1px solid var(--border); background: var(--surface); padding: 12px 14px; }
@@ -1170,7 +1197,8 @@
   .lab-report-grid, .lab-report-split, .lab-report-footer { grid-template-columns: 1fr; }
   .lab-report-checks { grid-template-columns: 1fr; }
   .lab-report-verdict { flex-direction: column; }
-  .backtest-intro, .task-status-head, .run-console, .result-verdict { align-items: flex-start; flex-direction: column; }
+  .backtest-intro, .task-status-head, .run-console, .result-verdict, .active-profile-banner, .profile-promotion-card, .scan-profile-strip { align-items: flex-start; flex-direction: column; }
+  .scan-profile-actions { width: 100%; flex-wrap: wrap; }
   .research-boundary { width: 100%; min-width: 0; }
   .stage-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 8px; }
   .preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }

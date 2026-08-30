@@ -215,7 +215,14 @@ def _clear_overview_cache() -> None:
     _OVERVIEW_CACHE["payload"] = None
 
 
-def _new_task(top: int, days: int) -> str:
+def _new_task(
+    top: int,
+    days: int,
+    *,
+    requested_days: int,
+    profile_snapshot: dict,
+    config_hash: str,
+) -> str:
     task_id = uuid.uuid4().hex[:12]
     created_at = datetime.now().astimezone().isoformat(timespec="seconds")
     with _SCAN_LOCK:
@@ -223,6 +230,9 @@ def _new_task(top: int, days: int) -> str:
             "id": task_id,
             "top": top,
             "days": days,
+            "requested_days": requested_days,
+            "strategy_profile": profile_snapshot,
+            "config_hash": config_hash,
             "status": "pending",
             "stage": "排队中",
             "progress": 0,
@@ -286,7 +296,13 @@ def _finish_persisted_scan_failure(
     )
 
 
-def _run_scan_worker(task_id: str, top: int, days: int) -> None:
+def _run_scan_worker(
+    task_id: str,
+    top: int,
+    days: int,
+    profile_snapshot: dict,
+    profile_hash: str,
+) -> None:
     """后台线程：拉起「可杀」扫描子进程，轮询进度；取消时 taskkill 整树。
 
     关键：旧实现在同进程内跑 run_scan，阻塞在预筛/排序时线程无法响应取消。
@@ -319,7 +335,8 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
     progress_path = runtime_dir / f"scan_{task_id}.progress.json"
     result_path = runtime_dir / f"scan_{task_id}.result.json"
     cancel_path = runtime_dir / f"scan_{task_id}.cancel"
-    for p in (progress_path, result_path, cancel_path):
+    profile_path = runtime_dir / f"scan_{task_id}.profile.json"
+    for p in (progress_path, result_path, cancel_path, profile_path):
         try:
             if p.exists():
                 p.unlink()
@@ -398,6 +415,12 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
 
     proc: ScanChild | None = None
     try:
+        from ab_screener.domain.profile import strategy_profile_from_dict
+
+        frozen_profile = strategy_profile_from_dict(profile_snapshot)
+        if frozen_profile.config_hash() != profile_hash:
+            raise RuntimeError("frozen strategy profile hash mismatch")
+        profile_path.write_text(frozen_profile.to_json(), encoding="utf-8")
         with _SCAN_LOCK:
             started_at = datetime.now().astimezone().isoformat(timespec="seconds")
             task["started_at"] = started_at
@@ -416,6 +439,7 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             progress=progress_path,
             result=result_path,
             cancel_file=cancel_path,
+            profile=profile_path,
             cwd=_PARENT,
         )
         with _SCAN_LOCK:
@@ -488,11 +512,16 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             _finish_persisted_scan_failure(task_id, error_message, db_path=_store.db_path)
             return
 
+        if (
+            result.get("strategy_profile_hash") != profile_hash
+            or result.get("strategy_profile") != profile_snapshot
+        ):
+            raise RuntimeError("scan child returned a different strategy profile snapshot")
+
         count_a = int(result.get("count_a") or result.get("count") or 0)
         count_b = int(result.get("count_b") or 0)
         report("固化审计", 99, "正在原子写入扫描结果与运行审计")
         from ab_screener.application.scan_audit import complete_scan_run
-        from ab_screener.domain.profile import default_profile
         from research_windows import recommend_research_plan
 
         with _SCAN_LOCK:
@@ -502,7 +531,6 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             if t.get("cancel_requested"):
                 force_terminal(t, "cancelled", stage="已取消", log_fn=_log, msg="完成写入前取消")
                 return
-            profile = default_profile()
             completed = complete_scan_run(
                 _store.db_path,
                 run_id=task_id,
@@ -512,8 +540,8 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
                 result=result if isinstance(result, dict) else {},
                 count_a=count_a,
                 count_b=count_b,
-                strategy_snapshot=profile.to_canonical_dict(),
-                config_hash=profile.config_hash(),
+                strategy_snapshot=profile_snapshot,
+                config_hash=profile_hash,
                 code_version=_BUILD_VERSION,
                 research_mode=recommend_research_plan().mode,
             )
@@ -546,6 +574,10 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
                 "freshness": result.get("freshness"),
                 "pool_report": result.get("pool_report"),
                 "elapsed_sec": result.get("elapsed_sec"),
+                "strategy_profile": profile_snapshot,
+                "strategy_profile_hash": profile_hash,
+                "requested_days": result.get("requested_days"),
+                "effective_days": result.get("effective_days"),
             }
             # 新扫描完成：清除 overview 轻量缓存，避免展示旧数据
             _clear_overview_cache()
@@ -589,7 +621,7 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
         try:
             from ab_screener.application.scan_jobs import CANCELLED, FAILED, ScanJobStore
 
-            st = ScanJobStore(_PARENT / "runtime" / "stock_data.db")
+            st = ScanJobStore(_store.db_path)
             if cancel_requested():
                 st.finish(task_id, status=CANCELLED, error_code="CANCELLED")
             else:
@@ -611,6 +643,11 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             if t is not None:
                 t["worker_pid"] = None
         _prune_scan_tasks()
+        try:
+            if profile_path.exists():
+                profile_path.unlink()
+        except OSError:
+            pass
 
 
 # ── 数据读取（SQLite） ──
@@ -639,7 +676,7 @@ def scan_status(task_id: str | None = None):
                 keys = (
                     "id", "status", "stage", "progress", "cancel_requested", "result",
                     "error", "worker_pid", "created_at", "started_at", "updated_at",
-                    "heartbeat_at", "finished_at",
+                    "heartbeat_at", "finished_at", "strategy_profile", "config_hash",
                 )
                 return {k: task.get(k) for k in keys}
         elif _SCAN_TASKS:
@@ -648,7 +685,7 @@ def scan_status(task_id: str | None = None):
             keys = (
                 "id", "status", "stage", "progress", "cancel_requested", "result",
                 "error", "worker_pid", "created_at", "started_at", "updated_at",
-                "heartbeat_at", "finished_at",
+                "heartbeat_at", "finished_at", "strategy_profile", "config_hash",
             )
             return {k: latest.get(k) for k in keys}
 
@@ -801,8 +838,35 @@ def start_scan(req: ScanRequest):
             detail=f"已有扫描正在进行（task_id={running}），请先等待完成或取消后再发起",
         )
     top = max(5, min(req.top, 50))
-    days = max(30, min(req.days, 250))
-    task_id = _new_task(top, days)
+    requested_days = max(30, min(req.days, 400))
+    try:
+        from ab_screener.data.strategy_profile_repository import (
+            StrategyProfileRepository,
+            StrategyProfileRepositoryError,
+        )
+
+        profile_record = StrategyProfileRepository(_store.db_path).effective()
+    except StrategyProfileRepositoryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": exc.code,
+                "message": str(exc),
+                "details": exc.details,
+                "retryable": False,
+            },
+        ) from exc
+    profile = profile_record["profile"]
+    profile_snapshot = profile.to_canonical_dict()
+    cfg_hash = str(profile_record["config_hash"])
+    days = max(requested_days, profile.required_scan_days())
+    task_id = _new_task(
+        top,
+        days,
+        requested_days=requested_days,
+        profile_snapshot=profile_snapshot,
+        config_hash=cfg_hash,
+    )
     # upgrade system：持久任务用 upsert_running（禁止 INSERT OR REPLACE 覆盖终态）
     try:
         from ab_screener.application.scan_jobs import ScanJobStore
@@ -810,23 +874,22 @@ def start_scan(req: ScanRequest):
         ScanJobStore(_store.db_path).upsert_running(task_id, top_n=top, days=days)
     except Exception:  # noqa: BLE001
         pass
-    t = threading.Thread(target=_run_scan_worker, args=(task_id, top, days), daemon=True)
+    t = threading.Thread(
+        target=_run_scan_worker,
+        args=(task_id, top, days, profile_snapshot, cfg_hash),
+        daemon=True,
+    )
     t.start()
-    cfg_hash = None
-    try:
-        from ab_screener.domain.profile import default_profile
-
-        cfg_hash = default_profile().config_hash()
-    except Exception:  # noqa: BLE001
-        cfg_hash = None
     as_of = _store.max_trade_date("daily")
     return {
         "status": "started",
         "task_id": task_id,
         "top": top,
         "days": days,
+        "requested_days": requested_days,
         "run_id": task_id,
         "config_hash": cfg_hash,
+        "strategy_profile": profile_snapshot,
         "as_of": as_of,
         "dataset_version": as_of,
         "engine_path": "subprocess_v2",  # 子进程扫描 + 持久 job 双写

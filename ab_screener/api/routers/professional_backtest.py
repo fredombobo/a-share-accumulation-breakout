@@ -7,8 +7,17 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from ab_screener.api.deps import get_db_path
+from ab_screener.application.strategy_profile_service import (
+    ProfileActivationError,
+    activate_from_task,
+    activation_status,
+    profile_state,
+    reset_profile,
+)
+from ab_screener.data.strategy_profile_repository import StrategyProfileRepositoryError
 from ab_screener.research.condition_plugins import condition_catalog
 from ab_screener.research.professional_grid import (
     ProfessionalGridError,
@@ -29,6 +38,15 @@ _STORES: dict[str, ResearchRunStore] = {}
 _INITIALIZED: set[str] = set()
 
 
+class ProfileActivationRequest(BaseModel):
+    task_id: str
+    acknowledge_exploratory: bool = False
+
+
+class ProfileResetRequest(BaseModel):
+    confirm: bool = False
+
+
 def _store(db_path: str) -> ResearchRunStore:
     key = str(Path(db_path).resolve())
     with _LOCK:
@@ -45,6 +63,18 @@ def _store(db_path: str) -> ResearchRunStore:
 def _raise_grid_error(exc: ProfessionalGridError) -> NoReturn:
     raise HTTPException(
         status_code=422,
+        detail={
+            "code": exc.code,
+            "message": str(exc),
+            "details": exc.details,
+            "retryable": False,
+        },
+    ) from exc
+
+
+def _raise_profile_error(exc: ProfileActivationError | StrategyProfileRepositoryError) -> NoReturn:
+    raise HTTPException(
+        status_code=409 if exc.code not in {"STRATEGY_PROFILE_SCHEMA_MISSING"} else 503,
         detail={
             "code": exc.code,
             "message": str(exc),
@@ -150,7 +180,11 @@ def run(
 @router.get("/latest")
 def latest(db_path: str = Depends(get_db_path)) -> dict[str, Any]:
     task = _store(db_path).latest_for_mode(_MODE)
-    return {"task": task}
+    try:
+        activation = activation_status(db_path, task)
+    except StrategyProfileRepositoryError as exc:
+        _raise_profile_error(exc)
+    return {"task": task, "profile_activation": activation}
 
 
 @router.get("/status/{task_id}")
@@ -158,7 +192,47 @@ def status(task_id: str, db_path: str = Depends(get_db_path)) -> dict[str, Any]:
     task = _store(db_path).get(task_id)
     if task is None or task.get("research_mode") != _MODE:
         raise HTTPException(status_code=404, detail="专业回测任务不存在")
-    return task
+    try:
+        return {**task, "profile_activation": activation_status(db_path, task)}
+    except StrategyProfileRepositoryError as exc:
+        _raise_profile_error(exc)
+
+
+@router.get("/profile")
+def get_profile(db_path: str = Depends(get_db_path)) -> dict[str, Any]:
+    try:
+        return profile_state(db_path)
+    except StrategyProfileRepositoryError as exc:
+        _raise_profile_error(exc)
+
+
+@router.post("/profile/activate")
+def activate_profile(
+    body: ProfileActivationRequest,
+    db_path: str = Depends(get_db_path),
+) -> dict[str, Any]:
+    task = _store(db_path).get(body.task_id)
+    if task is None or task.get("research_mode") != _MODE:
+        raise HTTPException(status_code=404, detail="专业回测任务不存在")
+    try:
+        return activate_from_task(
+            db_path,
+            task,
+            acknowledge_exploratory=body.acknowledge_exploratory,
+        )
+    except (ProfileActivationError, StrategyProfileRepositoryError) as exc:
+        _raise_profile_error(exc)
+
+
+@router.post("/profile/reset")
+def restore_default_profile(
+    body: ProfileResetRequest,
+    db_path: str = Depends(get_db_path),
+) -> dict[str, Any]:
+    try:
+        return reset_profile(db_path, confirm=body.confirm)
+    except (ProfileActivationError, StrategyProfileRepositoryError) as exc:
+        _raise_profile_error(exc)
 
 
 @router.post("/{task_id}/cancel")

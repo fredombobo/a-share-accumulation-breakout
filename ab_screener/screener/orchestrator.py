@@ -29,6 +29,7 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"
 
 import config as _cfg
 import data_fetch
+from ab_screener.domain.profile import StrategyProfile, default_profile
 from ab_screener.screener.data_loader import load_market_data
 from ab_screener.screener.evaluator import (
     _detect_on_codes,
@@ -115,6 +116,7 @@ def run_scan(
     *,
     store=None,
     as_of: str = "",
+    profile: StrategyProfile | None = None,
 ) -> dict:
     """主扫描：A 池(strict 可交易) + B 池(观察，可选 theme_fill)。
 
@@ -123,6 +125,12 @@ def run_scan(
     store：LocalStore 兼容只读/持久化注入（None=默认生产库）。
     as_of：钉死扫描基准日（YYYYMMDD）；空串=由数据自动推导。
     """
+    active_profile = profile or default_profile()
+    requested_days = int(days)
+    days = max(requested_days, active_profile.required_scan_days())
+    profile_snapshot = active_profile.to_canonical_dict()
+    profile_hash = active_profile.config_hash()
+
     def _prog(stage: str, pct: int, msg: str = "") -> None:
         if progress_cb:
             try:
@@ -167,6 +175,10 @@ def run_scan(
             "freshness": {},
             "pool_report": {},
             "workers": n_workers,
+            "strategy_profile": profile_snapshot,
+            "strategy_profile_hash": profile_hash,
+            "requested_days": requested_days,
+            "effective_days": days,
         }
 
     build_watch = BUILD_WATCH_POOL if build_watch is None else build_watch
@@ -178,6 +190,11 @@ def run_scan(
     if _stop_if_cancelled("启动"):
         return _cancelled_result()
 
+    _prog(
+        "参数档案",
+        4,
+        f"{active_profile.name} / {active_profile.version} / {profile_hash}",
+    )
     _prog("数据准备", 6, "加载本地行情…")
     try:
         basic, trade_dates, daily, dbbasic, _ = load_market_data(
@@ -284,6 +301,10 @@ def run_scan(
             "freshness": fresh if isinstance(fresh, dict) else {},
             "pool_report": {},
             "workers": n_workers,
+            "strategy_profile": profile_snapshot,
+            "strategy_profile_hash": profile_hash,
+            "requested_days": requested_days,
+            "effective_days": days,
         }
 
     # 量能预筛：多进程粗筛，加速 strict 全市场扫描（可取消，不再卡死）
@@ -309,7 +330,8 @@ def run_scan(
     _prog("信号检测", 22, f"严格参数扫描 {len(fast_codes)} 只 ×{n_workers} 核…")
     hit_codes = _detect_on_codes(
         fast_codes, daily_sorted, sig_by_code,
-        relaxed=False, workers=n_workers, progress_cb=progress_cb, cancel_check=cancel_check,
+        relaxed=False, strict_kwargs=active_profile.signal_kwargs(), workers=n_workers,
+        progress_cb=progress_cb, cancel_check=cancel_check,
     )
     if _stop_if_cancelled("信号检测"):
         return _cancelled_result(regime)
@@ -341,7 +363,8 @@ def run_scan(
 
     # 横盘阶梯：先只要 ~6 个月，不够再 5→4→… 直到凑满 TARGET_SELECT_COUNT
     target_n = max(top_a, TARGET_SELECT_COUNT)
-    rows, ladder_rep = apply_box_ladder(rows, target=target_n)
+    profile_ladder = None if active_profile.is_default else (active_profile.box_min_days,)
+    rows, ladder_rep = apply_box_ladder(rows, target=target_n, ladder=profile_ladder)
     _prog(
         "箱体阶梯",
         65,
@@ -374,7 +397,9 @@ def run_scan(
         if need_more and extra:
             # 不足目标：strict+relaxed 合并后再阶梯，优先长横盘
             merged_rows = (df_all.to_dict("records") if not df_all.empty else []) + extra
-            merged_rows, ladder_rep2 = apply_box_ladder(merged_rows, target=target_n)
+            merged_rows, ladder_rep2 = apply_box_ladder(
+                merged_rows, target=target_n, ladder=profile_ladder
+            )
             _prog(
                 "箱体阶梯",
                 72,
@@ -433,10 +458,28 @@ def run_scan(
         regime_max_slots=slots if regime.allow_new_entries else 0,
     )
     pool_report["box_ladder"] = ladder_rep
+    pool_report["strategy_profile"] = {
+        "profile_id": active_profile.profile_id,
+        "version": active_profile.version,
+        "config_hash": profile_hash,
+        "a_pool_uses_profile": True,
+        "b_pool_uses_profile": False,
+        "daily_extra_gates": ["market_regime", "fund_flow", "fundamentals", "liquidity", "score"],
+    }
 
     # 交易卡片
-    a_df = attach_trade_cards(a_df, regime=regime.regime, sig_by_code=sig_by_code)
-    b_df = attach_trade_cards(b_df, regime=regime.regime, sig_by_code=sig_by_code)
+    a_df = attach_trade_cards(
+        a_df,
+        regime=regime.regime,
+        sig_by_code=sig_by_code,
+        stop_pct=active_profile.stop_pct,
+    )
+    b_df = attach_trade_cards(
+        b_df,
+        regime=regime.regime,
+        sig_by_code=sig_by_code,
+        stop_pct=active_profile.stop_pct,
+    )
 
     # 默认输出 A 池；合并导出时 A 在前
     top_df = a_df.copy() if a_df is not None and not a_df.empty else pd.DataFrame()
@@ -535,6 +578,11 @@ def run_scan(
         "freshness": fresh,
         "a_count": len(a_df),
         "b_count": len(b_df),
+        "strategy_profile": {
+            "profile_id": active_profile.profile_id,
+            "version": active_profile.version,
+            "config_hash": profile_hash,
+        },
     }
     report_path = OUT_DIR / f"scan_report_{latest_date}.json"
     try:
@@ -562,4 +610,8 @@ def run_scan(
         "freshness": fresh,
         "pool_report": pool_report,
         "workers": n_workers,
+        "strategy_profile": profile_snapshot,
+        "strategy_profile_hash": profile_hash,
+        "requested_days": requested_days,
+        "effective_days": days,
     }

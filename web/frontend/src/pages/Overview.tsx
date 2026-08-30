@@ -11,6 +11,7 @@ import {
   ScanStatus,
   SectorFlowResp,
   SetupStatus,
+  StrategyProfileState,
   TodayGuide,
 } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
@@ -64,6 +65,8 @@ export default function Overview() {
   const [scanning, setScanning] = useState(false)
   const [scanTask, setScanTask] = useState<string | null>(null)
   const [scanStatus, setScanStatus] = useState<ScanStatus | null>(null)
+  const [profileState, setProfileState] = useState<StrategyProfileState | null>(null)
+  const [profileErr, setProfileErr] = useState('')
   const [topN, setTopN] = useState(prefParams?.topN ?? 20)
   const [days, setDays] = useState(prefParams?.days ?? 160)
   const c = useChartColors()
@@ -164,6 +167,12 @@ export default function Overview() {
 
   useEffect(() => {
     api.today().then(setTodayGuide).catch(() => setTodayGuide(null))
+  }, [])
+
+  useEffect(() => {
+    api.backtestProfile()
+      .then((next) => { setProfileState(next); setProfileErr('') })
+      .catch((reason: unknown) => setProfileErr(reason instanceof Error ? reason.message : String(reason)))
   }, [])
 
   useEffect(() => {
@@ -319,6 +328,7 @@ export default function Overview() {
     try {
       const resp = await api.scan(topN, days, false)
       setScanTask(resp.task_id)
+      setCacheNote(`扫描已启动，参数版本 ${resp.config_hash} 已冻结；切换参数只影响下一次扫描`)
       window.dispatchEvent(new Event(RUN_TASK_EVENT))
       // 用户在拿到 task_id 前已点取消 → 立即发取消
       if (pendingCancelRef.current) {
@@ -340,6 +350,19 @@ export default function Overview() {
       setErr(String(e))
       setScanning(false)
       pendingCancelRef.current = false
+    }
+  }
+
+  const onResetProfile = async () => {
+    if (!profileState || profileState.active.is_default) return
+    if (!window.confirm('恢复系统默认参数？已完成扫描的历史证据不会删除，当前运行中的扫描也不会被改变。')) return
+    setProfileErr('')
+    try {
+      const next = await api.resetBacktestProfile()
+      setProfileState(next)
+      setCacheNote('已恢复系统默认参数；下一次扫描生效')
+    } catch (reason) {
+      setProfileErr(reason instanceof Error ? reason.message : String(reason))
     }
   }
 
@@ -545,6 +568,27 @@ export default function Overview() {
             {loading && <span className="muted" style={{ fontSize: 12 }}>加载中…</span>}
           </div>
         </div>
+        {profileState && (
+          <div className={`scan-profile-strip ${profileState.active.is_default ? 'default' : 'custom'}`}>
+            <div>
+              <span>本次扫描参数</span>
+              <b>{profileState.active.is_default ? '系统默认' : '专业回测人工启用'}</b>
+              <small>
+                横盘 {String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日 ·
+                突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)} ·
+                <span className="mono"> {profileState.active.config_hash}</span>
+              </small>
+              <small>{profileState.boundary.notice}</small>
+            </div>
+            <div className="scan-profile-actions">
+              <button className="btn btn-sm" type="button" onClick={() => nav('/backtest')}>去回测与选择参数</button>
+              {!profileState.active.is_default && (
+                <button className="btn btn-sm" type="button" onClick={onResetProfile} disabled={scanning}>恢复系统默认</button>
+              )}
+            </div>
+          </div>
+        )}
+        {profileErr && <div className="err" style={{ marginBottom: 10 }}>参数档案读取失败：{profileErr}</div>}
         <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
           <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <label style={{ whiteSpace: 'nowrap' }}>A 池 Top</label>
@@ -554,7 +598,7 @@ export default function Overview() {
           </div>
           <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <label style={{ whiteSpace: 'nowrap' }}>回看天数</label>
-            <input type="number" value={days} min={60} max={250} step={10}
+            <input type="number" value={days} min={60} max={400} step={10}
               onChange={(e) => setDays(Number(e.target.value))}
               style={{ width: 84 }} />
           </div>
@@ -613,6 +657,9 @@ export default function Overview() {
             <h2 style={{ margin: 0 }}>市场资金热力图</h2>
             <span className="hint">按{heatmap?.classification_title || '细分行业'}显示，净流入和净流出各 Top 10</span>
           </div>
+          {profileState && profileState.active.required_scan_days > days && (
+            <span className="hint">该参数需要至少 {profileState.active.required_scan_days} 日，启动时会自动扩展回看窗口</span>
+          )}
           <label className="classification-control">
             <span>分类标准</span>
             <select

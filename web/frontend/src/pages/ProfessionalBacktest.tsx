@@ -13,6 +13,8 @@ import {
   BacktestUniverseCatalog,
   ClassificationKey,
   ParameterSpec,
+  ProfileActivation,
+  StrategyProfileState,
 } from '../api/client'
 import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
 
@@ -188,7 +190,19 @@ function ResultMetrics({ title, metrics }: { title: string; metrics: BacktestMet
   )
 }
 
-function BacktestResultView({ result }: { result: BacktestResult }) {
+function BacktestResultView({
+  result,
+  activation,
+  activeProfile,
+  activating,
+  onActivate,
+}: {
+  result: BacktestResult
+  activation?: ProfileActivation
+  activeProfile: StrategyProfileState | null
+  activating: boolean
+  onActivate: () => void
+}) {
   const selected = result.selected
   const verdictClass = result.verdict === 'EXPLORATORY_PROMISING' ? 'ok' : 'warn'
   const baselineEntries = Object.entries(result.baselines || {})
@@ -215,6 +229,33 @@ function BacktestResultView({ result }: { result: BacktestResult }) {
         {(result.verdict_reasons || []).map((reason) => <div key={reason}>检查项：{reason}</div>)}
         {!result.candidate_eligible && <div>晋级状态：未晋级。需要另行预登记后复验。</div>}
       </div>
+      <section className={`profile-promotion-card ${activation?.can_activate ? 'eligible' : 'blocked'}`}>
+        <div>
+          <span className="guide-eyebrow">回测 → 今日选股</span>
+          <h3>
+            {activation?.already_active
+              ? '这组参数已用于今日 A 池扫描'
+              : activation?.can_activate
+                ? '证据门槛通过，可人工启用'
+                : '当前结果不能用于今日选股'}
+          </h3>
+          <p>
+            {activation?.boundary.notice
+              || '只统一 A 池技术入场参数；资金、基本面和市场环境门禁仍会继续执行。'}
+          </p>
+          {!activation?.can_activate && (activation?.reasons || []).slice(0, 3).map((item) => (
+            <div className="profile-check-fail" key={item.code}>{item.label}：{item.message}</div>
+          ))}
+          {activation?.already_active && activeProfile && (
+            <small className="mono">当前版本 {activeProfile.active.version} · {activeProfile.active.config_hash}</small>
+          )}
+        </div>
+        {activation?.can_activate && !activation.already_active && (
+          <button className="btn primary" type="button" disabled={activating} onClick={onActivate}>
+            {activating ? '正在启用...' : '人工启用为今日选股参数'}
+          </button>
+        )}
+      </section>
       {selected ? (
         <>
           <div className="metric-compare">
@@ -295,6 +336,8 @@ export default function ProfessionalBacktest() {
   const [conditionFlags, setConditionFlags] = useState<Record<string, boolean>>({})
   const [preview, setPreview] = useState<BacktestPreview | null>(null)
   const [task, setTask] = useState<BacktestTask | null>(null)
+  const [profileState, setProfileState] = useState<StrategyProfileState | null>(null)
+  const [profileFeedback, setProfileFeedback] = useState('')
   const [busy, setBusy] = useState<'load' | 'preview' | 'run' | 'cancel' | ''>('load')
   const [error, setError] = useState('')
 
@@ -307,10 +350,13 @@ export default function ProfessionalBacktest() {
         setUniverse(nextUniverse)
         setParameters(Object.fromEntries(nextCatalog.parameters.map((item) => [item.key, cloneSpec(item.default)])))
         setConditionFlags(Object.fromEntries(nextCatalog.conditions.map((item) => [item.id, item.default_enabled])))
-        setTask(latest.task)
+        setTask(latest.task ? { ...latest.task, profile_activation: latest.profile_activation } : null)
       })
       .catch((reason) => active && setError(errorMessage(reason)))
       .finally(() => active && setBusy(''))
+    api.backtestProfile()
+      .then((nextProfile) => active && setProfileState(nextProfile))
+      .catch(() => undefined)
     return () => { active = false }
   }, [])
 
@@ -407,6 +453,27 @@ export default function ProfessionalBacktest() {
     }
   }
 
+  const handleActivateProfile = async () => {
+    if (!task) return
+    const confirmed = window.confirm(
+      '确认把这组回测参数用于后续今日 A 池扫描？\n\n它仍是探索性候选，不代表收益承诺；B 池、资金、基本面和市场环境门禁不会改变。',
+    )
+    if (!confirmed) return
+    setBusy('run')
+    setError('')
+    setProfileFeedback('')
+    try {
+      const next = await api.activateBacktestProfile(task.task_id)
+      setProfileState(next)
+      setTask(await api.backtestStatus(task.task_id))
+      setProfileFeedback('已启用。下一次今日扫描会冻结并使用这组 A 池技术参数。')
+    } catch (reason) {
+      setError(errorMessage(reason))
+    } finally {
+      setBusy('')
+    }
+  }
+
   const handleClassificationChange = async (next: ClassificationKey) => {
     if (next === classification) return
     const previous = classification
@@ -464,6 +531,24 @@ export default function ProfessionalBacktest() {
       </section>
 
       {error && <div className="guide-feedback error" role="alert"><b>无法继续</b><span>{error}</span></div>}
+      {profileFeedback && <div className="guide-feedback success" role="status"><b>参数档案已更新</b><span>{profileFeedback}</span></div>}
+
+      {profileState && (
+        <section className="active-profile-banner" aria-label="当前今日选股参数">
+          <div>
+            <span className="guide-eyebrow">今日选股当前参数</span>
+            <h2>{profileState.active.is_default ? '系统默认参数' : '专业回测人工启用参数'}</h2>
+            <p>
+              横盘 {String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日 ·
+              突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)} ·
+              配置 <span className="mono">{profileState.active.config_hash}</span>
+            </p>
+          </div>
+          <span className={`pill ${profileState.active.is_default ? '' : 'ok'}`}>
+            {profileState.active.is_default ? '内置默认' : `来源 ${profileState.active.source.task_id}`}
+          </span>
+        </section>
+      )}
 
       {task && (
         <section className={`task-status ${task.status}`} aria-live="polite">
@@ -593,7 +678,15 @@ export default function ProfessionalBacktest() {
             </section>
           )}
 
-          {task?.result && <BacktestResultView result={task.result} />}
+          {task?.result && (
+            <BacktestResultView
+              result={task.result}
+              activation={task.profile_activation}
+              activeProfile={profileState}
+              activating={busy === 'run'}
+              onActivate={handleActivateProfile}
+            />
+          )}
           {!task?.result && !activeTask && (
             <div className="empty section-gap"><strong>等待一次专业回测</strong>默认参数会搜索横盘 60 至 200 天，并核验突破量比、止损和退出窗口。</div>
           )}

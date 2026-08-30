@@ -8,6 +8,7 @@ const contents = [
   ['pools', 'A 池和 B 池'],
   ['classifications', '板块分类标准'],
   ['backtest', '专业回测'],
+  ['profile-loop', '回测参数用于选股'],
   ['results', '如何阅读结果'],
   ['progress', '进度与异常'],
   ['boundaries', '系统边界'],
@@ -106,6 +107,20 @@ export default function Guide() {
             <p className="manual-note">收盘信号最早在下一交易日开盘模拟成交，不存在同一收盘价无摩擦成交路径。</p>
           </section>
 
+          <section id="profile-loop" className="manual-section">
+            <h2>怎样把回测参数用于今日选股</h2>
+            <ol className="manual-steps">
+              <li><b>先取得合格证据</b><span>结果必须完成 OOS、WF、随机与均线基线以及 2 倍成本压力；只看 IS 排名不算“好参数”。</span></li>
+              <li><b>人工启用参数</b><span>回测结论达到候选门槛且代码、数据身份仍有效时，结果页才会出现“人工启用为今日选股参数”。系统绝不自动上线最佳曲线。</span></li>
+              <li><b>运行今日扫描</b><span>首页会显示当前参数版本。扫描启动时冻结该快照和哈希，A 池技术入场检测使用同一组横盘、突破和量能参数。</span></li>
+              <li><b>核对并可回退</b><span>资金流、基本面、流动性和市场环境仍会额外过滤候选；B 池仍是固定宽松观察规则。可随时恢复系统默认，历史审计不会删除。</span></li>
+            </ol>
+            <div className="manual-warning">
+              <b>为什么回测结果与 A 池不一定逐只相同</b>
+              <p>闭环统一的是横盘吸筹突破的技术入场参数。今日扫描还承担数据新鲜度、市场环境、资金质量、基本面和评分门禁；这些门禁是为了让当日候选更可用，不能为了复刻回测而绕过。</p>
+            </div>
+          </section>
+
           <section id="results" className="manual-section">
             <h2>如何阅读回测结果</h2>
             <dl className="term-grid">
@@ -116,7 +131,7 @@ export default function Guide() {
               <div><dt>成本压力</dt><dd>提高滑点和费用后复算，检验收益是否脆弱。</dd></div>
               <div><dt>最大回撤</dt><dd>历史模拟中从高点到低点的最大跌幅。</dd></div>
             </dl>
-            <p>回测页的结论是探索证据。即使结果较好，也不会自动改变每日选股，更不会自动晋级生产参数。</p>
+            <p>回测页的结论是探索证据。只有门槛通过后，用户才能人工启用为每日 A 池技术参数；它不会自动改变选股，也不会自动晋级正式研究参数。</p>
           </section>
 
           <section id="progress" className="manual-section">
