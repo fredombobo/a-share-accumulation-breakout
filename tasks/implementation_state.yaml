@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T22:55:00+08:00"
+updated_at: "2026-08-31T05:39:02+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -17,21 +17,27 @@ protected_user_docs:
 ready_now: []
 tasks:
   PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION:
-    status: in_progress
+    status: complete
     started_at: "2026-08-30T22:30:00+08:00"
+    completed_at: "2026-08-31T05:39:02+08:00"
     work_package: WP97
     dependencies:
       - BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI
       - MANUAL-RESEARCH-PARAMETERS-LARGE-GRID
     result: "docs/ACCEPTANCE-PROFESSIONAL-BACKTEST-RESULT-CONTRACT-2026-08-30.md"
     note: >
-      纠正历史专业任务中组合收益别名造成的自动结论误判；分离最长持有与二次出货
-      观察窗，并按精确 IS/OOS 权益哈希折叠重复参数路径。旧任务不改写，完成后用
-      当前干净代码身份发起新的真实历史研究任务。
-    current_evidence:
-      - "29 个后端定向回归测试通过，专业回测前端 7 个 Vitest 通过"
-      - "新契约 professional-backtest-v1.3.0 / professional-grid-v1.3.0"
-      - "严格质量门、8001 重启和新真实任务仍待完成"
+      已纠正组合收益别名误判，分离最长持有与二次出货观察窗，并按完整、精确的
+      IS/OOS 权益哈希折叠重复参数路径；旧任务保持不可变。该工作包完成不改变
+      系统整体 BLOCKED 状态，也不代表策略晋级。
+    completed_evidence:
+      - "professional-backtest-v1.4.0；参数目录 professional-grid-v1.3.0"
+      - "真实任务 probt-e0a5962dc8aa：DONE/100，代码 6134dcc60b03，输入 53df98fcdbd941cbd4f0e348060550d644aea609e1ec494e1bbcd2ea5d8c5055"
+      - "4480 个名义组合；3920 个完整路径组合；560 个排除；280 条独立 IS+OOS 权益路径"
+      - "v1.3/v1.4 入选参数、IS/OOS、成本压力、双基线、WF 和权益 SHA-256 完全一致"
+      - "报告 SHA-256 13688f0d552910b0060ec3796ed3ba27936518fb80b0729af7d79319c1bc43b6 独立复算一致"
+      - "严格质量门 PASS：994 Pytest、16 Vitest、Ruff、Mypy、strict architecture、frontend build"
+      - "真实 8001 桌面/390px 浏览器验收 PASS；LIVE_TRADING_ENABLED=false"
+      - "研究结论 EXPLORATORY_WEAK；WF2 0 笔；candidate_eligible=false；can_claim_edge=false"
   BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI:
     status: complete
     started_at: "2026-08-30T14:15:14+08:00"

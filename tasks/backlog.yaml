@@ -544,7 +544,7 @@ tasks:
 
   - id: PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION
     title: 专业回测收益口径、最长持有与独立路径纠错
-    status: in_progress
+    status: complete
     work_package: WP97
     phase: product-correctness
     dependencies:
@@ -556,6 +556,13 @@ tasks:
       - 二次出货观察窗不再被误称为最长持有
       - 排行榜按精确 IS 与 OOS 权益路径折叠并披露等效参数数量
       - WF 零成交窗口明确标记无验证证据，采样间隔大于一明确标记抽样研究
-      - 旧任务保持不可变且兼容读取，新任务使用 v1.3 结果契约
+      - 旧任务保持不可变且兼容读取，新任务使用 v1.4 结果契约
       - 严格质量门、真实 8001 API 与浏览器验收通过
       - LIVE_TRADING_ENABLED 保持 false
+    completion_note: >
+      WP97 完成组合净收益口径、最长持有语义、WF 零成交提示及精确 IS/OOS 权益路径
+      折叠纠错。真实任务 probt-e0a5962dc8aa 以 v1.4 契约完成 4480 个名义组合，
+      3920 个完整路径组合折叠为 280 条独立路径，560 个证据不完整组合明确排除；
+      v1.3/v1.4 回测指标和权益哈希完全一致。严格质量门（994 Pytest、16 Vitest、
+      Ruff、Mypy、严格架构、生产构建）及真实 8001 浏览器验收通过。策略仍为
+      EXPLORATORY_WEAK，WF2 0 笔，禁止晋级；LIVE_TRADING_ENABLED=false。
