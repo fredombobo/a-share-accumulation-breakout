@@ -470,7 +470,7 @@ tasks:
 
   - id: BACKTEST-TO-DAILY-PROFILE-CLOSED-LOOP
     title: 专业回测参数与今日选股闭环
-    status: ready
+    status: complete
     work_package: WP94
     phase: product-closure
     dependencies:
@@ -486,3 +486,10 @@ tasks:
       - 前端展示当前版本、来源、关键参数、阻断原因和闭环说明
       - 严格质量门与真实 8001 桌面、390px 浏览器验收通过
       - LIVE_TRADING_ENABLED 保持 false
+    completion_note: >
+      5fa7ef4/96956f1/3fb5dc8 完成专业回测参数档案、人工启用/恢复、A 池严格参数共享、
+      扫描子进程与审计快照冻结，以及首页/回测页/说明书闭环。最终严格质量门 979
+      Pytest、11 Vitest、Ruff、Mypy、严格架构和生产构建通过；8 个 Playwright 与真实
+      8001 桌面/390px 验收通过。生产档案仍为默认且历史 0，现有弱回测被正确阻断，
+      LIVE_TRADING_ENABLED=false。证据见
+      docs/ACCEPTANCE-BACKTEST-DAILY-PROFILE-CLOSED-LOOP-2026-08-30.md。
