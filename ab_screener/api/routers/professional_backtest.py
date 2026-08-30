@@ -67,10 +67,20 @@ def catalog(db_path: str = Depends(get_db_path)) -> dict[str, Any]:
 
 @router.get("/universe")
 def universe(
+    classification: str = Query(default="industry"),
+    group: str | None = Query(default=None),
     industry: str | None = Query(default=None),
     db_path: str = Depends(get_db_path),
 ) -> dict[str, Any]:
-    return universe_catalog(db_path, industry=industry)
+    try:
+        return universe_catalog(
+            db_path,
+            classification=classification,
+            group=group,
+            industry=industry,
+        )
+    except ProfessionalGridError as exc:
+        _raise_grid_error(exc)
 
 
 @router.post("/preview")

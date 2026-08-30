@@ -11,6 +11,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ab_screener.domain.entry_definition import BREAKOUT_WINDOW_DAYS
+from ab_screener.domain.market_classification import (
+    CLASSIFICATIONS,
+    DEFAULT_CLASSIFICATION,
+    ClassificationDefinition,
+    get_classification,
+    normalize_group,
+)
 from config import (
     BOX_MAX_AMP,
     BREAKOUT_CHG_MAX,
@@ -20,7 +27,7 @@ from config import (
 
 MAX_COMBINATIONS = 512
 MAX_UNIVERSE_CODES = 1500
-GRID_CONTRACT_VERSION = "professional-grid-v1.0.0"
+GRID_CONTRACT_VERSION = "professional-grid-v1.1.0"
 
 
 @dataclass(frozen=True)
@@ -167,22 +174,65 @@ def dynamic_horizon(signal_combinations: list[dict[str, Any]]) -> int:
     )
 
 
-def universe_catalog(db_path: str | Path, *, industry: str | None = None) -> dict[str, Any]:
+def _professional_classification(value: str | None) -> ClassificationDefinition:
+    try:
+        return get_classification(value)
+    except ValueError as exc:
+        raise ProfessionalGridError(
+            "UNKNOWN_CLASSIFICATION",
+            str(exc),
+            {"classification": str(value or "")},
+        ) from exc
+
+
+def universe_catalog(
+    db_path: str | Path,
+    *,
+    classification: str = DEFAULT_CLASSIFICATION,
+    group: str | None = None,
+    industry: str | None = None,
+) -> dict[str, Any]:
     rows = _stock_rows(db_path)
-    industries: dict[str, int] = {}
+    if industry and not group:
+        classification = "industry"
+        group = industry
+    definition = _professional_classification(classification)
+    group_counts: dict[str, int] = {}
     for row in rows:
-        label = str(row["industry"] or "未分类")
-        industries[label] = industries.get(label, 0) + 1
+        label = normalize_group(row.get(definition.column))
+        group_counts[label] = group_counts.get(label, 0) + 1
     selected = rows
-    if industry:
-        selected = [row for row in rows if str(row["industry"] or "未分类") == industry]
+    if group:
+        if group not in group_counts:
+            raise ProfessionalGridError(
+                "UNKNOWN_CLASSIFICATION_GROUP",
+                f"{definition.title}中不存在分组 {group}",
+                {"classification": definition.key, "groups": [group]},
+            )
+        selected = [
+            row for row in rows if normalize_group(row.get(definition.column)) == group
+        ]
+    dimensions: list[dict[str, Any]] = []
+    for item in CLASSIFICATIONS:
+        values = {normalize_group(row.get(item.column)) for row in rows}
+        dimensions.append({**item.public(), "group_count": len(values)})
+    groups = [
+        {"name": name, "count": count}
+        for name, count in sorted(group_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
     return {
+        "classification": definition.key,
+        "classification_title": definition.title,
+        "group_label": definition.group_label,
         "classification_mode": "CURRENT_CLASSIFICATION_FROZEN_UNIVERSE",
-        "classification_note": "板块来自当前 stock_basic 快照；运行时冻结股票代码与哈希，不宣称历史行业成员 PIT。",
-        "industries": [
-            {"name": name, "count": count}
-            for name, count in sorted(industries.items(), key=lambda item: (-item[1], item[0]))
-        ],
+        "classification_note": (
+            f"{definition.title}来自当前 stock_basic 快照；运行时冻结股票代码与哈希，"
+            "不宣称历史分类成员 PIT。"
+        ),
+        "classifications": dimensions,
+        "groups": groups,
+        # 旧客户端兼容：默认行业请求继续读取 industries。
+        "industries": groups if definition.key == "industry" else [],
         "stocks": selected[:MAX_UNIVERSE_CODES],
         "stock_count": len(selected),
     }
@@ -191,15 +241,27 @@ def universe_catalog(db_path: str | Path, *, industry: str | None = None) -> dic
 def resolve_universe(
     db_path: str | Path,
     *,
+    classification: str = DEFAULT_CLASSIFICATION,
+    groups: Any = None,
     industries: Any = None,
     codes: Any = None,
     max_codes: int = 600,
 ) -> dict[str, Any]:
     limit = max(20, min(int(max_codes), MAX_UNIVERSE_CODES))
     rows = _stock_rows(db_path)
+    definition = _professional_classification(classification)
     row_by_code = {str(row["ts_code"]): row for row in rows}
     requested_codes = sorted({str(code).strip().upper() for code in (codes or []) if code})
-    requested_industries = sorted({str(value).strip() for value in (industries or []) if value})
+    raw_groups = groups
+    if raw_groups is None and industries is not None:
+        if definition.key != "industry":
+            raise ProfessionalGridError(
+                "INVALID_UNIVERSE",
+                "industries 兼容字段只能用于细分行业分类",
+                {"classification": definition.key},
+            )
+        raw_groups = industries
+    requested_groups = sorted({str(value).strip() for value in (raw_groups or []) if value})
     if requested_codes:
         unknown = sorted(set(requested_codes) - set(row_by_code))
         if unknown:
@@ -208,18 +270,20 @@ def resolve_universe(
             )
         selected = [row_by_code[code] for code in requested_codes]
         source = "EXPLICIT_STOCKS"
-    elif requested_industries:
-        known_industries = {str(row["industry"] or "未分类") for row in rows}
-        unknown_industries = sorted(set(requested_industries) - known_industries)
-        if unknown_industries:
+    elif requested_groups:
+        known_groups = {normalize_group(row.get(definition.column)) for row in rows}
+        unknown_groups = sorted(set(requested_groups) - known_groups)
+        if unknown_groups:
             raise ProfessionalGridError(
-                "UNKNOWN_INDUSTRY", "存在未知板块", {"industries": unknown_industries}
+                "UNKNOWN_CLASSIFICATION_GROUP",
+                f"{definition.title}中存在未知分组",
+                {"classification": definition.key, "groups": unknown_groups},
             )
         selected = [
             row for row in rows
-            if str(row["industry"] or "未分类") in requested_industries
+            if normalize_group(row.get(definition.column)) in requested_groups
         ]
-        source = "CURRENT_INDUSTRIES"
+        source = "CURRENT_CLASSIFICATION_GROUPS"
     else:
         selected = rows
         source = "CURRENT_ALL"
@@ -232,9 +296,16 @@ def resolve_universe(
     canonical = "\n".join(frozen_codes)
     return {
         "source": source,
+        "classification": definition.key,
+        "classification_title": definition.title,
+        "group_label": definition.group_label,
         "classification_mode": "CURRENT_CLASSIFICATION_FROZEN_UNIVERSE",
-        "classification_note": "当前行业分类仅用于选择；回测前冻结代码集合，不能据此声称历史行业分类无未来信息。",
-        "industries": requested_industries,
+        "classification_note": (
+            f"当前{definition.title}仅用于选择；回测前冻结代码集合，"
+            "不能据此声称历史分类无未来信息。"
+        ),
+        "groups": requested_groups,
+        "industries": requested_groups if definition.key == "industry" else [],
         "codes": frozen_codes,
         "count": len(frozen_codes),
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
@@ -361,8 +432,17 @@ def _stock_rows(db_path: str | Path) -> list[dict[str, Any]]:
     path = Path(db_path).resolve()
     with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30) as conn:
         conn.row_factory = sqlite3.Row
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(stock_basic)").fetchall()
+        }
+        dimension_sql = [
+            f"COALESCE({item.column},'未分类') AS {item.column}"
+            if item.column in columns
+            else f"'未分类' AS {item.column}"
+            for item in CLASSIFICATIONS
+        ]
         rows = conn.execute(
-            "SELECT ts_code,name,COALESCE(industry,'未分类') AS industry "
+            f"SELECT ts_code,name,{','.join(dimension_sql)} "
             "FROM stock_basic ORDER BY ts_code"
         ).fetchall()
     return [

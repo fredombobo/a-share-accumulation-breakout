@@ -8,6 +8,9 @@ import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
 type PageMeta = { kicker: string; title: string; sub: string }
 
 export function pageMeta(pathname: string): PageMeta {
+  if (pathname.startsWith('/guide')) {
+    return { kicker: 'Operating Manual', title: '使用说明', sub: '每日选股 · 专业回测 · 分类标准' }
+  }
   if (pathname.startsWith('/backtest')) {
     return { kicker: 'Professional Research', title: '专业回测', sub: '参数空间 · 样本外 · 成本压力' }
   }

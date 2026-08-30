@@ -18,14 +18,16 @@ const fmt = (v: number) => {
  */
 export default function SectorFlowPanel({ data }: { data: SectorFlowResp }) {
   const c = useChartColors()
+  const groupLabel = data.group_label || '板块'
+  const groupName = (item: SectorFlowResp['top_in'][number]) => item.group || item.industry
 
   const trendOption = useMemo<EChartsOption>(() => {
-    const top = data.top_in.slice(0, 6).map((x) => x.industry)
+    const top = data.top_in.slice(0, 6).map(groupName)
     const series = top.map((name, i) => ({
       name,
       type: 'bar' as const,
       stack: 'total',
-      data: data.industries[name] || [],
+        data: (data.groups || data.industries)[name] || [],
       itemStyle: { color: c.palette[i % c.palette.length] },
       emphasis: { focus: 'series' as const },
     }))
@@ -59,23 +61,23 @@ export default function SectorFlowPanel({ data }: { data: SectorFlowResp }) {
   return (
     <div className="two-col">
       <div>
-        <h3 style={{ margin: '8px 0 6px', fontSize: 13, color: 'var(--muted)' }}>🔴 Top 流入板块（{data.days}日累计）</h3>
+        <h3 style={{ margin: '8px 0 6px', fontSize: 13, color: 'var(--muted)' }}>Top 流入{groupLabel}（{data.days}日累计）</h3>
         {data.top_in.slice(0, 6).map((x, i) => (
-          <div key={x.industry} className="stat">
-            <span className="k">{i + 1}. {x.industry}</span>
+          <div key={groupName(x)} className="stat">
+            <span className="k">{i + 1}. {groupName(x)}</span>
             <span className="v" style={{ color: c.up }}>{fmt(x.net_wan)}</span>
           </div>
         ))}
-        <h3 style={{ margin: '12px 0 6px', fontSize: 13, color: 'var(--muted)' }}>🟢 Top 流出板块（{data.days}日累计）</h3>
+        <h3 style={{ margin: '12px 0 6px', fontSize: 13, color: 'var(--muted)' }}>Top 流出{groupLabel}（{data.days}日累计）</h3>
         {data.top_out.slice(0, 4).map((x, i) => (
-          <div key={x.industry} className="stat">
-            <span className="k">{i + 1}. {x.industry}</span>
+          <div key={groupName(x)} className="stat">
+            <span className="k">{i + 1}. {groupName(x)}</span>
             <span className="v" style={{ color: c.down }}>{fmt(x.net_wan)}</span>
           </div>
         ))}
       </div>
       <div>
-        <h3 style={{ margin: '8px 0 6px', fontSize: 13, color: 'var(--muted)' }}>📈 Top 流入板块每日资金流趋势（堆叠，观察建仓节奏）</h3>
+        <h3 style={{ margin: '8px 0 6px', fontSize: 13, color: 'var(--muted)' }}>Top 流入{groupLabel}每日资金流趋势（堆叠，观察建仓节奏）</h3>
         <EChart option={trendOption} height={260} />
       </div>
     </div>

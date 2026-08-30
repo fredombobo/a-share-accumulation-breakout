@@ -41,6 +41,8 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
         raise ProfessionalGridError("INVALID_UNIVERSE", "universe 必须是对象")
     universe = resolve_universe(
         db_path,
+        classification=universe_request.get("classification") or "industry",
+        groups=universe_request.get("groups"),
         industries=universe_request.get("industries"),
         codes=universe_request.get("codes"),
         max_codes=max_codes,
@@ -49,7 +51,7 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
     dates = _distinct_dates(db_path)
     windows = _resolve_windows(payload.get("windows"), dates)
     normalized = {
-        "contract_version": "professional-backtest-v1.0.0",
+        "contract_version": "professional-backtest-v1.1.0",
         "strategy": strategy,
         "sample_step": step,
         "max_codes": max_codes,
@@ -476,6 +478,9 @@ def _warnings(request: dict[str, Any]) -> list[str]:
 
 def _report_markdown(result: dict[str, Any]) -> str:
     selected = result.get("selected") or {}
+    universe = result["request"]["universe"]
+    groups = universe.get("groups") or []
+    group_text = "、".join(str(value) for value in groups) if groups else "全市场"
     return "\n".join(
         [
             "# AB-Screener 专业回测报告",
@@ -485,6 +490,7 @@ def _report_markdown(result: dict[str, Any]) -> str:
             f"SHA-256 `{result['request']['parameter_space']['sha256']}`",
             f"- 冻结股票池：{result['request']['universe']['count']} 只，"
             f"SHA-256 `{result['request']['universe']['sha256']}`",
+            f"- 分类标准：{universe.get('classification_title', '细分行业')}，分组：{group_text}",
             f"- PIT 数据：`{result['snapshot']['dataset_fingerprint']}`",
             f"- IS：{result['request']['windows']['is'][0]} ~ {result['request']['windows']['is'][1]}",
             f"- OOS：{result['request']['windows']['oos'][0]} ~ {result['request']['windows']['oos'][1]}",

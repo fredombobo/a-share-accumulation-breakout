@@ -32,6 +32,7 @@ const preview: BacktestPreview = {
     contract_version: 'test-v1', strategy: 'A', sample_step: 10, max_codes: 600,
     parameters: Object.fromEntries(catalog.parameters.map((item) => [item.key, item.default])),
     universe: {
+      classification: 'industry', classification_title: '细分行业', group_label: '行业', groups: [],
       industries: [], codes: Array.from({ length: 30 }, (_, index) => `${String(index).padStart(6, '0')}.SZ`),
       source: 'CURRENT_ALL', count: 30, sha256: 'universe',
       classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
@@ -49,7 +50,14 @@ describe('专业回测工作台', () => {
   it('使用版本化默认参数先预览，不静默启动任务', async () => {
     vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
     vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
       classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+      classifications: [
+        { key: 'industry', title: '细分行业', group_label: '行业', description: '产业细分', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 1 },
+        { key: 'market', title: '上市板块', group_label: '板块', description: '上市制度分组', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 2 },
+        { key: 'area', title: '地域', group_label: '地区', description: '公司注册地', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 2 },
+      ],
+      groups: [{ name: '半导体', count: 30 }],
       industries: [{ name: '半导体', count: 30 }], stocks: [], stock_count: 30,
     })
     vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task: null })
@@ -66,5 +74,40 @@ describe('专业回测工作台', () => {
     expect(previewSpy.mock.calls[0][0].parameters.box_max_days).toEqual({ mode: 'range', start: 60, stop: 200, step: 20 })
     expect(await screen.findByText('24')).toBeVisible()
     expect(runSpy).not.toHaveBeenCalled()
+  })
+
+  it('切换分类标准后把所选细分方向写入预览请求', async () => {
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
+    vi.spyOn(api, 'backtestUniverse').mockImplementation(async (classification = 'industry') => ({
+      classification,
+      classification_title: classification === 'market' ? '上市板块' : '细分行业',
+      group_label: classification === 'market' ? '板块' : '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE',
+      classification_note: '当前分类只用于选择',
+      classifications: [
+        { key: 'industry', title: '细分行业', group_label: '行业', description: '产业细分', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 1 },
+        { key: 'market', title: '上市板块', group_label: '板块', description: '上市制度分组', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 2 },
+        { key: 'area', title: '地域', group_label: '地区', description: '公司注册地', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 2 },
+      ],
+      groups: classification === 'market'
+        ? [{ name: '创业板', count: 30 }, { name: '主板', count: 60 }]
+        : [{ name: '半导体', count: 30 }],
+      industries: classification === 'industry' ? [{ name: '半导体', count: 30 }] : [],
+      stocks: [], stock_count: 90,
+    }))
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task: null })
+    const previewSpy = vi.spyOn(api, 'backtestPreview').mockResolvedValue(preview)
+
+    render(<ProfessionalBacktest />)
+    await screen.findByRole('heading', { name: '多参数专业回测' })
+    fireEvent.change(screen.getByLabelText('分类标准'), { target: { value: 'market' } })
+    const group = await screen.findByRole('checkbox', { name: /创业板/ })
+    fireEvent.click(group)
+    fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
+
+    await waitFor(() => expect(previewSpy).toHaveBeenCalledOnce())
+    expect(previewSpy.mock.calls[0][0].universe).toEqual({
+      classification: 'market', groups: ['创业板'], codes: [],
+    })
   })
 })

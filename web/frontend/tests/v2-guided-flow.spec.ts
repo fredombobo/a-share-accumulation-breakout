@@ -2,17 +2,32 @@ import { test, expect, type Page } from '@playwright/test'
 
 /** 精简产品 E2E：每日选股 + 专业回测，旧入口回首页。 */
 
-async function mockBackendApi(page: Page, options: { activeScan?: boolean } = {}) {
+async function mockBackendApi(page: Page, options: { activeScan?: boolean; onPreview?: (body: any) => void } = {}) {
   await page.route(
     (url) => url.pathname.startsWith('/api/'),
-    (route) => {
-      const path = new URL(route.request().url()).pathname
+    async (route) => {
+      const url = new URL(route.request().url())
+      const path = url.pathname
+      const classification = url.searchParams.get('classification') || 'industry'
+      const classificationMeta = classification === 'market'
+        ? { classification: 'market', classification_title: '上市板块', group_label: '板块' }
+        : classification === 'area'
+          ? { classification: 'area', classification_title: '地域', group_label: '地区' }
+          : { classification: 'industry', classification_title: '细分行业', group_label: '行业' }
       let body: unknown = {}
       if (path === '/api/overview') body = { as_of: '20260828', pool: 'A', count: 0, items: [] }
       else if (path === '/api/health') body = { status: 'ok', build_version: 'test', live_trading_enabled: false }
       else if (path === '/api/setup-status') body = { ready: true }
-      else if (path === '/api/sector-flow') body = { items: [] }
-      else if (path === '/api/money-heatmap') body = { trade_date: '20260828', total_wan: 0, items: [] }
+      else if (path === '/api/classifications') body = {
+        default: 'industry', limitations: '当前分类快照',
+        items: [
+          { key: 'industry', title: '细分行业', group_label: '行业', description: '产业细分', pit_status: 'CURRENT_SNAPSHOT_ONLY', available: true, group_count: 2, coverage_pct: 100, examples: ['半导体'] },
+          { key: 'market', title: '上市板块', group_label: '板块', description: '上市制度分组', pit_status: 'CURRENT_SNAPSHOT_ONLY', available: true, group_count: 2, coverage_pct: 100, examples: ['创业板'] },
+          { key: 'area', title: '地域', group_label: '地区', description: '公司注册地', pit_status: 'CURRENT_SNAPSHOT_ONLY', available: true, group_count: 2, coverage_pct: 99.8, examples: ['广东'] },
+        ],
+      }
+      else if (path === '/api/sector-flow') body = { ...classificationMeta, dates: [], days: 10, groups: {}, industries: {}, top_in: [], top_out: [] }
+      else if (path === '/api/money-heatmap') body = { ...classificationMeta, trade_date: '20260828', total_wan: 0, items: [] }
       else if (path === '/api/today') body = { next_action: 'NONE', title: '今日无需操作', reason: '测试', primary_label: '完成' }
       else if (path === '/api/scan/status') body = options.activeScan
         ? {
@@ -28,11 +43,20 @@ async function mockBackendApi(page: Page, options: { activeScan?: boolean } = {}
         research_boundary: 'EXPLORATORY_ONLY', paper_trading_enabled: false, live_trading_enabled: false,
       }
       else if (path === '/api/backtest/universe') body = {
+        ...classificationMeta,
         classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '测试股票池',
-        industries: [{ name: '半导体', count: 30 }], stocks: [], stock_count: 30,
+        classifications: [
+          { key: 'industry', title: '细分行业', group_label: '行业', description: '产业细分', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 1 },
+          { key: 'market', title: '上市板块', group_label: '板块', description: '上市制度分组', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 2 },
+          { key: 'area', title: '地域', group_label: '地区', description: '公司注册地', pit_status: 'CURRENT_SNAPSHOT_ONLY', group_count: 2 },
+        ],
+        groups: classification === 'market' ? [{ name: '创业板', count: 30 }, { name: '主板', count: 60 }] : [{ name: '半导体', count: 30 }],
+        industries: classification === 'industry' ? [{ name: '半导体', count: 30 }] : [], stocks: [], stock_count: 90,
       }
       else if (path === '/api/backtest/latest') body = { task: null }
-      else if (path === '/api/backtest/preview') body = {
+      else if (path === '/api/backtest/preview') {
+        options.onPreview?.(route.request().postDataJSON())
+        body = {
         can_run: true,
         estimated_work: { combinations: 144, stocks: 30, sample_step: 10, note: '后台运行并持久化' },
         prepared: {
@@ -40,6 +64,7 @@ async function mockBackendApi(page: Page, options: { activeScan?: boolean } = {}
           parameters: {}, conditions: [], input_hash: 'test-input-hash',
           parameter_space: { count: 144, sha256: 'grid', horizon: 265, signal_group_count: 24, exit_group_count: 6, invalid_signal_combinations: 0 },
           universe: {
+            classification: 'industry', classification_title: '细分行业', group_label: '行业', groups: [],
             industries: [], codes: Array.from({ length: 30 }, (_, index) => `${String(index).padStart(6, '0')}.SZ`),
             source: 'CURRENT_ALL', count: 30, sha256: 'universe',
             classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
@@ -47,10 +72,11 @@ async function mockBackendApi(page: Page, options: { activeScan?: boolean } = {}
           windows: { mode: 'auto', is: ['20230101', '20241231'], oos: ['20250101', '20260828'], wf: [], n_dates: 800 },
         },
       }
+      }
       else if (path === '/api/v2/platform/status') {
         body = { product: 'accumulation_breakout', default_port: 8001, build_version: 'test', readiness: 'BLOCKED', flags: {} }
       }
-      return route.fulfill({
+      await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(body),
@@ -68,14 +94,47 @@ test('旧实验、纸面与机构入口全部回到每日选股', async ({ page 
   }
 })
 
-test('侧栏只保留两个日用入口', async ({ page }) => {
+test('侧栏保留两个业务入口并提供独立使用说明', async ({ page }) => {
   await mockBackendApi(page)
   await page.goto('/')
   await expect(page.getByRole('button', { name: /每日选股/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /专业回测/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: /使用说明/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /纸面仿真/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /策略实验室/ })).toHaveCount(0)
   await expect(page.getByRole('button', { name: /六形态/ })).toHaveCount(0)
+})
+
+test('@a11y 站内说明书可访问且 390px 不溢出', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockBackendApi(page)
+  await page.goto('/guide')
+  await expect(page.getByRole('heading', { name: '从更新行情到读懂回测' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '板块分类标准' })).toBeVisible()
+  await expect(page.getByText(/申万、中信和概念板块/)).toBeVisible()
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  )
+  expect(overflow).toBe(false)
+})
+
+test('首页和专业回测可切换上市板块分类并冻结选择', async ({ page }) => {
+  let previewBody: any = null
+  await mockBackendApi(page, { onPreview: (body) => { previewBody = body } })
+  await page.goto('/')
+  await page.getByLabel('资金板块分类标准').selectOption('market')
+  await expect(page.getByRole('heading', { name: /上市板块资金热力图/ })).toBeVisible()
+
+  await page.getByRole('button', { name: /专业回测/ }).click()
+  await expect(page).toHaveURL(/\/backtest$/)
+  await expect(page.getByRole('heading', { name: '多参数专业回测' })).toBeVisible()
+  await page.getByLabel('分类标准').selectOption('market')
+  const growthBoard = page.getByRole('checkbox', { name: /创业板/ })
+  await expect(growthBoard).toBeVisible()
+  await growthBoard.check()
+  await page.getByRole('button', { name: '检查参数空间' }).click()
+  await expect(page.getByText('有效组合').locator('..').getByText('144')).toBeVisible()
+  expect(previewBody.universe).toEqual({ classification: 'market', groups: ['创业板'], codes: [] })
 })
 
 test('@a11y 390px 首页不横向溢出', async ({ page }) => {

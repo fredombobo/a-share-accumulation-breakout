@@ -34,6 +34,8 @@ def test_money_heatmap_returns_every_nonzero_inflow_and_outflow() -> None:
     ]
     assert [item["net_wan"] for item in result["items"]] == [100, -80, 10, -5]
     assert result["total_wan"] == 25
+    assert result["classification"] == "industry"
+    assert result["classification_title"] == "细分行业"
 
 
 def test_money_heatmap_top_is_applied_per_direction() -> None:

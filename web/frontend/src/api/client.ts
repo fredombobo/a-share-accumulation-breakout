@@ -251,11 +251,15 @@ export interface StockDetail {
 }
 
 export interface SectorFlowResp {
+  classification: ClassificationKey
+  classification_title: string
+  group_label: string
   dates: string[]
   days: number
+  groups: Record<string, number[]>
   industries: Record<string, number[]>
-  top_in: { industry: string; net_wan: number }[]
-  top_out: { industry: string; net_wan: number }[]
+  top_in: { group: string; industry: string; net_wan: number }[]
+  top_out: { group: string; industry: string; net_wan: number }[]
 }
 
 export interface StockFlowResp {
@@ -298,7 +302,9 @@ export const api = {
   stock: (tsCode: string, opts?: ReqOpts) => request<StockDetail>(`/stock/${encodeURIComponent(tsCode)}`, opts),
   stockFlow: (tsCode: string, days = 20, opts?: ReqOpts) =>
     request<StockFlowResp>(`/stock/${encodeURIComponent(tsCode)}/flow?days=${days}`, opts),
-  sectorFlow: (days = 10, opts?: ReqOpts) => request<SectorFlowResp>(`/sector-flow?days=${days}`, opts),
+  classifications: (opts?: ReqOpts) => request<ClassificationCatalogResp>('/classifications', opts),
+  sectorFlow: (days = 10, classification: ClassificationKey = 'industry', opts?: ReqOpts) =>
+    request<SectorFlowResp>(`/sector-flow?days=${days}&classification=${encodeURIComponent(classification)}`, opts),
   scan: (top = 15, days = 160, force = false, opts?: ReqOpts) =>
     request<{ status: string; task_id: string; top: number; days: number }>('/scan', {
       ...opts,
@@ -312,8 +318,15 @@ export const api = {
 
   // ── 专业多参数回测 ──
   backtestCatalog: (opts?: ReqOpts) => request<BacktestCatalog>('/backtest/catalog', opts),
-  backtestUniverse: (industry?: string, opts?: ReqOpts) =>
-    request<BacktestUniverseCatalog>(`/backtest/universe${industry ? `?industry=${encodeURIComponent(industry)}` : ''}`, opts),
+  backtestUniverse: (
+    classification: ClassificationKey = 'industry',
+    group?: string,
+    opts?: ReqOpts,
+  ) => {
+    const query = new URLSearchParams({ classification })
+    if (group) query.set('group', group)
+    return request<BacktestUniverseCatalog>(`/backtest/universe?${query.toString()}`, opts)
+  },
   backtestPreview: (body: BacktestRequest, opts?: ReqOpts) =>
     request<BacktestPreview>('/backtest/preview', { ...opts, method: 'POST', body: JSON.stringify(body) }),
   backtestRun: (body: BacktestRequest, opts?: ReqOpts) =>
@@ -330,7 +343,8 @@ export const api = {
     }),
 
   // 最新交易日资金热力图；top 表示流入、流出每个方向各取多少项。
-  moneyHeatmap: (top = 10, opts?: ReqOpts) => request<MoneyHeatmapResp>(`/money-heatmap?top=${top}`, opts),
+  moneyHeatmap: (top = 10, classification: ClassificationKey = 'industry', opts?: ReqOpts) =>
+    request<MoneyHeatmapResp>(`/money-heatmap?top=${top}&classification=${encodeURIComponent(classification)}`, opts),
 
   // ── 数据同步（手动更新行情）──
   syncStart: (opts?: ReqOpts) => request<{ status: string; message: string }>('/sync', { ...opts, method: 'POST' }),
@@ -349,9 +363,32 @@ export interface SyncStatus {
 }
 
 export interface MoneyHeatmapResp {
+  classification: ClassificationKey
+  classification_title: string
+  group_label: string
   trade_date: string
   total_wan: number
   items: { name: string; value: number; net_wan: number }[]
+}
+
+export type ClassificationKey = 'industry' | 'market' | 'area'
+
+export interface ClassificationDefinition {
+  key: ClassificationKey
+  title: string
+  group_label: string
+  description: string
+  pit_status: 'CURRENT_SNAPSHOT_ONLY'
+  available: boolean
+  group_count: number
+  coverage_pct: number
+  examples: string[]
+}
+
+export interface ClassificationCatalogResp {
+  default: ClassificationKey
+  items: ClassificationDefinition[]
+  limitations: string
 }
 
 // ── 专业回测 ──
@@ -391,10 +428,15 @@ export interface BacktestCatalog {
 }
 
 export interface BacktestUniverseCatalog {
+  classification: ClassificationKey
+  classification_title: string
+  group_label: string
   classification_mode: string
   classification_note: string
+  classifications: (Omit<ClassificationDefinition, 'available' | 'coverage_pct' | 'examples'> & { group_count: number })[]
+  groups: { name: string; count: number }[]
   industries: { name: string; count: number }[]
-  stocks: { ts_code: string; name: string; industry: string }[]
+  stocks: { ts_code: string; name: string; industry: string; market: string; area: string }[]
   stock_count: number
 }
 
@@ -403,7 +445,12 @@ export interface BacktestRequest {
   sample_step: number
   max_codes: number
   parameters: Record<string, ParameterSpec>
-  universe: { industries: string[]; codes: string[] }
+  universe: {
+    classification: ClassificationKey
+    groups: string[]
+    codes: string[]
+    industries?: string[]
+  }
   conditions: { id: string; enabled: boolean; params?: Record<string, number> }[]
   windows?: { mode: 'auto' }
 }
@@ -424,6 +471,8 @@ export interface PreparedBacktestRequest extends Omit<BacktestRequest, 'windows'
     sha256: string
     classification_mode: string
     classification_note: string
+    classification_title: string
+    group_label: string
   }
   windows: {
     mode: string

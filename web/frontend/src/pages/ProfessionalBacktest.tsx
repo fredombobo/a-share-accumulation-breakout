@@ -11,6 +11,7 @@ import {
   BacktestResult,
   BacktestTask,
   BacktestUniverseCatalog,
+  ClassificationKey,
   ParameterSpec,
 } from '../api/client'
 import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
@@ -284,8 +285,10 @@ export default function ProfessionalBacktest() {
   const [catalog, setCatalog] = useState<BacktestCatalog | null>(null)
   const [universe, setUniverse] = useState<BacktestUniverseCatalog | null>(null)
   const [parameters, setParameters] = useState<Record<string, ParameterSpec>>({})
-  const [industries, setIndustries] = useState<string[]>([])
-  const [industryFilter, setIndustryFilter] = useState('')
+  const [classification, setClassification] = useState<ClassificationKey>('industry')
+  const [groups, setGroups] = useState<string[]>([])
+  const [groupFilter, setGroupFilter] = useState('')
+  const [universeBusy, setUniverseBusy] = useState(false)
   const [codesText, setCodesText] = useState('')
   const [maxCodes, setMaxCodes] = useState(600)
   const [sampleStep, setSampleStep] = useState(10)
@@ -343,14 +346,14 @@ export default function ProfessionalBacktest() {
     sample_step: sampleStep,
     max_codes: maxCodes,
     parameters,
-    universe: { industries, codes: normalizeCodes(codesText) },
+    universe: { classification, groups, codes: normalizeCodes(codesText) },
     conditions: (catalog?.conditions || []).map((condition) => ({
       id: condition.id,
       enabled: Boolean(conditionFlags[condition.id]),
       params: {},
     })),
     windows: { mode: 'auto' },
-  }), [catalog, codesText, conditionFlags, industries, maxCodes, parameters, sampleStep])
+  }), [catalog, classification, codesText, conditionFlags, groups, maxCodes, parameters, sampleStep])
 
   const mutate = (action: () => void) => {
     action()
@@ -404,7 +407,42 @@ export default function ProfessionalBacktest() {
     }
   }
 
-  const visibleIndustries = (universe?.industries || []).filter((item) => item.name.includes(industryFilter)).slice(0, 80)
+  const handleClassificationChange = async (next: ClassificationKey) => {
+    if (next === classification) return
+    const previous = classification
+    setClassification(next)
+    setGroups([])
+    setGroupFilter('')
+    setPreview(null)
+    setUniverseBusy(true)
+    setError('')
+    try {
+      const nextUniverse = await api.backtestUniverse(next)
+      if (nextUniverse.classification !== next) {
+        throw new Error('分类接口返回了不一致的分类结果，请刷新后重试')
+      }
+      setUniverse(nextUniverse)
+    } catch (reason) {
+      setClassification(previous)
+      setError(errorMessage(reason))
+    } finally {
+      setUniverseBusy(false)
+    }
+  }
+
+  const visibleGroups = (universe?.groups || universe?.industries || [])
+    .filter((item) => item.name.includes(groupFilter))
+    .slice(0, 100)
+  const classificationOptions = universe?.classifications || [{
+    key: 'industry' as const,
+    title: '细分行业',
+    group_label: '行业',
+    description: universe?.classification_note || '当前行业分类',
+    pit_status: 'CURRENT_SNAPSHOT_ONLY' as const,
+    group_count: universe?.industries?.length || 0,
+  }]
+  const selectedClassification = classificationOptions.find((item) => item.key === classification)
+  const groupLabel = universe?.group_label || '板块'
   const activeTask = task && ACTIVE_STATUSES.includes(task.status)
 
   if (busy === 'load') return <div className="loading">正在读取专业回测契约和本地股票池...</div>
@@ -451,20 +489,41 @@ export default function ProfessionalBacktest() {
       <div className="backtest-layout">
         <aside className="backtest-config">
           <section>
-            <div className="config-heading"><h2>1. 选择股票池</h2><span>{industries.length ? `${industries.length} 个板块` : '全市场'}</span></div>
-            <p className="config-note">板块来自当前分类，运行前会冻结具体股票代码与哈希。</p>
-            <input className="input" value={industryFilter} onChange={(event) => setIndustryFilter(event.target.value)} placeholder="筛选板块名称" aria-label="筛选板块名称" />
-            <div className="industry-actions">
-              <button className="btn btn-sm" type="button" onClick={() => mutate(() => setIndustries(visibleIndustries.map((item) => item.name)))}>勾选当前结果</button>
-              <button className="btn btn-sm" type="button" onClick={() => mutate(() => setIndustries([]))}>清空</button>
+            <div className="config-heading"><h2>1. 选择股票池</h2><span>{groups.length ? `${groups.length} 个${groupLabel}` : '全市场'}</span></div>
+            <p className="config-note">选择分类标准后再勾选细分方向。运行前会冻结代码与哈希。</p>
+            <div className="field classification-field">
+              <label htmlFor="universe-classification">分类标准</label>
+              <select
+                id="universe-classification"
+                className="input"
+                value={classification}
+                disabled={universeBusy || Boolean(activeTask)}
+                onChange={(event) => void handleClassificationChange(event.target.value as ClassificationKey)}
+              >
+                {classificationOptions.map((item) => (
+                  <option key={item.key} value={item.key}>{item.title}（{item.group_count} 组）</option>
+                ))}
+              </select>
+              <small>{selectedClassification?.description || universe.classification_note}</small>
             </div>
-            <div className="industry-picker" role="group" aria-label="回测板块">
-              {visibleIndustries.map((item) => (
+            <input
+              className="input"
+              value={groupFilter}
+              onChange={(event) => setGroupFilter(event.target.value)}
+              placeholder={`筛选${groupLabel}名称`}
+              aria-label={`筛选${groupLabel}名称`}
+            />
+            <div className="industry-actions">
+              <button className="btn btn-sm" type="button" onClick={() => mutate(() => setGroups(visibleGroups.map((item) => item.name)))}>勾选当前结果</button>
+              <button className="btn btn-sm" type="button" onClick={() => mutate(() => setGroups([]))}>清空</button>
+            </div>
+            <div className="industry-picker" role="group" aria-label={`回测${groupLabel}`}>
+              {universeBusy ? <div className="empty">正在读取新的分类...</div> : visibleGroups.map((item) => (
                 <label key={item.name}>
                   <input
                     type="checkbox"
-                    checked={industries.includes(item.name)}
-                    onChange={() => mutate(() => setIndustries((current) => current.includes(item.name) ? current.filter((value) => value !== item.name) : [...current, item.name]))}
+                    checked={groups.includes(item.name)}
+                    onChange={() => mutate(() => setGroups((current) => current.includes(item.name) ? current.filter((value) => value !== item.name) : [...current, item.name]))}
                   />
                   <span>{item.name}</span><small>{item.count}</small>
                 </label>
@@ -530,7 +589,7 @@ export default function ProfessionalBacktest() {
               <div><span>冻结股票</span><b>{preview.prepared.universe.count}</b></div>
               <div><span>动态预热</span><b>{preview.prepared.parameter_space.horizon} 日</b></div>
               <div><span>研究窗口</span><b>{formatDate(preview.prepared.windows.is[0])} 至 {formatDate(preview.prepared.windows.oos[1])}</b></div>
-              <p>{preview.prepared.universe.classification_note}</p>
+              <p>{preview.prepared.universe.classification_title}：{preview.prepared.universe.groups.length ? preview.prepared.universe.groups.join('、') : '全市场'}。{preview.prepared.universe.classification_note}</p>
             </section>
           )}
 

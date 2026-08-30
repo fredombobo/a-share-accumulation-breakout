@@ -86,7 +86,7 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
   return (
     <div style={{ position: 'relative' }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
-        <h2 style={{ margin: 0, fontSize: 15 }}>💰 资金热力图 <span className="tag">最新交易日</span></h2>
+        <h2 style={{ margin: 0, fontSize: 15 }}>{data.classification_title || '细分行业'}资金热力图 <span className="tag">最新交易日</span></h2>
         <div style={{ fontSize: 11, color: 'var(--muted)' }} className="mono">
           数据日 {data.trade_date} · 全市场净流入 {data.total_wan >= 0 ? '+' : ''}{fmt(data.total_wan)}
         </div>
@@ -103,7 +103,7 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
           </div>
           {inflows.length > 0
             ? <EChart option={makeOption(inflows, 'inflow')} height={height} />
-            : <div className="muted" style={{ height, display: 'grid', placeItems: 'center' }}>当日无净流入行业</div>}
+            : <div className="muted" style={{ height, display: 'grid', placeItems: 'center' }}>当日无净流入{data.group_label || '分组'}</div>}
         </section>
         <section style={{ minWidth: 0 }}>
           <div style={{ color: 'var(--down-ink)', fontSize: 12, fontWeight: 700, margin: '4px 2px' }}>
@@ -111,7 +111,7 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
           </div>
           {outflows.length > 0
             ? <EChart option={makeOption(outflows, 'outflow')} height={height} />
-            : <div className="muted" style={{ height, display: 'grid', placeItems: 'center' }}>当日无净流出行业</div>}
+            : <div className="muted" style={{ height, display: 'grid', placeItems: 'center' }}>当日无净流出{data.group_label || '分组'}</div>}
         </section>
       </div>
     </div>

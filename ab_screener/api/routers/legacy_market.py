@@ -17,6 +17,11 @@ from ab_screener.api.legacy_state import (
     _SIG_CACHE,
     _store,
 )
+from ab_screener.domain.market_classification import (
+    CLASSIFICATIONS,
+    ClassificationDefinition,
+    get_classification,
+)
 from scoring import calc_fund_flow_strength
 from signals import detect_accumulation_breakout
 
@@ -143,12 +148,32 @@ def _fina_for(code: str, limit: int = 4) -> list[dict]:
             "bps": float(r["bps"]) if pd.notna(r.get("bps")) else None,
         })
     return out
-def _load_sector_flow(days: int = 10, force: bool = False) -> tuple[list[str], pd.DataFrame]:
-    """按行业聚合的全市场资金流 pivot（行=日期，列=行业，值=净流入万元）。
+def _classification_or_http(value: str) -> ClassificationDefinition:
+    try:
+        return get_classification(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "UNKNOWN_CLASSIFICATION",
+                "message": str(exc),
+                "details": {"classification": value},
+                "retryable": False,
+            },
+        ) from exc
+
+
+def _load_sector_flow(
+    days: int = 10,
+    force: bool = False,
+    classification: str = "industry",
+) -> tuple[list[str], pd.DataFrame]:
+    """按选定维度聚合资金流 pivot（行=日期，列=分组，值=净流入万元）。
 
     直接从本地 SQLite 读取 moneyflow + stock_basic（无需实时拉取）。
     返回 (dates, pivot_df)。
     """
+    definition = _classification_or_http(classification)
     store = _store
     basic = store.load_stock_basic()
     if basic.empty:
@@ -159,7 +184,7 @@ def _load_sector_flow(days: int = 10, force: bool = False) -> tuple[list[str], p
         raise HTTPException(status_code=500, detail="本地库无资金流数据，请先运行 sync_daily.py")
     hit_dates = mf_dates[-days:]
     data_version = store.max_trade_date("moneyflow")
-    cache_key = (days, data_version)
+    cache_key = (definition.key, days, data_version)
     if not force and cache_key in _SECTOR_FLOW_CACHE:
         return _SECTOR_FLOW_CACHE[cache_key]
 
@@ -167,10 +192,26 @@ def _load_sector_flow(days: int = 10, force: bool = False) -> tuple[list[str], p
     if mf.empty:
         raise HTTPException(status_code=500, detail="本地库无资金流数据，请先运行 sync_daily.py")
 
-    merged = mf.merge(basic[["ts_code", "industry"]], on="ts_code", how="left")
+    if definition.column not in basic.columns:
+        raise HTTPException(
+            status_code=409,
+            detail=f"本地 stock_basic 缺少 {definition.column} 分类字段",
+        )
+    grouping = basic[["ts_code", definition.column]].rename(
+        columns={definition.column: "classification_group"}
+    )
+    grouping["classification_group"] = (
+        grouping["classification_group"]
+        .fillna("未分类")
+        .astype(str)
+        .str.strip()
+        .replace({"": "未分类", "nan": "未分类"})
+    )
+    merged = mf.merge(grouping, on="ts_code", how="left")
+    merged["classification_group"] = merged["classification_group"].fillna("未分类")
     merged["net"] = pd.to_numeric(merged["net_mf_amount"], errors="coerce").fillna(0)
-    grp = merged.groupby(["trade_date", "industry"])["net"].sum().reset_index()
-    pivot = grp.pivot(index="trade_date", columns="industry", values="net").fillna(0)
+    grp = merged.groupby(["trade_date", "classification_group"])["net"].sum().reset_index()
+    pivot = grp.pivot(index="trade_date", columns="classification_group", values="net").fillna(0)
     dates = [str(x) for x in pivot.index.tolist()]
     _SECTOR_FLOW_CACHE[cache_key] = (dates, pivot)
     # 缓存上限：只保留最新 N 条，防止按日期无限增长
@@ -504,26 +545,70 @@ def stock_detail(ts_code: str):
         "tier": tier,
         "as_of": latest_date or _store.max_trade_date("daily") or "",
     }
+@router.get("/api/classifications")
+def classifications():
+    """Return the current, data-backed grouping dimensions."""
+    basic = _store.load_stock_basic()
+    items: list[dict] = []
+    total = max(len(basic), 1)
+    for item in CLASSIFICATIONS:
+        public = item.public()
+        if item.column not in basic.columns:
+            items.append({**public, "available": False, "group_count": 0, "coverage_pct": 0.0, "examples": []})
+            continue
+        values = basic[item.column].dropna().astype(str).str.strip()
+        values = values[(values != "") & (values.str.lower() != "nan")]
+        counts = values.value_counts()
+        items.append(
+            {
+                **public,
+                "available": True,
+                "group_count": int(counts.size),
+                "coverage_pct": round(float(len(values) / total * 100), 2),
+                "examples": [str(value) for value in counts.head(6).index.tolist()],
+            }
+        )
+    return {
+        "default": "industry",
+        "items": items,
+        "limitations": (
+            "分类来自当前 stock_basic 快照。申万、中信、概念板块及历史成员尚无本地 PIT 数据，"
+            "因此不开放为正式回测分类。"
+        ),
+    }
+
+
 @router.get("/api/sector-flow")
-def sector_flow(days: int = 10):
-    """板块资金流总览：各行业近 N 日每日主力净流入 + Top 流入/流出排行"""
+def sector_flow(days: int = 10, classification: str = "industry"):
+    """按选定分类统计近 N 日每日主力净流入和双向排行。"""
     days = max(5, min(days, 20))
-    dates, pivot = _load_sector_flow(days)
+    definition = _classification_or_http(classification)
+    dates, pivot = _load_sector_flow(days, classification=definition.key)
     industries = {str(c): [round(float(v), 0) for v in pivot[c].tolist()] for c in pivot.columns}
 
     cumsum = pivot.sum(axis=0).sort_values(ascending=False)
-    top_in = [{"industry": str(k), "net_wan": round(float(v), 0)} for k, v in cumsum.head(8).items()]
-    top_out = [{"industry": str(k), "net_wan": round(float(v), 0)} for k, v in cumsum.tail(8).sort_values().items()]
+    top_in = [
+        {"group": str(k), "industry": str(k), "net_wan": round(float(v), 0)}
+        for k, v in cumsum.head(8).items()
+    ]
+    top_out = [
+        {"group": str(k), "industry": str(k), "net_wan": round(float(v), 0)}
+        for k, v in cumsum.tail(8).sort_values().items()
+    ]
 
     return {
+        "classification": definition.key,
+        "classification_title": definition.title,
+        "group_label": definition.group_label,
         "dates": dates,
         "days": days,
+        "groups": industries,
         "industries": industries,
         "top_in": top_in,
         "top_out": top_out,
     }
 @router.get("/api/money-heatmap")
-def money_heatmap(top: int = 0):
+def money_heatmap(top: int = 0, classification: str = "industry"):
     """最新交易日资金热力图（treemap 数据）。
 
     按行业聚合最新交易日 net_mf_amount（万元），返回：
@@ -535,7 +620,8 @@ def money_heatmap(top: int = 0):
     ``top <= 0`` 保留兼容行为，返回全部非零行业并按绝对值排序。
     """
     try:
-        dates, pivot = _load_sector_flow(1)
+        definition = _classification_or_http(classification)
+        dates, pivot = _load_sector_flow(1, classification=definition.key)
     except HTTPException:
         raise
     except Exception:  # noqa: BLE001
@@ -561,7 +647,14 @@ def money_heatmap(top: int = 0):
         for k, v in selected.items()
     ]
     total_wan = int(round(float(row.sum())))
-    return {"trade_date": trade_date, "total_wan": total_wan, "items": items}
+    return {
+        "classification": definition.key,
+        "classification_title": definition.title,
+        "group_label": definition.group_label,
+        "trade_date": trade_date,
+        "total_wan": total_wan,
+        "items": items,
+    }
 @router.get("/api/stock/{ts_code}/flow")
 def stock_flow(ts_code: str, days: int = 20):
     """个股资金流趋势 + 所在板块资金流趋势（近 N 日，可观察建仓/出逃时段）"""

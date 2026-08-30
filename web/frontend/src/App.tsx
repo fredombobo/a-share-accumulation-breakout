@@ -7,6 +7,7 @@ import GlobalRunProgress from './components/GlobalRunProgress'
 const Overview = lazy(() => import('./pages/Overview'))
 const StockDetail = lazy(() => import('./pages/StockDetail'))
 const ProfessionalBacktest = lazy(() => import('./pages/ProfessionalBacktest'))
+const Guide = lazy(() => import('./pages/Guide'))
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
               <Route path="/" element={<Overview />} />
               <Route path="/stock/:tsCode" element={<StockDetail />} />
               <Route path="/backtest" element={<ProfessionalBacktest />} />
+              <Route path="/guide" element={<Guide />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>

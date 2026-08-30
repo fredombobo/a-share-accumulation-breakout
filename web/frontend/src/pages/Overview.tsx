@@ -1,6 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
-import { api, OverviewItem, OverviewResp, SectorFlowResp, ScanStatus, HealthResp, SetupStatus, MoneyHeatmapResp, TodayGuide } from '../api/client'
+import {
+  api,
+  type ClassificationCatalogResp,
+  type ClassificationKey,
+  HealthResp,
+  MoneyHeatmapResp,
+  OverviewItem,
+  OverviewResp,
+  ScanStatus,
+  SectorFlowResp,
+  SetupStatus,
+  TodayGuide,
+} from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from '../components/EChart'
 import SectorFlowPanel from '../components/SectorFlowPanel'
@@ -36,6 +48,8 @@ export default function Overview() {
   const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [sector, setSector] = useState<SectorFlowResp | null>(null)
   const [sectorDays, setSectorDays] = useState(10)
+  const [classification, setClassification] = useState<ClassificationKey>('industry')
+  const [classificationCatalog, setClassificationCatalog] = useState<ClassificationCatalogResp | null>(null)
   const [heatmap, setHeatmap] = useState<MoneyHeatmapResp | null>(null)
   const [heatErr, setHeatErr] = useState('')
   const [todayGuide, setTodayGuide] = useState<TodayGuide | null>(null)
@@ -60,6 +74,7 @@ export default function Overview() {
   const overviewSeq = useRef(0)
   const overviewReqRef = useRef<AbortController | null>(null)
   const sectorReqRef = useRef<AbortController | null>(null)
+  const heatmapReqRef = useRef<AbortController | null>(null)
 
   // B13 解耦：板块资金流与个股列表（overview）相互独立，切换 sectorDays 只重拉板块层
   const loadOverview = useCallback((opts?: { keepOnFail?: boolean }) => {
@@ -120,25 +135,32 @@ export default function Overview() {
     sectorReqRef.current?.abort()
     const ac = new AbortController()
     sectorReqRef.current = ac
-    api.sectorFlow(sectorDays, { signal: ac.signal })
+    api.sectorFlow(sectorDays, classification, { signal: ac.signal })
       .then(setSector)
       .catch((e: unknown) => {
         if ((e as { name?: string })?.name === 'AbortError') return
         setSector(null)
       })
-  }, [sectorDays])
+  }, [classification, sectorDays])
 
   // 最新交易日资金热力图（挂载 + 扫描完成后刷新）
   const loadHeatmap = useCallback(() => {
-    api.moneyHeatmap(10)
+    heatmapReqRef.current?.abort()
+    const ac = new AbortController()
+    heatmapReqRef.current = ac
+    api.moneyHeatmap(10, classification, { signal: ac.signal })
       .then((h) => { setHeatmap(h); setHeatErr('') })
       .catch((e: unknown) => {
         if ((e as { name?: string })?.name === 'AbortError') return
         setHeatErr(String(e))
       })
-  }, [])
+  }, [classification])
 
   useEffect(() => { loadHeatmap() }, [loadHeatmap])
+
+  useEffect(() => {
+    api.classifications().then(setClassificationCatalog).catch(() => setClassificationCatalog(null))
+  }, [])
 
   useEffect(() => {
     api.today().then(setTodayGuide).catch(() => setTodayGuide(null))
@@ -195,6 +217,7 @@ export default function Overview() {
     return () => {
       overviewReqRef.current?.abort()
       sectorReqRef.current?.abort()
+      heatmapReqRef.current?.abort()
     }
   }, [])
 
@@ -586,8 +609,30 @@ export default function Overview() {
       {/* 最新交易日资金热力图（treemap） */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="h-sec">
-          <h2 style={{ margin: 0 }}>市场资金热力图</h2>
-          <span className="hint">最新交易日 · 净流入 / 净流出各 Top 10</span>
+          <div>
+            <h2 style={{ margin: 0 }}>市场资金热力图</h2>
+            <span className="hint">按{heatmap?.classification_title || '细分行业'}显示，净流入和净流出各 Top 10</span>
+          </div>
+          <label className="classification-control">
+            <span>分类标准</span>
+            <select
+              value={classification}
+              onChange={(event) => {
+                setClassification(event.target.value as ClassificationKey)
+                setHeatmap(null)
+                setSector(null)
+              }}
+              aria-label="资金板块分类标准"
+            >
+              {(classificationCatalog?.items || [
+                { key: 'industry', title: '细分行业', available: true },
+                { key: 'market', title: '上市板块', available: true },
+                { key: 'area', title: '地域', available: true },
+              ]).filter((item) => item.available).map((item) => (
+                <option key={item.key} value={item.key}>{item.title}</option>
+              ))}
+            </select>
+          </label>
         </div>
         {heatErr ? (
           <div className="muted" style={{ fontSize: 12 }}>资金热力图不可用：{heatErr}</div>
@@ -601,7 +646,7 @@ export default function Overview() {
       {/* 板块资金流 */}
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="h-sec">
-          <h2 style={{ margin: 0 }}>板块资金流 <span className="tag">观察建仓 / 出逃</span></h2>
+          <h2 style={{ margin: 0 }}>{sector?.classification_title || '细分行业'}资金流 <span className="tag">观察建仓 / 出逃</span></h2>
           <div className="seg">
             {[5, 10, 20].map((n) => (
               <button key={n} className={`seg-item ${sectorDays === n ? 'on' : ''}`} onClick={() => setSectorDays(n)}>{n} 日</button>

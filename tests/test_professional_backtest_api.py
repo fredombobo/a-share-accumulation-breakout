@@ -24,8 +24,11 @@ def _research_db(path: Path) -> Path:
         cursor += timedelta(days=1)
     with sqlite3.connect(path) as conn:
         conn.executemany(
-            "INSERT INTO stock_basic(ts_code,name,industry) VALUES (?,?,?)",
-            [(code, f"测试{index}", "半导体") for index, code in enumerate(codes)],
+            "INSERT INTO stock_basic(ts_code,name,industry,market,area) VALUES (?,?,?,?,?)",
+            [
+                (code, f"测试{index}", "半导体", "创业板", "广东")
+                for index, code in enumerate(codes)
+            ],
         )
         conn.executemany(
             "INSERT INTO daily(ts_code,trade_date,open,high,low,close,vol,amount,pct_chg) "
@@ -69,6 +72,43 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     assert payload["universe"]["count"] == 25
     assert len(payload["universe"]["sha256"]) == 64
     assert payload["research_boundary"]["candidate_eligible"] is False
+
+
+def test_professional_universe_catalog_and_preview_support_market_groups(tmp_path: Path) -> None:
+    db = _research_db(tmp_path / "classification-api.db")
+    client = _client(db, backtest_router)
+
+    universe = client.get("/api/backtest/universe?classification=market")
+    preview = client.post(
+        "/api/backtest/preview",
+        json={
+            "strategy": "A",
+            "sample_step": 10,
+            "max_codes": 25,
+            "parameters": {},
+            "universe": {
+                "classification": "market",
+                "groups": ["创业板"],
+                "codes": [],
+            },
+            "conditions": [],
+            "windows": {"mode": "auto"},
+        },
+    )
+
+    assert universe.status_code == preview.status_code == 200
+    assert universe.json()["classification"] == "market"
+    assert universe.json()["groups"] == [{"name": "创业板", "count": 25}]
+    frozen = preview.json()["prepared"]["universe"]
+    assert frozen["classification"] == "market"
+    assert frozen["groups"] == ["创业板"]
+    assert frozen["count"] == 25
+
+    unknown = client.get(
+        "/api/backtest/universe?classification=market&group=不存在"
+    )
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"]["code"] == "UNKNOWN_CLASSIFICATION_GROUP"
 
 
 def test_professional_preview_and_ai_api_fail_with_structured_reasons(tmp_path: Path) -> None:

@@ -73,6 +73,49 @@ def test_current_industry_universe_is_frozen_with_stable_hash(tmp_path: Path) ->
     assert one["classification_mode"] == "CURRENT_CLASSIFICATION_FROZEN_UNIVERSE"
 
 
+def test_universe_can_freeze_market_and_area_groups(tmp_path: Path) -> None:
+    db = tmp_path / "classification-universe.db"
+    LocalStore(db_path=db)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "INSERT INTO stock_basic(ts_code,name,industry,market,area) VALUES (?,?,?,?,?)",
+            [
+                (
+                    f"{index:06d}.SZ",
+                    f"股票{index}",
+                    "软件服务" if index < 30 else "专用机械",
+                    "创业板" if index < 30 else "主板",
+                    "广东" if index % 2 == 0 else "北京",
+                )
+                for index in range(50)
+            ],
+        )
+
+    market = resolve_universe(
+        db,
+        classification="market",
+        groups=["创业板"],
+        max_codes=600,
+    )
+    area = resolve_universe(
+        db,
+        classification="area",
+        groups=["广东"],
+        max_codes=600,
+    )
+
+    assert market["classification"] == "market"
+    assert market["groups"] == ["创业板"]
+    assert market["count"] == 30
+    assert area["classification"] == "area"
+    assert area["groups"] == ["广东"]
+    assert area["count"] == 25
+
+    with pytest.raises(ProfessionalGridError) as caught:
+        resolve_universe(db, classification="concept", max_codes=600)
+    assert caught.value.code == "UNKNOWN_CLASSIFICATION"
+
+
 def test_chip_plugin_is_default_off_and_pit_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="尚未完成经济机制预登记"):
         resolve_enabled_conditions([{"id": "chip_cost_concentration_v1", "enabled": True}])
