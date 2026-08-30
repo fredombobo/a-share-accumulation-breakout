@@ -55,7 +55,7 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
     dates = _distinct_dates(db_path)
     windows = _resolve_windows(payload.get("windows"), dates)
     normalized = {
-        "contract_version": "professional-backtest-v1.3.0",
+        "contract_version": "professional-backtest-v1.4.0",
         "strategy": strategy,
         "sample_step": step,
         "max_codes": max_codes,
@@ -452,13 +452,23 @@ def _clean(value: Any) -> Any:
 
 
 def _path_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Count exact portfolio paths; never infer equality from rounded metrics."""
+    """Count exact, eligible portfolio paths without guessing missing identities.
+
+    ``run_grid`` deliberately omits parameter rows that do not reach its minimum
+    completed-trade threshold.  Those nominal combinations were evaluated, but
+    they do not have a complete IS+OOS portfolio path and therefore must not be
+    counted as either unique or equivalent.  The result reports that exclusion
+    explicitly instead of making path evidence all-or-nothing.
+    """
     nominal = len(rows)
     if not rows:
         return {
             "method": "combined_portfolio_equity_sha256",
             "evidence_complete": False,
+            "coverage_complete": False,
             "nominal_combinations": 0,
+            "path_eligible_combinations": 0,
+            "excluded_without_complete_path": 0,
             "independent_is_paths": None,
             "independent_oos_paths": None,
             "independent_joint_paths": None,
@@ -469,23 +479,33 @@ def _path_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
         is_hash = str((row.get("is") or {}).get("portfolio_equity_sha256") or "")
         oos_hash = str((row.get("oos") or {}).get("portfolio_equity_sha256") or "")
         if not is_hash or not oos_hash:
-            return {
-                "method": "combined_portfolio_equity_sha256",
-                "evidence_complete": False,
-                "nominal_combinations": nominal,
-                "independent_is_paths": None,
-                "independent_oos_paths": None,
-                "independent_joint_paths": None,
-                "duplicate_group_count": 0,
-            }
+            continue
         identities.append((is_hash, oos_hash))
+    eligible = len(identities)
+    excluded = nominal - eligible
+    if not identities:
+        return {
+            "method": "combined_portfolio_equity_sha256",
+            "evidence_complete": False,
+            "coverage_complete": False,
+            "nominal_combinations": nominal,
+            "path_eligible_combinations": 0,
+            "excluded_without_complete_path": excluded,
+            "independent_is_paths": None,
+            "independent_oos_paths": None,
+            "independent_joint_paths": None,
+            "duplicate_group_count": 0,
+        }
     group_sizes: dict[tuple[str, str], int] = {}
     for identity in identities:
         group_sizes[identity] = group_sizes.get(identity, 0) + 1
     return {
         "method": "combined_portfolio_equity_sha256",
         "evidence_complete": True,
+        "coverage_complete": excluded == 0,
         "nominal_combinations": nominal,
+        "path_eligible_combinations": eligible,
+        "excluded_without_complete_path": excluded,
         "independent_is_paths": len({identity[0] for identity in identities}),
         "independent_oos_paths": len({identity[1] for identity in identities}),
         "independent_joint_paths": len(group_sizes),
@@ -494,14 +514,13 @@ def _path_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _independent_leaderboard(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse only rows proven to share the exact IS and OOS equity paths."""
+    """Collapse only rows proven to share complete IS and OOS equity paths."""
     result: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         is_hash = str((row.get("is") or {}).get("portfolio_equity_sha256") or "")
         oos_hash = str((row.get("oos") or {}).get("portfolio_equity_sha256") or "")
         if not is_hash or not oos_hash:
-            result.append({**row, "equivalent_parameter_count": 1})
             continue
         identity = (is_hash, oos_hash)
         existing = by_identity.get(identity)
@@ -576,11 +595,14 @@ def _report_markdown(result: dict[str, Any]) -> str:
             f"- 参数空间：{result['request']['parameter_space']['count']} 组，"
             f"SHA-256 `{result['request']['parameter_space']['sha256']}`",
             (
-                "- 独立收益路径："
+                "- 独立收益路径（完整 IS+OOS 路径集合）："
                 f"{result['path_analysis']['independent_joint_paths']} / "
-                f"{result['path_analysis']['nominal_combinations']}"
+                f"{result['path_analysis']['path_eligible_combinations']}；"
+                f"名义参数 {result['path_analysis']['nominal_combinations']}，"
+                "未纳入路径比较 "
+                f"{result['path_analysis']['excluded_without_complete_path']}"
                 if result.get("path_analysis", {}).get("evidence_complete")
-                else "- 独立收益路径：证据不完整（缺组合权益哈希）"
+                else "- 独立收益路径：无可验证集合（缺完整 IS+OOS 组合权益哈希）"
             ),
             f"- 冻结股票池：{result['request']['universe']['count']} 只，"
             f"SHA-256 `{result['request']['universe']['sha256']}`",

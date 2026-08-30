@@ -51,7 +51,7 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
   const colors = useChartColors()
   const selected = result.selected
   const hasIndependentPaths = Boolean(
-    result.path_analysis?.evidence_complete && result.independent_leaderboard,
+    result.path_analysis?.evidence_complete && result.independent_leaderboard?.length,
   )
   const rankedRows = hasIndependentPaths
     ? result.independent_leaderboard!

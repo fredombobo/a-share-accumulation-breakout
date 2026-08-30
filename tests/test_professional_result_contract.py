@@ -93,14 +93,26 @@ def test_path_analysis_counts_only_exact_equity_hashes() -> None:
     assert result == {
         "method": "combined_portfolio_equity_sha256",
         "evidence_complete": True,
+        "coverage_complete": True,
         "nominal_combinations": 3,
+        "path_eligible_combinations": 3,
+        "excluded_without_complete_path": 0,
         "independent_is_paths": 2,
         "independent_oos_paths": 2,
         "independent_joint_paths": 2,
         "duplicate_group_count": 1,
     }
+    partial = _path_analysis([rows[0], {"param_id": "legacy", "is": {}, "oos": {}}])
+    assert partial["evidence_complete"] is True
+    assert partial["coverage_complete"] is False
+    assert partial["path_eligible_combinations"] == 1
+    assert partial["excluded_without_complete_path"] == 1
+    assert partial["independent_joint_paths"] == 1
+
     incomplete = _path_analysis([{"param_id": "legacy", "is": {}, "oos": {}}])
     assert incomplete["evidence_complete"] is False
+    assert incomplete["path_eligible_combinations"] == 0
+    assert incomplete["excluded_without_complete_path"] == 1
     assert incomplete["independent_joint_paths"] is None
 
 
@@ -129,9 +141,8 @@ def test_independent_leaderboard_collapses_only_exact_equity_paths() -> None:
     assert [row["param_id"] for row in result] == [
         "best",
         "different-oos",
-        "legacy",
     ]
-    assert [row["equivalent_parameter_count"] for row in result] == [2, 1, 1]
+    assert [row["equivalent_parameter_count"] for row in result] == [2, 1]
 
 
 def test_true_max_hold_parameter_changes_time_exit_path() -> None:

@@ -1,4 +1,4 @@
-"""Read-only live acceptance for the professional backtest v1.3 result contract."""
+"""Read-only live acceptance for the professional backtest result contract."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def main() -> None:
             assert page.locator("table th", has_text=expected_column).is_visible()
             if not exact_paths:
                 assert page.get_by_text(
-                    "旧任务缺少权益路径哈希，排行榜未去重", exact=True
+                    "结果缺少可验证权益路径，排行榜未去重", exact=True
                 ).is_visible()
             assert page.get_by_text("7.46%", exact=True).count() > 0
             assert page.get_by_text("4.86%", exact=True).count() > 0

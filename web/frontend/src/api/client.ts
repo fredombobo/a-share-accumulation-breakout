@@ -589,7 +589,10 @@ export interface BacktestResult {
   path_analysis?: {
     method: string
     evidence_complete: boolean
+    coverage_complete?: boolean
     nominal_combinations: number
+    path_eligible_combinations?: number
+    excluded_without_complete_path?: number
     independent_is_paths: number | null
     independent_oos_paths: number | null
     independent_joint_paths: number | null

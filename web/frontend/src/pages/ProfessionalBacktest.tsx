@@ -254,8 +254,9 @@ function BacktestResultView({
   const verdictClass = result.verdict === 'EXPLORATORY_PROMISING' ? 'ok' : 'warn'
   const baselineEntries = Object.entries(result.baselines || {})
   const hasIndependentPaths = Boolean(
-    result.path_analysis?.evidence_complete && result.independent_leaderboard,
+    result.path_analysis?.evidence_complete && result.independent_leaderboard?.length,
   )
+  const excludedPaths = result.path_analysis?.excluded_without_complete_path ?? 0
   const downloadReport = () => {
     const blob = new Blob([result.report_markdown || '报告内容不可用'], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -346,6 +347,9 @@ function BacktestResultView({
               <h2>{hasIndependentPaths ? '入选参数与独立路径排行榜' : '入选参数与历史名义排行榜'}</h2>
               <span className="pill">
                 名义 {result.path_analysis?.nominal_combinations ?? result.evaluated_combinations ?? result.leaderboard.length} 组
+                {result.path_analysis?.evidence_complete && result.path_analysis.path_eligible_combinations != null
+                  ? ` · 可验证 ${result.path_analysis.path_eligible_combinations}`
+                  : ''}
                 {result.path_analysis?.evidence_complete && result.path_analysis.independent_joint_paths != null
                   ? ` · 独立路径 ${result.path_analysis.independent_joint_paths}`
                   : ''}
@@ -364,10 +368,16 @@ function BacktestResultView({
               <code>{JSON.stringify({ signal: selected.signal, exit: selected.exit })}</code>
               <code>参数 ID: {selected.param_id} · 输入: {result.request.input_hash}</code>
             </details>
+            {hasIndependentPaths && excludedPaths > 0 && (
+              <div className="guide-feedback warning" role="note">
+                <b>{excludedPaths} 组未进入路径比较</b>
+                <span>这些名义参数缺少完整 IS+OOS 权益路径，通常是净成交不足；系统没有把它们猜成独立或等效路径。</span>
+              </div>
+            )}
             {!hasIndependentPaths && (
               <div className="guide-feedback warning" role="note">
-                <b>旧任务缺少权益路径哈希，排行榜未去重</b>
-                <span>保留原始名义参数结果，不根据相同的四舍五入指标猜测它们是否等效；请以 v1.3 新任务复验。</span>
+                <b>结果缺少可验证权益路径，排行榜未去重</b>
+                <span>保留原始名义参数结果，不根据相同的四舍五入指标猜测它们是否等效；请以 v1.4 新任务复验。</span>
               </div>
             )}
             <Leaderboard
