@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T09:37:00+08:00"
+updated_at: "2026-08-30T10:03:49+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -14,11 +14,12 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now:
-  - IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS
+ready_now: []
 tasks:
   IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS:
-    status: ready
+    status: complete
+    started_at: "2026-08-30T09:37:00+08:00"
+    completed_at: "2026-08-30T10:03:49+08:00"
     work_package: WP93
     dependencies:
       - PROFESSIONAL-BACKTEST-AI-REVIEW
@@ -41,7 +42,14 @@ tasks:
       - "tests/test_market_classifications.py"
       - "tests/test_professional_grid.py"
       - "web/frontend/tests/v2-guided-flow.spec.ts"
-    note: "仅使用本地 stock_basic 真实字段；未具备历史成员数据的分类保持不可宣称。"
+    result: "docs/ACCEPTANCE-IN-APP-GUIDE-CLASSIFICATIONS-2026-08-30.md"
+    note: "只使用本地 stock_basic 真实字段；未具备历史成员数据的申万、中信和概念分类保持不可宣称。"
+    completed_evidence:
+      - "实现提交 9e718c4：站内 8 章说明书、统一分类契约、首页资金聚合与专业回测冻结"
+      - "生产库三维只读验证：细分行业、上市板块、地域；专业回测股票池 5216 只"
+      - "严格质量门 PASS：Ruff、Mypy 25 files、strict architecture、974 Pytest、10 Vitest、production build"
+      - "Playwright 8/8；真实 8001 桌面与 390px 无溢出，console/page errors 0"
+      - "LIVE_TRADING_ENABLED=false；研究总闸门仍 BLOCKED"
   GLOBAL-RUN-PROGRESS-VISIBILITY:
     status: complete
     started_at: "2026-08-30T09:10:00+08:00"

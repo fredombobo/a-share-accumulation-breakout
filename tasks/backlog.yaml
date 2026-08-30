@@ -448,7 +448,7 @@ tasks:
 
   - id: IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS
     title: 站内详细说明书与多标准板块分类
-    status: ready
+    status: complete
     work_package: WP93
     phase: product-usability
     dependencies:
@@ -462,3 +462,8 @@ tasks:
       - 只开放 stock_basic 真实字段并披露当前分类非历史 PIT
       - 旧 industries 请求兼容，未知分类和分组结构化拒绝
       - 严格质量门与真实 8001 桌面、390px 浏览器验收通过
+    completion_note: >
+      9e718c4 新增 /guide 站内说明书及细分行业、上市板块、地域三种统一分类；
+      首页资金热力图/资金流和专业回测均可切换，回测冻结分类、分组、代码与哈希。
+      974 Pytest、10 Vitest、8 Playwright、Ruff、Mypy、严格架构检查和生产构建
+      全部通过；真实 8001 桌面/390px 无溢出、浏览器错误为零，实盘保持关闭。
