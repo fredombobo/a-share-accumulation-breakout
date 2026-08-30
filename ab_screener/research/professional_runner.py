@@ -23,6 +23,13 @@ from ab_screener.research.professional_grid import (
     request_hash,
     resolve_universe,
 )
+from ab_screener.research.resilient_absorption import (
+    BASE_ENTRY_MECHANISM_ID,
+    POST_BREAKOUT_SUPPLY_DRY_UP_ID,
+    ResearchEntryMechanismError,
+    resolve_requested_entry_mechanism,
+    signal_kwargs_for_entry_mechanism,
+)
 
 ProgressCallback = Callable[[str, int, str], None]
 CancelCheck = Callable[[], bool]
@@ -52,10 +59,18 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
         max_codes=max_codes,
     )
     conditions = resolve_enabled_conditions(payload.get("conditions"))
+    try:
+        entry_mechanism = resolve_requested_entry_mechanism(payload.get("entry_mechanism"))
+    except ResearchEntryMechanismError as exc:
+        raise ProfessionalGridError(
+            "INVALID_ENTRY_MECHANISM",
+            str(exc),
+            {"entry_mechanism": payload.get("entry_mechanism")},
+        ) from exc
     dates = _distinct_dates(db_path)
     windows = _resolve_windows(payload.get("windows"), dates)
     normalized = {
-        "contract_version": "professional-backtest-v1.4.0",
+        "contract_version": "professional-backtest-v1.5.0",
         "strategy": strategy,
         "sample_step": step,
         "max_codes": max_codes,
@@ -74,11 +89,20 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
         },
         "universe": universe,
         "conditions": conditions,
+        "entry_mechanism": entry_mechanism,
         "windows": windows,
         "research_boundary": {
-            "mode": "EXPLORATORY_GRID",
+            "mode": (
+                "PREREGISTERED_HISTORICAL_DIAGNOSTIC"
+                if bool(entry_mechanism.get("research_only"))
+                else "EXPLORATORY_GRID"
+            ),
             "candidate_eligible": False,
-            "note": "网格完成不等于研究候选；需另行预登记并通过正式晋级硬门。",
+            "note": (
+                "研究机制历史窗口已被观察；即使通过也只可记为历史支持，不能直接晋级。"
+                if bool(entry_mechanism.get("research_only"))
+                else "网格完成不等于研究候选；需另行预登记并通过正式晋级硬门。"
+            ),
         },
     }
     normalized["input_hash"] = request_hash(normalized)
@@ -101,6 +125,9 @@ def execute_professional_run(
     from walkforward import wf_recheck
 
     expanded = expand_parameter_space(prepared_request["parameters"])
+    entry_mechanism = dict(prepared_request.get("entry_mechanism") or {})
+    entry_mechanism_id = str(entry_mechanism.get("id") or BASE_ENTRY_MECHANISM_ID)
+    mechanism_kwargs = signal_kwargs_for_entry_mechanism(entry_mechanism_id)
     horizon = int(expanded["horizon"])
     windows = prepared_request["windows"]
     wf_windows = [
@@ -154,6 +181,7 @@ def execute_professional_run(
             f"参数组 {index + 1}/{len(signal_groups)}：IS 与 OOS 净成本回放",
         )
         exit_combos = [{"strategy": "A", **item} for item in exit_groups]
+        effective_signal_params = {**signal_params, **mechanism_kwargs}
         is_frame = run_grid(
             start=windows["is"][0],
             end=windows["is"][1],
@@ -164,7 +192,7 @@ def execute_professional_run(
             workers=None,
             progress_cb=window_progress("IS", base_pct, middle_pct),
             cancel_check=cancel_check,
-            signal_kwargs=signal_params,
+            signal_kwargs=effective_signal_params,
             portfolio_policy=policy,
             research_snapshot=snapshot,
             combos_override=exit_combos,
@@ -179,7 +207,7 @@ def execute_professional_run(
             workers=None,
             progress_cb=window_progress("OOS", middle_pct, next_pct),
             cancel_check=cancel_check,
-            signal_kwargs=signal_params,
+            signal_kwargs=effective_signal_params,
             portfolio_policy=policy,
             research_snapshot=snapshot,
             combos_override=exit_combos,
@@ -207,12 +235,19 @@ def execute_professional_run(
     independent_leaderboard = _independent_leaderboard(leaderboard)
     best = next((row for row in leaderboard if int(row["is"].get("net_n_trades") or 0) > 0), None)
     if best is None:
-        return {
+        research_only = bool(entry_mechanism.get("research_only"))
+        empty_result = {
             "status": "done",
-            "verdict": "EVIDENCE_INSUFFICIENT",
-            "verdict_label": "证据不足：没有组合达到最小成交样本",
+            "verdict": "NO_CANDIDATE" if research_only else "EVIDENCE_INSUFFICIENT",
+            "verdict_label": (
+                "预登记机制未形成候选：没有组合达到最小成交样本"
+                if research_only
+                else "证据不足：没有组合达到最小成交样本"
+            ),
+            "verdict_reasons": ["没有组合达到 30 笔最低实际成交门槛"],
             "request": prepared_request,
             "snapshot": snapshot.identity(),
+            "entry_mechanism": entry_mechanism,
             "leaderboard": leaderboard[:100],
             "independent_leaderboard": independent_leaderboard[:100],
             "path_analysis": path_analysis,
@@ -224,6 +259,8 @@ def execute_professional_run(
             "can_claim_edge": False,
             "warnings": _warnings(prepared_request),
         }
+        empty_result["report_markdown"] = _report_markdown(empty_result)
+        return empty_result
 
     progress("WF", 64, "对样本内选出的第一名执行滚动窗口复验")
     wf: dict[str, Any] | None = None
@@ -234,7 +271,7 @@ def execute_professional_run(
             max_codes=len(snapshot.universe),
             windows=wf_windows,
             cancel_check=cancel_check,
-            signal_kwargs=best["signal"],
+            signal_kwargs={**best["signal"], **mechanism_kwargs},
             portfolio_policy=policy,
             research_snapshot=snapshot,
             horizon=horizon,
@@ -276,7 +313,7 @@ def execute_professional_run(
     stress = run_single_backtest(
         strategy="A",
         exit_params=best["exit"],
-        signal_kwargs=best["signal"],
+        signal_kwargs={**best["signal"], **mechanism_kwargs},
         start=windows["oos"][0],
         end=windows["oos"][1],
         step=prepared_request["sample_step"],
@@ -295,7 +332,13 @@ def execute_professional_run(
     }
 
     progress("REPORT", 96, "生成探索性研究报告")
-    verdict, verdict_label, reasons = _verdict(best, wf, baselines, cost_stress)
+    verdict, verdict_label, reasons = _verdict(
+        best,
+        wf,
+        baselines,
+        cost_stress,
+        research_only=bool(entry_mechanism.get("research_only")),
+    )
     result = {
         "status": "done",
         "verdict": verdict,
@@ -307,6 +350,7 @@ def execute_professional_run(
             "version": policy.version,
             "fingerprint": policy.fingerprint(),
         },
+        "entry_mechanism": entry_mechanism,
         "leaderboard": [_clean(row) for row in leaderboard[:100]],
         "independent_leaderboard": [
             _clean(row) for row in independent_leaderboard[:100]
@@ -406,6 +450,7 @@ _METRICS = (
     "net_max_drawdown", "portfolio_status", "portfolio_total_return",
     "portfolio_max_drawdown", "portfolio_final_equity_fen", "portfolio_rejected_count",
     "portfolio_equity_sha256",
+    "entry_mechanism_signal_count", "entry_mechanism_signals_sha256",
 )
 
 
@@ -540,6 +585,8 @@ def _verdict(
     wf: dict[str, Any] | None,
     baselines: dict[str, Any],
     stress: dict[str, Any],
+    *,
+    research_only: bool = False,
 ) -> tuple[str, str, list[str]]:
     oos = best["oos"]
     reasons: list[str] = []
@@ -564,7 +611,15 @@ def _verdict(
     ):
         reasons.append("OOS 组合收益未同时超过随机与 MA20/60 基线")
     if reasons:
+        if research_only:
+            return "NO_CANDIDATE", "预登记机制未形成候选", reasons[:4]
         return "EXPLORATORY_WEAK", "探索结果未达到预登记候选条件", reasons[:4]
+    if research_only:
+        return (
+            "HISTORICAL_SUPPORT_ONLY",
+            "预登记机制获得历史支持，但不能直接晋级",
+            ["窗口已经被观察；仍需独立前瞻期，不能启用为今日选股参数"],
+        )
     return (
         "EXPLORATORY_PROMISING",
         "探索结果值得另行预登记复验",
@@ -573,13 +628,26 @@ def _verdict(
 
 
 def _warnings(request: dict[str, Any]) -> list[str]:
-    return [
+    mechanism = request.get("entry_mechanism") or {}
+    warnings = [
         request["universe"]["classification_note"],
         "所有信号在收盘确认，最早下一可交易日开盘成交。",
         "本页是探索性参数研究；选择第一名使用 IS，OOS/WF 只做验证。",
         "筹码条件扩展口已建立，但在经济机制预登记完成前保持关闭。",
         "AI 评测不参与本回测、扫描池或候选晋级。",
     ]
+    if bool(mechanism.get("research_only")):
+        warnings.extend(
+            [
+                "本任务绑定预登记研究机制；历史窗口已被观察，通过也只构成历史支持。",
+                "研究机制不自动进入生产扫描、每日选股或参数档案。",
+            ]
+        )
+    if mechanism.get("id") == POST_BREAKOUT_SUPPLY_DRY_UP_ID:
+        warnings.append(
+            "时点冻结：t0 严格突破，t1 下一交易日收盘确认，最早 t2 可交易日开盘成交。"
+        )
+    return warnings
 
 
 def _report_markdown(result: dict[str, Any]) -> str:
@@ -587,6 +655,7 @@ def _report_markdown(result: dict[str, Any]) -> str:
     universe = result["request"]["universe"]
     groups = universe.get("groups") or []
     group_text = "、".join(str(value) for value in groups) if groups else "全市场"
+    mechanism = result["request"].get("entry_mechanism") or {}
     return "\n".join(
         [
             "# AB-Screener 专业回测报告",
@@ -608,10 +677,24 @@ def _report_markdown(result: dict[str, Any]) -> str:
             f"SHA-256 `{result['request']['universe']['sha256']}`",
             f"- 分类标准：{universe.get('classification_title', '细分行业')}，分组：{group_text}",
             f"- PIT 数据：`{result['snapshot']['dataset_fingerprint']}`",
+            (
+                f"- 入场机制：`{mechanism.get('id')}` / `{mechanism.get('version')}` / "
+                f"语义 SHA `{mechanism.get('semantic_hash')}`"
+            ),
+            f"- 采样：sample_step={result['request']['sample_step']}"
+            + ("（逐交易日复验）" if result['request']['sample_step'] == 1 else "（抽样研究）"),
             f"- IS：{result['request']['windows']['is'][0]} ~ {result['request']['windows']['is'][1]}",
             f"- OOS：{result['request']['windows']['oos'][0]} ~ {result['request']['windows']['oos'][1]}",
             f"- 入选参数：`{json.dumps(selected.get('signal'), ensure_ascii=False, sort_keys=True)}` / "
             f"`{json.dumps(selected.get('exit'), ensure_ascii=False, sort_keys=True)}`",
+            (
+                "- 机制信号审计：IS "
+                f"{(selected.get('is') or {}).get('entry_mechanism_signal_count')} 笔 / "
+                f"`{(selected.get('is') or {}).get('entry_mechanism_signals_sha256')}`；"
+                "OOS "
+                f"{(selected.get('oos') or {}).get('entry_mechanism_signal_count')} 笔 / "
+                f"`{(selected.get('oos') or {}).get('entry_mechanism_signals_sha256')}`"
+            ),
             "- 晋级边界：candidate_eligible=false；本报告不自动改变生产策略或每日选股。",
             "",
             "## 主要阻断/说明",

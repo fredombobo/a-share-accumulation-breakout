@@ -430,6 +430,15 @@ export interface BacktestParameterDefinition {
   description: string
 }
 
+export interface BacktestEntryMechanismIdentity {
+  id: string
+  version: string
+  semantic_hash: string
+  research_only: boolean
+  benchmark_code?: string | null
+  parameter_search: string
+}
+
 export interface BacktestCatalog {
   version: string
   max_combinations: number
@@ -444,6 +453,16 @@ export interface BacktestCatalog {
     status: string
     dataset?: { available: boolean; rows: number; codes?: number; earliest?: string; latest?: string }
   }[]
+  entry_mechanisms?: ({
+    id: string
+    version: string
+    research_only: boolean
+    economic_hypothesis: string
+    timing?: string
+    parameter_search?: string
+    preregistration?: string
+    identity: BacktestEntryMechanismIdentity
+  })[]
   research_boundary: string
   paper_trading_enabled: false
   live_trading_enabled: false
@@ -474,11 +493,13 @@ export interface BacktestRequest {
     industries?: string[]
   }
   conditions: { id: string; enabled: boolean; params?: Record<string, number> }[]
+  entry_mechanism?: BacktestEntryMechanismIdentity
   windows?: { mode: 'auto' }
 }
 
 export interface PreparedBacktestRequest extends Omit<BacktestRequest, 'windows'> {
   contract_version: string
+  entry_mechanism: BacktestEntryMechanismIdentity
   parameter_space: {
     count: number
     sha256: string
@@ -553,6 +574,8 @@ export interface BacktestMetrics {
   portfolio_total_return?: number | null
   portfolio_max_drawdown?: number | null
   evidence_complete?: boolean
+  entry_mechanism_signal_count?: number
+  entry_mechanism_signals_sha256?: string
 }
 
 export interface BacktestLeaderboardRow {
@@ -582,6 +605,7 @@ export interface BacktestResult {
   candidate_eligible: false
   can_claim_edge: false
   request: PreparedBacktestRequest
+  entry_mechanism?: BacktestEntryMechanismIdentity
   leaderboard: BacktestLeaderboardRow[]
   independent_leaderboard?: BacktestLeaderboardRow[]
   selected: BacktestLeaderboardRow | null

@@ -29,6 +29,7 @@ from ab_screener.research.professional_runner import (
     execute_professional_run,
     prepare_professional_request,
 )
+from ab_screener.research.resilient_absorption import entry_mechanism_catalog
 from ab_screener.research.store import ActiveResearchRunError, ResearchRunStore
 from build_version import build_version
 
@@ -107,6 +108,7 @@ def catalog(db_path: str = Depends(get_db_path)) -> dict[str, Any]:
     return {
         **parameter_catalog(),
         "conditions": condition_catalog(db_path),
+        "entry_mechanisms": entry_mechanism_catalog(),
         "research_boundary": "EXPLORATORY_ONLY",
         "paper_trading_enabled": False,
         "live_trading_enabled": False,

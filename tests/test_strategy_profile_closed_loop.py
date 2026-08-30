@@ -25,7 +25,11 @@ def _client(path: Path) -> TestClient:
     return TestClient(app)
 
 
-def _result(verdict: str = "EXPLORATORY_PROMISING") -> dict[str, Any]:
+def _result(
+    verdict: str = "EXPLORATORY_PROMISING",
+    *,
+    research_mechanism: bool = False,
+) -> dict[str, Any]:
     selected = {
         "param_id": "parameter-01",
         "signal": {
@@ -59,6 +63,12 @@ def _result(verdict: str = "EXPLORATORY_PROMISING") -> dict[str, Any]:
             "random": {"portfolio_total_return": 0.01},
             "ma20_60": {"portfolio_total_return": -0.02},
         },
+        "request": {
+            "entry_mechanism": {
+                "id": "POST_BREAKOUT_SUPPLY_DRY_UP_V1",
+                "research_only": True,
+            }
+        } if research_mechanism else {},
     }
 
 
@@ -69,6 +79,7 @@ def _completed_task(
     verdict: str = "EXPLORATORY_PROMISING",
     code_version: str = "code-v1",
     dataset_version: str = "cutoff-v1",
+    research_mechanism: bool = False,
 ) -> dict[str, Any]:
     store = ResearchRunStore(path)
     store.create_run(
@@ -87,7 +98,7 @@ def _completed_task(
         status="done",
         phase="DONE",
         progress=100,
-        result=_result(verdict),
+        result=_result(verdict, research_mechanism=research_mechanism),
         verdict=verdict,
         candidate_eligible=False,
         can_claim_edge=False,
@@ -179,6 +190,40 @@ def test_weak_or_stale_backtest_is_fail_closed(tmp_path: Path, monkeypatch) -> N
     assert any(item["code"] == "EVIDENCE_PROMISING" and not item["passed"] for item in weak_checks)
     assert any(item["code"] == "CODE_IDENTITY_CURRENT" and not item["passed"] for item in stale_checks)
     assert any(item["code"] == "DATASET_IDENTITY_CURRENT" and not item["passed"] for item in stale_checks)
+    assert StrategyProfileRepository(path).effective()["profile"].is_default
+
+
+def test_research_only_entry_mechanism_can_never_activate_daily_scan(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "research-mechanism-blocked.db"
+    client = _client(path)
+    _completed_task(path, "probt-research", research_mechanism=True)
+    monkeypatch.setattr(
+        "ab_screener.application.strategy_profile_service.build_version",
+        lambda: "code-v1",
+    )
+    monkeypatch.setattr(
+        "ab_screener.application.strategy_profile_service.latest_research_cutoff",
+        lambda _: "cutoff-v1",
+    )
+
+    status = client.get("/api/backtest/status/probt-research")
+    activation = client.post(
+        "/api/backtest/profile/activate",
+        json={"task_id": "probt-research", "acknowledge_exploratory": True},
+    )
+
+    assert status.status_code == 200
+    boundary_check = next(
+        item
+        for item in status.json()["profile_activation"]["checks"]
+        if item["code"] == "ENTRY_MECHANISM_PRODUCTION_BASE"
+    )
+    assert boundary_check["passed"] is False
+    assert activation.status_code == 409
+    assert activation.json()["detail"]["code"] == "BACKTEST_PROFILE_NOT_ELIGIBLE"
     assert StrategyProfileRepository(path).effective()["profile"].is_default
 
 

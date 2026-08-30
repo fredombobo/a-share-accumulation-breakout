@@ -1,10 +1,11 @@
 """Preregistered research-only entry mechanisms for Breakout.
 
 The production signal remains the frozen strict accumulation breakout.  A
-research mechanism may only reject an already-causal base signal; it cannot
-move the signal date or execution bar.  Every mechanism has an immutable
-semantic fingerprint so all research stages can prove that they evaluated the
-same economic hypothesis.
+research mechanism may either reject an already-causal base signal or, when its
+preregistered timing explicitly requires it, delay the decision to a later
+causal confirmation close.  Every mechanism has an immutable semantic
+fingerprint so all research stages can prove that they evaluated the same
+economic hypothesis.
 """
 
 from __future__ import annotations
@@ -16,6 +17,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+
+from ab_screener.research.post_breakout_supply_dry_up import (
+    POST_BREAKOUT_SUPPLY_DRY_UP_ID,
+    detect_post_breakout_supply_dry_up,
+    evaluate_post_breakout_supply_dry_up,
+)
 
 if TYPE_CHECKING:
     from ab_screener.research.pit_reader import ResearchPitSnapshot
@@ -70,11 +77,60 @@ _MECHANISMS: dict[str, dict[str, Any]] = {
         "timing": "box_and_breakout_close_only_then_next_tradable_open",
         "parameter_search": "none",
     },
+    POST_BREAKOUT_SUPPLY_DRY_UP_ID: {
+        "id": POST_BREAKOUT_SUPPLY_DRY_UP_ID,
+        "version": "post-breakout-supply-dry-up-v1.0.0",
+        "research_only": True,
+        "economic_hypothesis": (
+            "A genuine strict breakout should remain accepted above the frozen box "
+            "on the next exchange session while volume contracts and the confirmation "
+            "bar closes in the upper half of its range."
+        ),
+        "conditions": [
+            {
+                "id": "base_strict_breakout_at_t0",
+                "rule": "unchanged BASE_STRICT_BREAKOUT_V1",
+            },
+            {
+                "id": "next_exchange_session_confirmation",
+                "rule": "t1 is exactly the next exchange session after t0",
+            },
+            {
+                "id": "close_accepted_above_frozen_box_high",
+                "rule": "close(t1) > box_high(t0)",
+            },
+            {
+                "id": "post_breakout_volume_dry_up",
+                "rule": "0 < volume(t1) / volume(t0) < 1",
+            },
+            {
+                "id": "confirmation_upper_half_close",
+                "rule": "CLV(t1) > 0",
+            },
+        ],
+        "missing_data_policy": "fail_closed_no_imputation",
+        "timing": "strict_breakout_close_t0_then_confirmation_close_t1_then_t2_open",
+        "parameter_search": "none",
+        "preregistration": (
+            "docs/V2-R-POST-BREAKOUT-SUPPLY-DRY-UP-PREREGISTRATION-2026-08-31.md"
+        ),
+    },
 }
 
 
 def registered_entry_mechanism_ids() -> tuple[str, ...]:
     return tuple(sorted(_MECHANISMS))
+
+
+def entry_mechanism_catalog() -> list[dict[str, Any]]:
+    """Return immutable read-only descriptions; this is not a tuning surface."""
+    return [
+        {
+            **entry_mechanism_snapshot(mechanism_id),
+            "identity": entry_mechanism_identity(mechanism_id),
+        }
+        for mechanism_id in registered_entry_mechanism_ids()
+    ]
 
 
 def entry_mechanism_snapshot(mechanism_id: str) -> dict[str, Any]:
@@ -122,6 +178,23 @@ def signal_kwargs_for_entry_mechanism(mechanism_id: str) -> dict[str, str]:
     return {ENTRY_MECHANISM_KWARG: mechanism_id}
 
 
+def detect_entry_signal(
+    mechanism_id: str,
+    bars: pd.DataFrame,
+    detector_kwargs: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run the detector whose timing is frozen by the mechanism identity."""
+    entry_mechanism_snapshot(mechanism_id)
+    if mechanism_id == POST_BREAKOUT_SUPPLY_DRY_UP_ID:
+        return detect_post_breakout_supply_dry_up(bars, detector_kwargs)
+    # Keep the legacy compatibility import for the frozen production/base path.
+    # This makes the new research mechanism an additive branch instead of
+    # silently changing the callable identity used by WP97 and older clients.
+    from signals import detect_accumulation_breakout
+
+    return detect_accumulation_breakout(bars, **dict(detector_kwargs or {}))
+
+
 def split_signal_kwargs(
     signal_kwargs: Mapping[str, Any] | None,
 ) -> tuple[dict[str, Any], str]:
@@ -146,6 +219,8 @@ def prepare_signal_market_context(
     """Attach the frozen benchmark context required by a research mechanism."""
     _detector_kwargs, mechanism_id = split_signal_kwargs(signal_kwargs)
     if mechanism_id == BASE_ENTRY_MECHANISM_ID:
+        return daily
+    if mechanism_id == POST_BREAKOUT_SUPPLY_DRY_UP_ID:
         return daily
     if mechanism_id != RESILIENT_ABSORPTION_ID:
         raise ResearchEntryMechanismError(f"研究机制未实现: {mechanism_id}")
@@ -198,6 +273,9 @@ def evaluate_entry_mechanism(
             "mechanism": entry_mechanism_identity(mechanism_id),
             "checks": [],
         }
+    if mechanism_id == POST_BREAKOUT_SUPPLY_DRY_UP_ID:
+        result = evaluate_post_breakout_supply_dry_up(bars, signal)
+        return {**result, "mechanism": entry_mechanism_identity(mechanism_id)}
     if mechanism_id != RESILIENT_ABSORPTION_ID:
         raise ResearchEntryMechanismError(f"研究机制未实现: {mechanism_id}")
     return _evaluate_resilient_absorption(bars, signal)

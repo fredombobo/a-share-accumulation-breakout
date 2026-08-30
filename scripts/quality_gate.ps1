@@ -38,6 +38,7 @@ $Stages = @(
             "$Root\ab_screener\research\professional_runner.py" `
             "$Root\ab_screener\research\regime_filter.py" `
             "$Root\ab_screener\research\resilient_absorption.py" `
+            "$Root\ab_screener\research\post_breakout_supply_dry_up.py" `
             "$Root\ab_screener\research\trusted_run.py" `
             "$Root\ab_screener\api\routers\professional_backtest.py" `
             "$Root\ab_screener\api\routers\lean_ai_review.py" `

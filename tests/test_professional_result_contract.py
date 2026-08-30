@@ -54,6 +54,25 @@ def test_professional_verdict_uses_compatibility_aliases_consistently() -> None:
     assert promising == "EXPLORATORY_PROMISING"
     assert len(promising_reasons) == 1
 
+    rejected, rejected_label, _ = _verdict(
+        best,
+        {"evidence_complete": False, "wf_pass": False},
+        baselines,
+        stress,
+        research_only=True,
+    )
+    supported, supported_label, _ = _verdict(
+        best,
+        {"evidence_complete": True, "wf_pass": True},
+        baselines,
+        stress,
+        research_only=True,
+    )
+    assert rejected == "NO_CANDIDATE"
+    assert "未形成候选" in rejected_label
+    assert supported == "HISTORICAL_SUPPORT_ONLY"
+    assert "不能直接晋级" in supported_label
+
 
 def test_metric_subset_materializes_canonical_portfolio_return() -> None:
     metrics = _metric_subset(

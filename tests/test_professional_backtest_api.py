@@ -10,6 +10,13 @@ from starlette.testclient import TestClient
 from ab_screener.api.deps import get_db_path
 from ab_screener.api.routers.lean_ai_review import router as ai_router
 from ab_screener.api.routers.professional_backtest import router as backtest_router
+from ab_screener.research.post_breakout_supply_dry_up import (
+    POST_BREAKOUT_SUPPLY_DRY_UP_ID,
+)
+from ab_screener.research.resilient_absorption import (
+    BASE_ENTRY_MECHANISM_ID,
+    entry_mechanism_identity,
+)
 from local_store import LocalStore
 
 
@@ -68,12 +75,17 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     assert catalog.status_code == universe.status_code == preview.status_code == 200
     assert catalog.json()["max_combinations"] == 5_120
     assert catalog.json()["long_running_warning_combinations"] == 512
+    mechanism_ids = {item["id"] for item in catalog.json()["entry_mechanisms"]}
+    assert POST_BREAKOUT_SUPPLY_DRY_UP_ID in mechanism_ids
     payload = preview.json()["prepared"]
     assert payload["parameter_space"]["count"] == 432
     assert payload["parameter_space"]["long_running"] is False
     assert payload["parameters"]["target_pct"]["values"] == [0.1, 0.12, 0.15]
     assert payload["parameters"]["max_hold_days"] == {"mode": "fixed", "value": 30}
-    assert payload["contract_version"] == "professional-backtest-v1.4.0"
+    assert payload["contract_version"] == "professional-backtest-v1.5.0"
+    assert payload["entry_mechanism"] == entry_mechanism_identity(
+        BASE_ENTRY_MECHANISM_ID
+    )
     assert payload["parameter_space"]["horizon"] >= 265
     assert payload["universe"]["count"] == 25
     assert len(payload["universe"]["sha256"]) == 64
@@ -96,6 +108,43 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     assert long_preview.json()["prepared"]["parameter_space"]["count"] == 576
     assert long_preview.json()["estimated_work"]["long_running"] is True
     assert "数小时" in long_preview.json()["estimated_work"]["note"]
+
+
+def test_preregistered_mechanism_identity_is_frozen_and_tampering_fails_closed(
+    tmp_path: Path,
+) -> None:
+    db = _research_db(tmp_path / "mechanism-api.db")
+    client = _client(db, backtest_router)
+    identity = entry_mechanism_identity(POST_BREAKOUT_SUPPLY_DRY_UP_ID)
+    request = {
+        "strategy": "A",
+        "sample_step": 1,
+        "max_codes": 25,
+        "parameters": {},
+        "universe": {"industries": ["半导体"], "codes": []},
+        "conditions": [],
+        "entry_mechanism": identity,
+        "windows": {"mode": "auto"},
+    }
+
+    preview = client.post("/api/backtest/preview", json=request)
+    tampered = client.post(
+        "/api/backtest/preview",
+        json={
+            **request,
+            "entry_mechanism": {**identity, "semantic_hash": "tampered"},
+        },
+    )
+
+    assert preview.status_code == 200
+    prepared = preview.json()["prepared"]
+    assert prepared["entry_mechanism"] == identity
+    assert prepared["sample_step"] == 1
+    assert prepared["research_boundary"]["mode"] == (
+        "PREREGISTERED_HISTORICAL_DIAGNOSTIC"
+    )
+    assert tampered.status_code == 422
+    assert tampered.json()["detail"]["code"] == "INVALID_ENTRY_MECHANISM"
 
 
 def test_professional_universe_catalog_and_preview_support_market_groups(tmp_path: Path) -> None:

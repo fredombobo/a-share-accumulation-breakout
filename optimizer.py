@@ -241,18 +241,21 @@ def _detect_signals_for_code(
     A 方案：detect_accumulation_breakout（与参数无关，detect 一次；signal_kwargs 可覆盖形态阈值）
     B 方案：detect_plan_b（vol_ratio_min 影响建仓识别，按 vr_levels 各 detect 一次）
     """
+    from ab_screener.research.post_breakout_supply_dry_up import (
+        add_exchange_session_check,
+    )
     from ab_screener.research.resilient_absorption import (
         BASE_ENTRY_MECHANISM_ID,
+        detect_entry_signal,
         evaluate_entry_mechanism,
         split_signal_kwargs,
     )
     from bench_volume import find_build_seqs
     from entry_plan_b import detect_plan_b
-    from signals import detect_accumulation_breakout
 
     skwargs, entry_mechanism_id = split_signal_kwargs(signal_kwargs)
     if strategy != "A" and entry_mechanism_id != BASE_ENTRY_MECHANISM_ID:
-        raise ValueError("韧性吸收机制只适用于 A 方案严格横盘突破")
+        raise ValueError("研究入场机制只适用于 A 方案横盘吸筹突破")
     dts = df["trade_date"].astype(str).tolist()
     dts_set = set(dts)
     signals: list[dict] = []
@@ -278,7 +281,7 @@ def _detect_signals_for_code(
             continue
 
         if strategy == "A":
-            sig = detect_accumulation_breakout(win, **skwargs)
+            sig = detect_entry_signal(entry_mechanism_id, win, skwargs)
             if not sig.get("is_breakout"):
                 continue
             bd = "".join(ch for ch in str(sig.get("breakout_date") or "") if ch.isdigit())[:8]
@@ -286,7 +289,7 @@ def _detect_signals_for_code(
             if not bd or bd not in recent or bd not in dts_set or bd < first_sample or bd > last_sample:
                 continue
             causal = causal_window(bd)
-            causal_sig = detect_accumulation_breakout(causal, **skwargs)
+            causal_sig = detect_entry_signal(entry_mechanism_id, causal, skwargs)
             causal_bd = "".join(ch for ch in str(causal_sig.get("breakout_date") or "") if ch.isdigit())[:8]
             if not causal_sig.get("is_breakout") or causal_bd != bd:
                 continue
@@ -295,6 +298,23 @@ def _detect_signals_for_code(
                 causal,
                 causal_sig,
             )
+            initial_bd = "".join(
+                ch for ch in str(causal_sig.get("initial_breakout_date") or "") if ch.isdigit()
+            )[:8]
+            if initial_bd:
+                initial_i = cal_index.get(initial_bd, -1)
+                confirmation_i = cal_index.get(bd, -1)
+                session_gap = (
+                    confirmation_i - initial_i
+                    if initial_i >= 0 and confirmation_i >= 0
+                    else None
+                )
+                mechanism_evidence = add_exchange_session_check(
+                    mechanism_evidence,
+                    initial_breakout_date=initial_bd,
+                    confirmation_date=bd,
+                    exchange_session_gap=session_gap,
+                )
             if not mechanism_evidence.get("passed"):
                 continue
             key_a = (bd, None)
@@ -319,6 +339,7 @@ def _detect_signals_for_code(
                     "box_high": causal_sig.get("box_high"),
                     "box_low": causal_sig.get("box_low"),
                     "breakout_date": bd,
+                    "initial_breakout_date": initial_bd or None,
                     "entry_mechanism": mechanism_evidence,
                 }
             )
@@ -413,6 +434,7 @@ def _replay_params(df: pd.DataFrame, signals: list[dict], combos: list[dict]) ->
                         "box_high": s.get("box_high"),
                         "box_low": s.get("box_low"),
                         "breakout_date": s.get("breakout_date"),
+                        "initial_breakout_date": s.get("initial_breakout_date"),
                         "entry_mechanism": s.get("entry_mechanism"),
                     }
                 )
@@ -645,7 +667,39 @@ def run_grid(
         if not s.get("n_trades"):
             continue
         trade_metrics = summarize_costed_trades(trades)
-        row = {"param_id": pid, **combo_map[pid], **s, **trade_metrics}
+        mechanism_signals = sorted(
+            [
+                {
+                    "ts_code": trade.get("ts_code"),
+                    "signal_date": trade.get("date"),
+                    "initial_breakout_date": trade.get("initial_breakout_date"),
+                    "evidence": trade.get("entry_mechanism"),
+                }
+                for trade in trades
+                if trade.get("entry_mechanism")
+            ],
+            key=lambda item: (
+                str(item.get("signal_date") or ""),
+                str(item.get("ts_code") or ""),
+            ),
+        )
+        mechanism_blob = json.dumps(
+            mechanism_signals,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        row = {
+            "param_id": pid,
+            **combo_map[pid],
+            **s,
+            **trade_metrics,
+            "entry_mechanism_signal_count": len(mechanism_signals),
+            "entry_mechanism_signals_sha256": hashlib.sha256(
+                mechanism_blob.encode("utf-8")
+            ).hexdigest(),
+        }
         if portfolio_policy is not None and prepared_market is not None:
             def accounting_progress(
                 day: int,

@@ -137,6 +137,18 @@ def activation_status(db_path: str | Path, task: dict[str, Any] | None) -> dict[
         "EVIDENCE_PROMISING", "OOS/WF/成本证据", verdict_ok,
         "探索证据达到候选档案门槛" if verdict_ok else "OOS、滚动窗口、基线或成本压力尚未全部通过",
     ))
+    mechanism = ((result.get("request") or {}).get("entry_mechanism") or {})
+    research_mechanism = bool(mechanism.get("research_only"))
+    checks.append(_check(
+        "ENTRY_MECHANISM_PRODUCTION_BASE",
+        "入场机制边界",
+        not research_mechanism,
+        (
+            "使用生产基础严格突破机制"
+            if not research_mechanism
+            else "预登记研究机制只允许历史诊断或前瞻观察，不能启用为今日选股档案"
+        ),
+    ))
     current_code = str(build_version())
     task_code = str(payload.get("code_version") or "")
     code_ok = bool(task_code) and task_code == current_code

@@ -251,12 +251,13 @@ function BacktestResultView({
   onActivate: () => void
 }) {
   const selected = result.selected
-  const verdictClass = result.verdict === 'EXPLORATORY_PROMISING' ? 'ok' : 'warn'
+  const verdictClass = ['EXPLORATORY_PROMISING', 'HISTORICAL_SUPPORT_ONLY'].includes(result.verdict) ? 'ok' : 'warn'
   const baselineEntries = Object.entries(result.baselines || {})
   const hasIndependentPaths = Boolean(
     result.path_analysis?.evidence_complete && result.independent_leaderboard?.length,
   )
   const excludedPaths = result.path_analysis?.excluded_without_complete_path ?? 0
+  const entryMechanism = result.request.entry_mechanism
   const downloadReport = () => {
     const blob = new Blob([result.report_markdown || '报告内容不可用'], { type: 'text/markdown;charset=utf-8' })
     const url = URL.createObjectURL(blob)
@@ -280,10 +281,27 @@ function BacktestResultView({
         {(result.verdict_reasons || []).map((reason) => <div key={reason}>检查项：{reason}</div>)}
         {!result.candidate_eligible && <div>晋级状态：未晋级。需要另行预登记后复验。</div>}
       </div>
+      {entryMechanism?.research_only && (
+        <div className="guide-feedback warning" role="note">
+          <b>预登记研究机制：{entryMechanism.id}</b>
+          <span>
+            版本 {entryMechanism.version} · 语义 {entryMechanism.semantic_hash}。历史通过也只构成历史支持，不能启用为今日选股参数。
+          </span>
+          {entryMechanism.id === 'POST_BREAKOUT_SUPPLY_DRY_UP_V1' && (
+            <span>时点：t0 严格突破 → t1 下一交易日收盘确认 → 最早 t2 开盘模拟成交。</span>
+          )}
+        </div>
+      )}
       {result.request.sample_step > 1 && (
         <div className="guide-feedback warning" role="note">
           <b>这是抽样研究，不是逐日完整回测</b>
           <span>当前每 {result.request.sample_step} 个交易日取一个决策截面；正式逐日一致性复验应使用步长 1。</span>
+        </div>
+      )}
+      {result.request.sample_step === 1 && (
+        <div className="guide-feedback success" role="note">
+          <b>逐交易日完整复验</b>
+          <span>每个交易日都检查一次因果信号，不使用抽样间隔。</span>
         </div>
       )}
       <section className={`profile-promotion-card ${activation?.can_activate ? 'eligible' : 'blocked'}`}>
@@ -377,7 +395,7 @@ function BacktestResultView({
             {!hasIndependentPaths && (
               <div className="guide-feedback warning" role="note">
                 <b>结果缺少可验证权益路径，排行榜未去重</b>
-                <span>保留原始名义参数结果，不根据相同的四舍五入指标猜测它们是否等效；请以 v1.4 新任务复验。</span>
+              <span>保留原始名义参数结果，不根据相同的四舍五入指标猜测它们是否等效；请以 v1.5 新任务复验。</span>
               </div>
             )}
             <Leaderboard

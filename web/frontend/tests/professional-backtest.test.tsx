@@ -17,6 +17,15 @@ vi.mock('../src/components/EChart', () => ({
   default: ({ height }: { height?: number }) => <div data-testid="result-echart" data-height={height} />,
 }))
 
+const baseEntryMechanism = {
+  id: 'BASE_STRICT_BREAKOUT_V1',
+  version: 'base-strict-breakout-v1.0.0',
+  semantic_hash: 'base-semantic-hash',
+  research_only: false,
+  benchmark_code: null,
+  parameter_search: 'none',
+}
+
 const catalog: BacktestCatalog = {
   version: 'test-v1',
   max_combinations: 5120,
@@ -59,6 +68,7 @@ const preview: BacktestPreview = {
   estimated_work: { combinations: 24, stocks: 30, sample_step: 10, long_running: false, warning_threshold: 512, note: '后台运行' },
   prepared: {
     contract_version: 'test-v1', strategy: 'A', sample_step: 10, max_codes: 600,
+    entry_mechanism: baseEntryMechanism,
     parameters: Object.fromEntries(catalog.parameters.map((item) => [item.key, item.default])),
     universe: {
       classification: 'industry', classification_title: '细分行业', group_label: '行业', groups: [],
@@ -238,6 +248,72 @@ describe('专业回测工作台', () => {
     expect(screen.getByText(/这是抽样研究，不是逐日完整回测/)).toBeVisible()
     expect(screen.getAllByText('15.00%')).toHaveLength(2)
     expect(screen.getByText(/不绘制或推测净值曲线/)).toBeVisible()
+  })
+
+  it('逐日预登记机制明确展示时点与不可启用边界', async () => {
+    const researchTask: BacktestTask = {
+      ...completedTask,
+      request: {
+        ...completedTask.request,
+        sample_step: 1,
+        entry_mechanism: {
+          id: 'POST_BREAKOUT_SUPPLY_DRY_UP_V1',
+          version: 'post-breakout-supply-dry-up-v1.0.0',
+          semantic_hash: 'frozen-research-semantic-hash',
+          research_only: true,
+          benchmark_code: null,
+          parameter_search: 'none',
+        },
+      },
+      result: {
+        ...completedTask.result!,
+        verdict: 'HISTORICAL_SUPPORT_ONLY',
+        verdict_label: '预登记机制获得历史支持，但不能直接晋级',
+        request: {
+          ...completedTask.result!.request,
+          sample_step: 1,
+          entry_mechanism: {
+            id: 'POST_BREAKOUT_SUPPLY_DRY_UP_V1',
+            version: 'post-breakout-supply-dry-up-v1.0.0',
+            semantic_hash: 'frozen-research-semantic-hash',
+            research_only: true,
+            benchmark_code: null,
+            parameter_search: 'none',
+          },
+        },
+      },
+      profile_activation: {
+        ...eligible,
+        can_activate: false,
+        checks: [{
+          code: 'ENTRY_MECHANISM_PRODUCTION_BASE', label: '入场机制边界', passed: false,
+          message: '预登记研究机制不能启用为今日选股档案',
+        }],
+        reasons: [{
+          code: 'ENTRY_MECHANISM_PRODUCTION_BASE', label: '入场机制边界', passed: false,
+          message: '预登记研究机制不能启用为今日选股档案',
+        }],
+      },
+    }
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+      classifications: [], groups: [], industries: [], stocks: [], stock_count: 30,
+    })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({
+      task: researchTask,
+      profile_activation: researchTask.profile_activation,
+    })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState(true))
+
+    render(<ProfessionalBacktest />)
+
+    expect(await screen.findByText(/预登记研究机制：POST_BREAKOUT_SUPPLY_DRY_UP_V1/)).toBeVisible()
+    expect(screen.getByText(/t0 严格突破 → t1 下一交易日收盘确认 → 最早 t2/)).toBeVisible()
+    expect(screen.getByText('逐交易日完整复验')).toBeVisible()
+    expect(screen.getByText(/不能启用为今日选股档案/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: '人工启用为今日选股参数' })).not.toBeInTheDocument()
   })
 
   it('旧任务缺少权益哈希时明确保留名义排行榜且不推测去重', async () => {
