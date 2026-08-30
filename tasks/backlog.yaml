@@ -427,7 +427,7 @@ tasks:
 
   - id: GLOBAL-RUN-PROGRESS-VISIBILITY
     title: 全局长任务进度、心跳与疑似卡住提示
-    status: ready
+    status: complete
     work_package: WP92
     phase: product-usability
     dependencies:
@@ -440,3 +440,8 @@ tasks:
       - 切页、窗口失焦与刷新后从服务端恢复活动任务
       - 深浅主题、减少动态效果、键盘操作与 390px 窄屏通过
       - 严格质量门及真实 8001 浏览器验收通过
+    completion_note: >
+      扫描与专业回测已在全部发布路由显示服务端真实阶段、百分比、耗时和最近推进；
+      行情同步在供应商无分项进度时使用明确的不定进度。切页、失焦、重新聚焦和刷新
+      均可恢复活动任务，3 分钟无真实变化会谨慎提示可能仍在重计算。严格质量门与
+      真实 8001 浏览器验收通过，390px 无溢出，未创建业务任务或修改数据库。

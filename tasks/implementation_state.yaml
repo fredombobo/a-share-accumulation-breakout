@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T09:10:00+08:00"
+updated_at: "2026-08-30T09:31:16+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -14,11 +14,12 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now:
-  - GLOBAL-RUN-PROGRESS-VISIBILITY
+ready_now: []
 tasks:
   GLOBAL-RUN-PROGRESS-VISIBILITY:
-    status: ready
+    status: complete
+    started_at: "2026-08-30T09:10:00+08:00"
+    completed_at: "2026-08-30T09:31:16+08:00"
     work_package: WP92
     dependencies:
       - WINDOWS_SCAN_PROGRESS_REPLACE
@@ -29,10 +30,21 @@ tasks:
       - "web/frontend/src/App.tsx"
       - "web/frontend/src/api/client.ts"
       - "web/frontend/src/components/GlobalRunProgress.tsx"
+      - "web/frontend/src/layout/Topbar.tsx"
+      - "web/frontend/src/pages/Overview.tsx"
+      - "web/frontend/src/pages/ProfessionalBacktest.tsx"
       - "web/frontend/src/styles/theme.css"
       - "web/frontend/tests/global-run-progress.test.tsx"
-      - "tests/test_scan_runtime.py"
-    note: "用户要求运行任务必须有显眼进度，并能判断是否长时间无推进；只展示服务端事实，不伪造进度。"
+      - "web/frontend/tests/v2-guided-flow.spec.ts"
+      - "tests/test_scan_progress_io.py"
+    result: "docs/ACCEPTANCE-GLOBAL-RUN-PROGRESS-2026-08-30.md"
+    note: "全局进度只展示服务端事实；刷新和切页可恢复，供应商无百分比时明确使用不定进度。"
+    completed_evidence:
+      - "commit a42253c：全局进度组件、扫描生命周期时间、跨页恢复、3 分钟疑似停滞提示"
+      - "严格质量门：Ruff、Mypy 25 files、strict architecture、968 Pytest、9 Vitest、production build PASS"
+      - "Playwright 6 passed：真实 aria-valuenow、跨页保持、键盘与 390px 无横向溢出"
+      - "真实 8001 只读注入验收：46%/阶段/耗时可见，切换到 /backtest 后仍在，0 浏览器错误"
+      - "8001 产品身份 accumulation_breakout；OpenAPI 36 条、backtest=7、paper=0；LIVE_TRADING_ENABLED=false"
   PROFESSIONAL-BACKTEST-AI-REVIEW:
     status: complete
     started_at: "2026-08-29T19:05:00+08:00"
