@@ -235,6 +235,8 @@ test('今日扫描参数可手工输入且明确标记未回测验证', async ({
   await page.goto('/')
   await page.getByRole('button', { name: '手动设置研究参数' }).click()
   await expect(page.getByRole('heading', { name: '手工今日研究参数' })).toBeVisible()
+  await expect(page.getByLabel('止损（%）')).toHaveValue('7')
+  await expect(page.getByLabel('止盈（%）')).toHaveValue('12')
   await page.getByLabel('止盈（%）').fill('18')
   page.once('dialog', (dialog) => dialog.accept())
   await page.getByRole('button', { name: '确认保存手工参数' }).click()

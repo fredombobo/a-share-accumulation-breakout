@@ -67,6 +67,10 @@ function profileSourceLabel(state: StrategyProfileState): string {
   return '回测验证后人工启用'
 }
 
+function percentInputValue(value: number): number {
+  return Number((value * 100).toFixed(8))
+}
+
 export default function Overview() {
   const nav = useNavigate()
   const cached = loadOverviewCache()
@@ -639,8 +643,8 @@ export default function Overview() {
               <small>
                 横盘 {String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日 ·
                 突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)} ·
-                止损 {Number(profileState.active.exit_reference.stop_pct) * 100}% ·
-                止盈 {Number(profileState.active.exit_reference.target_pct ?? 0.12) * 100}% ·
+                止损 {percentInputValue(Number(profileState.active.exit_reference.stop_pct))}% ·
+                止盈 {percentInputValue(Number(profileState.active.exit_reference.target_pct ?? 0.12))}% ·
                 <span className="mono"> {profileState.active.config_hash}</span>
               </small>
               <small>{profileState.boundary.notice}</small>
@@ -668,15 +672,15 @@ export default function Overview() {
             <div className="manual-profile-grid">
               <label><span>横盘最短（交易日）</span><input type="number" min="20" max="200" value={manualProfile.box_min_days} onChange={(event) => updateManualNumber('box_min_days', event.target.value)} /></label>
               <label><span>横盘最长（交易日）</span><input type="number" min="40" max="240" value={manualProfile.box_max_days} onChange={(event) => updateManualNumber('box_max_days', event.target.value)} /></label>
-              <label><span>箱体最大振幅（%）</span><input type="number" min="5" max="60" step="0.5" value={manualProfile.box_max_amp * 100} onChange={(event) => updateManualNumber('box_max_amp', event.target.value, true)} /></label>
+              <label><span>箱体最大振幅（%）</span><input type="number" min="5" max="60" step="0.5" value={percentInputValue(manualProfile.box_max_amp)} onChange={(event) => updateManualNumber('box_max_amp', event.target.value, true)} /></label>
               <label><span>突破量 / 箱体均量</span><input type="number" min="1" max="5" step="0.1" value={manualProfile.breakout_vol_ratio} onChange={(event) => updateManualNumber('breakout_vol_ratio', event.target.value)} /></label>
-              <label><span>突破最小涨幅（%）</span><input type="number" min="0.1" max="15" step="0.1" value={manualProfile.breakout_chg_min * 100} onChange={(event) => updateManualNumber('breakout_chg_min', event.target.value, true)} /></label>
-              <label><span>突破最大涨幅（%）</span><input type="number" min="1" max="30" step="0.1" value={manualProfile.breakout_chg_max * 100} onChange={(event) => updateManualNumber('breakout_chg_max', event.target.value, true)} /></label>
+              <label><span>突破最小涨幅（%）</span><input type="number" min="0.1" max="15" step="0.1" value={percentInputValue(manualProfile.breakout_chg_min)} onChange={(event) => updateManualNumber('breakout_chg_min', event.target.value, true)} /></label>
+              <label><span>突破最大涨幅（%）</span><input type="number" min="1" max="30" step="0.1" value={percentInputValue(manualProfile.breakout_chg_max)} onChange={(event) => updateManualNumber('breakout_chg_max', event.target.value, true)} /></label>
               <label><span>突破量 / 前 5 日均量</span><input type="number" min="0.8" max="5" step="0.1" value={manualProfile.breakout_vs_recent_vol_ratio} onChange={(event) => updateManualNumber('breakout_vs_recent_vol_ratio', event.target.value)} /></label>
               <label><span>近期突破观察窗（日）</span><input type="number" min="1" max="20" value={manualProfile.breakout_window_days} onChange={(event) => updateManualNumber('breakout_window_days', event.target.value)} /></label>
               <label><span>建仓量 / 前 5 日均量</span><input type="number" min="1" max="4" step="0.1" value={manualProfile.vol_ratio_min} onChange={(event) => updateManualNumber('vol_ratio_min', event.target.value)} /></label>
-              <label className="risk-field"><span>止损（%）</span><input type="number" min="1" max="25" step="0.5" value={manualProfile.stop_pct * 100} onChange={(event) => updateManualNumber('stop_pct', event.target.value, true)} /></label>
-              <label className="risk-field"><span>止盈（%）</span><input type="number" min="2" max="100" step="0.5" value={manualProfile.target_pct * 100} onChange={(event) => updateManualNumber('target_pct', event.target.value, true)} /></label>
+              <label className="risk-field"><span>止损（%）</span><input type="number" min="1" max="25" step="0.5" value={percentInputValue(manualProfile.stop_pct)} onChange={(event) => updateManualNumber('stop_pct', event.target.value, true)} /></label>
+              <label className="risk-field"><span>止盈（%）</span><input type="number" min="2" max="100" step="0.5" value={percentInputValue(manualProfile.target_pct)} onChange={(event) => updateManualNumber('target_pct', event.target.value, true)} /></label>
               <label><span>二次出货观察窗（日）</span><input type="number" min="3" max="40" value={manualProfile.exit_window} onChange={(event) => updateManualNumber('exit_window', event.target.value)} /></label>
               <label><span>强势日清零根数</span><input type="number" min="1" max="10" value={manualProfile.strong_reset} onChange={(event) => updateManualNumber('strong_reset', event.target.value)} /></label>
               <label className="manual-checkbox"><input type="checkbox" checked={manualProfile.require_structure} onChange={(event) => setManualProfile((current) => current ? { ...current, require_structure: event.target.checked } : current)} /><span>要求完整吸筹结构</span></label>

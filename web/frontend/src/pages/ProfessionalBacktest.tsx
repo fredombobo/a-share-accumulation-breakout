@@ -98,7 +98,7 @@ function ParameterEditor({
     return percentage ? parsed / 100 : parsed
   }
   const displayValue = (value: number | boolean) => (
-    typeof value === 'number' && percentage ? value * 100 : value
+    typeof value === 'number' && percentage ? Number((value * 100).toFixed(8)) : value
   )
   const switchMode = (mode: ParameterSpec['mode']) => {
     const fallback = definition.default
