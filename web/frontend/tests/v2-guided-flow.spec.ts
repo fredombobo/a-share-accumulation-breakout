@@ -54,6 +54,23 @@ async function mockBackendApi(page: Page, options: { activeScan?: boolean; onPre
         industries: classification === 'industry' ? [{ name: '半导体', count: 30 }] : [], stocks: [], stock_count: 90,
       }
       else if (path === '/api/backtest/latest') body = { task: null }
+      else if (path === '/api/backtest/profile') body = {
+        active: {
+          profile_id: 'default', name: '系统默认', version: '1.0.0', schema_version: 1,
+          is_default: true, status: 'active', storage_status: 'built_in', config_hash: 'default-hash',
+          entry: { box_min_days: 20, box_max_days: 125, breakout_vol_ratio: 1.6 },
+          exit_reference: { stop_pct: 0.07 }, required_scan_days: 160,
+          source: { kind: 'BUILT_IN', task_id: null }, notes: [],
+        },
+        history: [],
+        boundary: {
+          scope: 'DAILY_A_POOL_TECHNICAL_ENTRY', manual_activation_required: true,
+          automatic_promotion: false, b_pool_uses_profile: false,
+          daily_extra_gates: ['资金流', '基本面'],
+          notice: '只统一 A 池技术入场参数；每日额外门禁继续执行。',
+        },
+        live_trading_enabled: false,
+      }
       else if (path === '/api/backtest/preview') {
         options.onPreview?.(route.request().postDataJSON())
         body = {
@@ -97,6 +114,7 @@ test('旧实验、纸面与机构入口全部回到每日选股', async ({ page 
 test('侧栏保留两个业务入口并提供独立使用说明', async ({ page }) => {
   await mockBackendApi(page)
   await page.goto('/')
+  await expect(page.getByText('系统默认')).toBeVisible()
   await expect(page.getByRole('button', { name: /每日选股/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /专业回测/ })).toBeVisible()
   await expect(page.getByRole('button', { name: /使用说明/ })).toBeVisible()

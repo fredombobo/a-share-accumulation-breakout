@@ -355,7 +355,10 @@ export default function ProfessionalBacktest() {
       .catch((reason) => active && setError(errorMessage(reason)))
       .finally(() => active && setBusy(''))
     api.backtestProfile()
-      .then((nextProfile) => active && setProfileState(nextProfile))
+      .then((nextProfile) => {
+        if (!nextProfile?.active?.entry || !nextProfile?.boundary) return
+        if (active) setProfileState(nextProfile)
+      })
       .catch(() => undefined)
     return () => { active = false }
   }, [])

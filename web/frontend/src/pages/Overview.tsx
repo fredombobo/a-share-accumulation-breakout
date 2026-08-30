@@ -171,7 +171,11 @@ export default function Overview() {
 
   useEffect(() => {
     api.backtestProfile()
-      .then((next) => { setProfileState(next); setProfileErr('') })
+      .then((next) => {
+        if (!next?.active?.entry || !next?.boundary) throw new Error('参数档案接口返回不完整')
+        setProfileState(next)
+        setProfileErr('')
+      })
       .catch((reason: unknown) => setProfileErr(reason instanceof Error ? reason.message : String(reason)))
   }, [])
 
