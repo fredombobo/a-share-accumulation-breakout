@@ -73,7 +73,7 @@ def main() -> None:
         page.get_by_role("button", name="检查参数空间").click()
         dialog = page.get_by_role("dialog", name="参数检查通过")
         dialog.wait_for(timeout=60_000)
-        assert "不会自动启动回测" in dialog.inner_text()
+        assert "没有启动回测" in dialog.inner_text()
         dialog.get_by_role("button", name="查看冻结预览").click()
         page.get_by_role("button", name="启动研究回测").wait_for()
 
@@ -84,7 +84,7 @@ def main() -> None:
 
         page.get_by_role("button", name="使用说明 逻辑 · 操作 · 术语").click()
         page.get_by_role("heading", name="使用说明").wait_for()
-        page.get_by_role("button", name="研究回测 参数 · OOS · 成本").click()
+        page.get_by_role("button", name="研究回测 多参数 · OOS · 成本").click()
         page.get_by_role("heading", name="多参数研究回测").wait_for()
 
         page.set_viewport_size({"width": 390, "height": 844})
