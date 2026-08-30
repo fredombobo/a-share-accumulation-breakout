@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-31T05:39:02+08:00"
+updated_at: "2026-08-31T07:14:29+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -16,6 +16,32 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  V2-P7.7-R-POST-BREAKOUT-SUPPLY-DRY-UP:
+    status: in_progress
+    started_at: "2026-08-31T07:14:29+08:00"
+    work_package: WP98
+    dependencies:
+      - PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION
+      - V2-P7.6-R-RESILIENT-ABSORPTION
+    plan: "docs/V2-R-POST-BREAKOUT-SUPPLY-DRY-UP-PREREGISTRATION-2026-08-31.md"
+    note: >
+      只验证突破后下一交易日供给枯竭与价格接受这一项新时间序列机制；不调整
+      市场状态、箱体、量比、涨幅或退出阈值。固定一组既有参数、600 只冻结股票，
+      使用 sample_step=1 只运行一次历史诊断；历史 PASS 也不得直接晋级。
+    planned_files:
+      - "ab_screener/research/post_breakout_supply_dry_up.py"
+      - "ab_screener/research/resilient_absorption.py"
+      - "optimizer.py"
+      - "ab_screener/research/professional_runner.py"
+      - "web/frontend/src/api/client.ts"
+      - "web/frontend/src/pages/ProfessionalBacktest.tsx"
+      - "tests/test_post_breakout_supply_dry_up.py"
+      - "tests/test_professional_backtest_api.py"
+      - "web/frontend/tests/professional-backtest.test.tsx"
+    current_evidence:
+      - "预登记规则已冻结；尚未实现，未读取任何新机制历史结果"
+      - "WP97 基准 probt-e0a5962dc8aa 保持不可变，WF2=0，EXPLORATORY_WEAK"
+      - "LIVE_TRADING_ENABLED=false"
   PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION:
     status: complete
     started_at: "2026-08-30T22:30:00+08:00"

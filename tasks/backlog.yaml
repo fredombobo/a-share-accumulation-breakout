@@ -566,3 +566,21 @@ tasks:
       v1.3/v1.4 回测指标和权益哈希完全一致。严格质量门（994 Pytest、16 Vitest、
       Ruff、Mypy、严格架构、生产构建）及真实 8001 浏览器验收通过。策略仍为
       EXPLORATORY_WEAK，WF2 0 笔，禁止晋级；LIVE_TRADING_ENABLED=false。
+
+  - id: V2-P7.7-R-POST-BREAKOUT-SUPPLY-DRY-UP
+    title: 预登记突破后供给枯竭确认机制并执行逐日复验
+    status: in_progress
+    work_package: WP98
+    phase: P7
+    dependencies:
+      - PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION
+      - V2-P7.6-R-RESILIENT-ABSORPTION
+    plan: docs/V2-R-POST-BREAKOUT-SUPPLY-DRY-UP-PREREGISTRATION-2026-08-31.md
+    acceptance:
+      - 机制只接受原严格突破后的下一交易日缩量站稳与正 CLV，不修改既有阈值
+      - 信号推迟到确认日收盘且最早下一开盘成交，缺失或非相邻交易日 fail-closed
+      - 机制无参数搜索，固定一个既有参数组合、600 只冻结股票和 sample_step=1
+      - 机制身份贯穿 IS、OOS、WF、双基线、2 倍成本、权益路径和 Markdown 报告
+      - 旧基础机制及已否决韧性机制结果不变，旧任务保持不可变
+      - 严格质量门和真实 8001 浏览器验收通过
+      - 历史通过也只记为 HISTORICAL_SUPPORT_ONLY，实盘保持关闭
