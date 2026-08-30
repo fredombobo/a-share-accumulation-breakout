@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T10:46:14+08:00"
+updated_at: "2026-08-30T11:20:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -16,6 +16,34 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  MANUAL-RESEARCH-PARAMETERS-LARGE-GRID:
+    status: in_progress
+    started_at: "2026-08-30T11:20:00+08:00"
+    work_package: WP95
+    dependencies:
+      - BACKTEST-TO-DAILY-PROFILE-CLOSED-LOOP
+    plan: "docs/MANUAL-RESEARCH-PARAMETERS-LARGE-GRID-PLAN-2026-08-30.md"
+    planned_files:
+      - "ab_screener/domain/profile.py"
+      - "ab_screener/data/strategy_profile_repository.py"
+      - "ab_screener/application/strategy_profile_service.py"
+      - "ab_screener/research/professional_grid.py"
+      - "ab_screener/research/professional_runner.py"
+      - "ab_screener/research/backtest_engine.py"
+      - "ab_screener/api/routers/professional_backtest.py"
+      - "optimizer.py"
+      - "trade_sim.py"
+      - "trade_plan.py"
+      - "ab_screener/screener/orchestrator.py"
+      - "web/frontend/src/api/client.ts"
+      - "web/frontend/src/pages/Overview.tsx"
+      - "web/frontend/src/pages/ProfessionalBacktest.tsx"
+      - "web/frontend/src/pages/Guide.tsx"
+      - "web/frontend/src/styles/theme.css"
+      - "docs/小白使用手册.md"
+    note: >
+      手工参数不要求回测通过，但必须显式标记未验证并保留不可变版本；专业回测
+      仍遵守原证据门槛。组合预算只提升探索容量，不改变反过拟合或正式晋级规则。
   BACKTEST-TO-DAILY-PROFILE-CLOSED-LOOP:
     status: complete
     started_at: "2026-08-30T10:12:18+08:00"

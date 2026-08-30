@@ -493,3 +493,20 @@ tasks:
       8001 桌面/390px 验收通过。生产档案仍为默认且历史 0，现有弱回测被正确阻断，
       LIVE_TRADING_ENABLED=false。证据见
       docs/ACCEPTANCE-BACKTEST-DAILY-PROFILE-CLOSED-LOOP-2026-08-30.md。
+
+  - id: MANUAL-RESEARCH-PARAMETERS-LARGE-GRID
+    title: 手工今日研究参数、十倍组合预算与止盈止损闭环
+    status: ready
+    work_package: WP95
+    phase: product-closure
+    dependencies:
+      - BACKTEST-TO-DAILY-PROFILE-CLOSED-LOOP
+    plan: docs/MANUAL-RESEARCH-PARAMETERS-LARGE-GRID-PLAN-2026-08-30.md
+    acceptance:
+      - 用户可不依赖回测直接启用带来源标记的手工今日研究参数
+      - 手工参数与回测档案、系统默认相互独立且扫描冻结完整快照与哈希
+      - 回测硬上限提升至 5120，超过 512 只警告并要求确认，超过 5120 拒绝
+      - 止损与止盈百分比进入真实 T+1 回测退出、参数身份、报告和每日风险参考
+      - 页面明确定位为研究学习平台，不构成荐股或买入指令
+      - 严格质量门与真实 8001 桌面、390px 浏览器验收通过
+      - LIVE_TRADING_ENABLED 保持 false
