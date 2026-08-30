@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T09:31:16+08:00"
+updated_at: "2026-08-30T09:37:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -14,8 +14,34 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now: []
+ready_now:
+  - IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS
 tasks:
+  IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS:
+    status: ready
+    work_package: WP93
+    dependencies:
+      - PROFESSIONAL-BACKTEST-AI-REVIEW
+      - GLOBAL-RUN-PROGRESS-VISIBILITY
+    plan: "docs/IN-APP-GUIDE-CLASSIFICATIONS-PLAN-2026-08-30.md"
+    planned_files:
+      - "ab_screener/domain/market_classification.py"
+      - "ab_screener/api/routers/legacy_market.py"
+      - "ab_screener/research/professional_grid.py"
+      - "ab_screener/research/professional_runner.py"
+      - "ab_screener/api/routers/professional_backtest.py"
+      - "web/frontend/src/App.tsx"
+      - "web/frontend/src/api/client.ts"
+      - "web/frontend/src/layout/Sidebar.tsx"
+      - "web/frontend/src/layout/Topbar.tsx"
+      - "web/frontend/src/pages/Guide.tsx"
+      - "web/frontend/src/pages/Overview.tsx"
+      - "web/frontend/src/pages/ProfessionalBacktest.tsx"
+      - "web/frontend/src/styles/theme.css"
+      - "tests/test_market_classifications.py"
+      - "tests/test_professional_grid.py"
+      - "web/frontend/tests/v2-guided-flow.spec.ts"
+    note: "仅使用本地 stock_basic 真实字段；未具备历史成员数据的分类保持不可宣称。"
   GLOBAL-RUN-PROGRESS-VISIBILITY:
     status: complete
     started_at: "2026-08-30T09:10:00+08:00"

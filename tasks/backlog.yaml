@@ -445,3 +445,20 @@ tasks:
       行情同步在供应商无分项进度时使用明确的不定进度。切页、失焦、重新聚焦和刷新
       均可恢复活动任务，3 分钟无真实变化会谨慎提示可能仍在重计算。严格质量门与
       真实 8001 浏览器验收通过，390px 无溢出，未创建业务任务或修改数据库。
+
+  - id: IN-APP-GUIDE-CLASSIFICATION-DIMENSIONS
+    title: 站内详细说明书与多标准板块分类
+    status: ready
+    work_package: WP93
+    phase: product-usability
+    dependencies:
+      - PROFESSIONAL-BACKTEST-AI-REVIEW
+      - GLOBAL-RUN-PROGRESS-VISIBILITY
+    plan: docs/IN-APP-GUIDE-CLASSIFICATIONS-PLAN-2026-08-30.md
+    acceptance:
+      - 发布页面提供详细使用说明、系统逻辑、回测解释、常见问题和边界
+      - 首页资金热力图与板块资金流可切换细分行业、上市板块和地域
+      - 专业回测可按相同分类标准搜索、多选并冻结股票代码与哈希
+      - 只开放 stock_basic 真实字段并披露当前分类非历史 PIT
+      - 旧 industries 请求兼容，未知分类和分组结构化拒绝
+      - 严格质量门与真实 8001 桌面、390px 浏览器验收通过
