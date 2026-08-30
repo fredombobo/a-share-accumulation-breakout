@@ -15,7 +15,7 @@ import pandas as pd
 
 from ab_screener.domain.entry_registry import active_definition_id as _active_entry_definition_id
 from ab_screener.domain.entry_registry import report_entry_fingerprint
-from config import BT_MIN_TRADES
+from config import BENCH_MAX_HOLD_DAYS, BT_MIN_TRADES
 
 if TYPE_CHECKING:
     from ab_screener.research.pit_reader import ResearchPitSnapshot
@@ -122,6 +122,9 @@ def run_single_backtest(
         "vol_ratio_min": float((exit_params or {}).get("vol_ratio_min") or 1.5),
         "strong_reset": int((exit_params or {}).get("strong_reset") or 3),
         "exit_window": int((exit_params or {}).get("exit_window") or 10),
+        "max_hold_days": int(
+            (exit_params or {}).get("max_hold_days") or BENCH_MAX_HOLD_DAYS
+        ),
         "stop_pct": float((exit_params or {}).get("stop_pct") or 0.07),
     }
     if (exit_params or {}).get("target_pct") is not None:

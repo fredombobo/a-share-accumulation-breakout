@@ -42,6 +42,11 @@ const catalog: BacktestCatalog = {
       minimum: 0.02, maximum: 1, default: { mode: 'values', values: [0.1, 0.12] },
       description: 'T+1 止盈',
     },
+    {
+      key: 'max_hold_days', title: '最长持有天数', group: 'exit', value_type: 'integer',
+      minimum: 2, maximum: 120, default: { mode: 'fixed', value: 30 },
+      description: '到期退出',
+    },
   ],
   conditions: [],
   research_boundary: 'EXPLORATORY_ONLY',
@@ -103,21 +108,22 @@ const completedTask: BacktestTask = {
     candidate_eligible: false, can_claim_edge: false, request: preview.prepared,
     leaderboard: [{
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
-      exit: { stop_pct: 0.05, target_pct: 0.15, exit_window: 10 },
+      exit: { stop_pct: 0.05, target_pct: 0.15, max_hold_days: 30, exit_window: 10 },
       is: { net_n_trades: 50, net_profit_factor: 1.42, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 },
-      oos: { net_n_trades: 40, net_profit_factor: 1.22, portfolio_total_return: 0.08, portfolio_max_drawdown: 0.09 },
+      oos: { net_n_trades: 40, net_profit_factor: 1.22, net_avg_return: 0.08, portfolio_max_drawdown: 0.09 },
     }],
     selected: {
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
-      exit: { stop_pct: 0.05, target_pct: 0.15, exit_window: 10 },
+      exit: { stop_pct: 0.05, target_pct: 0.15, max_hold_days: 30, exit_window: 10 },
       is: { net_n_trades: 50, net_profit_factor: 1.42, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 },
-      oos: { net_n_trades: 40, net_profit_factor: 1.22, portfolio_total_return: 0.08, portfolio_max_drawdown: 0.09 },
+      oos: { net_n_trades: 40, net_profit_factor: 1.22, net_avg_return: 0.08, portfolio_max_drawdown: 0.09 },
     },
     wf: {
       evidence_complete: true, wf_pass: true, train_mean_pf: 1.35, oos_mean_pf: 1.18,
       wf_detail: [
         { window: 'WF1', train_pf: 1.4, test_pf: 1.2, test_dd: 0.08, test_n: 35 },
         { window: 'WF2', train_pf: 1.3, test_pf: 1.16, test_dd: 0.1, test_n: 32 },
+        { window: 'WF3', train_pf: 1.1, test_pf: null, test_dd: null, test_n: 0 },
       ],
     },
     baselines: {
@@ -206,10 +212,17 @@ describe('专业回测工作台', () => {
     expect(screen.getByRole('region', { name: '净收益对照' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'Profit Factor 对照' })).toBeVisible()
     expect(screen.getByRole('region', { name: '参数风险收益分布' })).toBeVisible()
-    expect(screen.getByRole('region', { name: '排行榜前十的 OOS 收益' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '独立路径前十的 OOS 收益' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'WF 窗口稳定性' })).toBeVisible()
     expect(screen.getAllByTestId('result-echart')).toHaveLength(5)
     expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('止盈')
+    expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('最长持有')
+    expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('二次出货观察窗')
+    expect(screen.getByRole('heading', { name: '入选参数与独立路径排行榜' })).toBeVisible()
+    expect(screen.getByRole('columnheader', { name: '等效参数' })).toBeVisible()
+    expect(screen.getAllByText('8.00%').length).toBeGreaterThan(0)
+    expect(screen.getByText('0 笔（无验证证据）')).toBeVisible()
+    expect(screen.getByText(/这是抽样研究，不是逐日完整回测/)).toBeVisible()
     expect(screen.getAllByText('15.00%')).toHaveLength(2)
     expect(screen.getByText(/不绘制或推测净值曲线/)).toBeVisible()
   })

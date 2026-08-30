@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.pop("PYTHONPATH", None)
 
 from config import (
+    BENCH_MAX_HOLD_DAYS,
     BT_IS_END,
     BT_IS_START,
     BT_OOS_END,
@@ -47,6 +48,8 @@ def split_windows() -> dict:
 
 def _single_grid(combo: dict) -> dict:
     keys = ["vol_ratio_min", "strong_reset", "exit_window", "stop_pct"]
+    if combo.get("max_hold_days") is not None:
+        keys.append("max_hold_days")
     if combo.get("target_pct") is not None:
         keys.append("target_pct")
     return {key: [combo[key]] for key in keys}
@@ -56,13 +59,16 @@ _PARAMETER_KEYS = ("vol_ratio_min", "strong_reset", "exit_window", "stop_pct")
 
 
 def _combo_from_row(row: dict) -> dict[str, Any]:
-    return {
+    result = {
         "strategy": str(row["strategy"]),
         "vol_ratio_min": float(row["vol_ratio_min"]),
         "strong_reset": int(row["strong_reset"]),
         "exit_window": int(row["exit_window"]),
         "stop_pct": float(row["stop_pct"]),
     }
+    if row.get("max_hold_days") is not None:
+        result["max_hold_days"] = int(row["max_hold_days"])
+    return result
 
 
 def predeclared_parameter_neighborhood(
@@ -168,6 +174,7 @@ def run_is_oos(
             "vol_ratio_min": float(single["vol_ratio_min"]),
             "strong_reset": int(single["strong_reset"]),
             "exit_window": int(single["exit_window"]),
+            "max_hold_days": int(single.get("max_hold_days") or BENCH_MAX_HOLD_DAYS),
             "stop_pct": float(single["stop_pct"]),
         }
         is_row = eval_combo(

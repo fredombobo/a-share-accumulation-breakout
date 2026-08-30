@@ -18,6 +18,10 @@ import {
 } from '../api/client'
 import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
 import BacktestResultCharts from '../components/BacktestResultCharts'
+import {
+  portfolioMaxDrawdown,
+  portfolioTotalReturn,
+} from '../components/backtestMetricContract'
 import ParameterCheckDialog, { type ParameterCheckResult } from '../components/ParameterCheckDialog'
 
 const ACTIVE_STATUSES: BacktestTask['status'][] = ['pending', 'running', 'cancelling']
@@ -25,6 +29,7 @@ const PRIMARY_KEYS = new Set([
   'box_min_days',
   'box_max_days',
   'breakout_vol_ratio',
+  'max_hold_days',
   'exit_window',
   'strong_reset',
 ])
@@ -85,12 +90,13 @@ const PARAMETER_LABELS: Record<string, string> = {
   vol_ratio_min: '建仓量比',
   stop_pct: '止损',
   target_pct: '止盈',
-  exit_window: '最长持有',
+  max_hold_days: '最长持有',
+  exit_window: '二次出货观察窗',
   strong_reset: '强势重置',
 }
 
 const PERCENT_PARAMETER_KEYS = new Set(['box_max_amp', 'breakout_chg_min', 'breakout_chg_max', 'stop_pct', 'target_pct'])
-const DAY_PARAMETER_KEYS = new Set(['box_min_days', 'box_max_days', 'breakout_window_days', 'exit_window'])
+const DAY_PARAMETER_KEYS = new Set(['box_min_days', 'box_max_days', 'breakout_window_days', 'max_hold_days', 'exit_window'])
 
 function formatParameterValue(key: string, value: number | boolean): string {
   if (typeof value === 'boolean') return value ? '启用' : '关闭'
@@ -100,8 +106,8 @@ function formatParameterValue(key: string, value: number | boolean): string {
 }
 
 function metricRows(metrics: BacktestMetrics | null | undefined) {
-  const totalReturn = metrics?.portfolio_total_return ?? metrics?.net_total_return ?? metrics?.net_avg_return
-  const maxDrawdown = metrics?.portfolio_max_drawdown ?? metrics?.net_max_drawdown
+  const totalReturn = portfolioTotalReturn(metrics)
+  const maxDrawdown = portfolioMaxDrawdown(metrics)
   return [
     ['净成交', metrics?.net_n_trades == null ? 'n/a' : `${metrics.net_n_trades} 笔`],
     ['净胜率', formatPercent(metrics?.net_win_rate)],
@@ -270,6 +276,12 @@ function BacktestResultView({
         {(result.verdict_reasons || []).map((reason) => <div key={reason}>检查项：{reason}</div>)}
         {!result.candidate_eligible && <div>晋级状态：未晋级。需要另行预登记后复验。</div>}
       </div>
+      {result.request.sample_step > 1 && (
+        <div className="guide-feedback warning" role="note">
+          <b>这是抽样研究，不是逐日完整回测</b>
+          <span>当前每 {result.request.sample_step} 个交易日取一个决策截面；正式逐日一致性复验应使用步长 1。</span>
+        </div>
+      )}
       <section className={`profile-promotion-card ${activation?.can_activate ? 'eligible' : 'blocked'}`}>
         <div>
           <span className="guide-eyebrow">回测 → 今日选股</span>
@@ -317,13 +329,24 @@ function BacktestResultView({
                 <div className="stat"><span className="k">证据完整</span><span className="v">{result.wf?.evidence_complete ? '是' : '否'}</span></div>
                 <div className="stat"><span className="k">稳定性通过</span><span className="v">{result.wf?.wf_pass ? '是' : '否'}</span></div>
                 <div className="stat"><span className="k">窗口平均 PF</span><span className="v">{formatNumber(result.wf?.oos_mean_pf)}</span></div>
+                {(result.wf?.wf_detail || []).map((row, index) => (
+                  <div className="stat" key={row.window || index}>
+                    <span className="k">{row.window || `WF${index + 1}`} 测试成交</span>
+                    <span className="v">{row.test_n === 0 ? '0 笔（无验证证据）' : row.test_n == null ? 'n/a' : `${row.test_n} 笔`}</span>
+                  </div>
+                ))}
               </div>
             </div>
           </section>
           <section className="card section-gap">
             <div className="h-sec">
-              <h2>入选参数与排行榜</h2>
-              <span className="pill">已评估 {result.evaluated_combinations ?? result.leaderboard.length} 组</span>
+              <h2>入选参数与独立路径排行榜</h2>
+              <span className="pill">
+                名义 {result.path_analysis?.nominal_combinations ?? result.evaluated_combinations ?? result.leaderboard.length} 组
+                {result.path_analysis?.evidence_complete && result.path_analysis.independent_joint_paths != null
+                  ? ` · 独立路径 ${result.path_analysis.independent_joint_paths}`
+                  : ''}
+              </span>
             </div>
             <div className="selected-parameter-grid" aria-label="入选参数摘要">
               {[...Object.entries(selected.signal), ...Object.entries(selected.exit)].map(([key, value]) => (
@@ -338,7 +361,7 @@ function BacktestResultView({
               <code>{JSON.stringify({ signal: selected.signal, exit: selected.exit })}</code>
               <code>参数 ID: {selected.param_id} · 输入: {result.request.input_hash}</code>
             </details>
-            <Leaderboard rows={result.leaderboard.slice(0, 10)} />
+            <Leaderboard rows={(result.independent_leaderboard || result.leaderboard).slice(0, 10)} />
           </section>
         </>
       ) : <div className="empty section-gap"><strong>没有可入选组合</strong>当前样本没有达到最低成交证据要求。</div>}
@@ -355,18 +378,20 @@ function Leaderboard({ rows }: { rows: BacktestLeaderboardRow[] }) {
   return (
     <div className="table-scroll">
       <table className="data">
-        <thead><tr><th>排名</th><th>横盘最长</th><th>突破量比</th><th>止损</th><th>止盈</th><th>退出窗</th><th>IS PF</th><th>OOS PF</th><th>OOS 净收益</th><th>OOS 成交</th></tr></thead>
+        <thead><tr><th>排名</th><th>等效参数</th><th>横盘最长</th><th>突破量比</th><th>止损</th><th>止盈</th><th>最长持有</th><th>二次出货窗</th><th>IS PF</th><th>OOS PF</th><th>OOS 净收益</th><th>OOS 成交</th></tr></thead>
         <tbody>{rows.map((row, index) => (
           <tr key={row.param_id}>
             <td className="num">{index + 1}</td>
+            <td className="num">{row.equivalent_parameter_count ?? 1} 组</td>
             <td className="num">{String(row.signal.box_max_days)}</td>
             <td className="num">{String(row.signal.breakout_vol_ratio)}</td>
             <td className="num">{formatPercent(Number(row.exit.stop_pct))}</td>
             <td className="num">{formatPercent(Number(row.exit.target_pct))}</td>
+            <td className="num">{String(row.exit.max_hold_days ?? 30)}</td>
             <td className="num">{String(row.exit.exit_window)}</td>
             <td className="num">{formatNumber(row.is.net_profit_factor)}</td>
             <td className="num">{formatNumber(row.oos.net_profit_factor)}</td>
-            <td className="num">{formatPercent(row.oos.portfolio_total_return)}</td>
+            <td className="num">{formatPercent(portfolioTotalReturn(row.oos))}</td>
             <td className="num">{row.oos.net_n_trades ?? 0}</td>
           </tr>
         ))}</tbody>
@@ -791,7 +816,7 @@ export default function ProfessionalBacktest() {
             />
           )}
           {!task?.result && !activeTask && (
-            <div className="empty section-gap"><strong>等待一次研究回测</strong>默认参数会搜索横盘 60 至 200 天，并核验突破量比、止损、止盈和退出窗口。</div>
+            <div className="empty section-gap"><strong>等待一次研究回测</strong>默认参数会搜索横盘 60 至 200 天，并核验突破量比、止损、止盈、最长持有和二次出货窗口。</div>
           )}
         </main>
       </div>

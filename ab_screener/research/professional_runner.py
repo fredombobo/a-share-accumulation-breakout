@@ -13,6 +13,10 @@ from typing import Any
 import pandas as pd
 
 from ab_screener.research.condition_plugins import resolve_enabled_conditions
+from ab_screener.research.portfolio_metric_contract import (
+    normalize_portfolio_metrics,
+    portfolio_total_return,
+)
 from ab_screener.research.professional_grid import (
     ProfessionalGridError,
     expand_parameter_space,
@@ -51,7 +55,7 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
     dates = _distinct_dates(db_path)
     windows = _resolve_windows(payload.get("windows"), dates)
     normalized = {
-        "contract_version": "professional-backtest-v1.2.0",
+        "contract_version": "professional-backtest-v1.3.0",
         "strategy": strategy,
         "sample_step": step,
         "max_codes": max_codes,
@@ -199,6 +203,8 @@ def execute_professional_run(
         progress("GRID", next_pct, f"参数组 {index + 1}/{len(signal_groups)} 完成")
 
     leaderboard = sorted(composites, key=_is_rank, reverse=True)
+    path_analysis = _path_analysis(leaderboard)
+    independent_leaderboard = _independent_leaderboard(leaderboard)
     best = next((row for row in leaderboard if int(row["is"].get("net_n_trades") or 0) > 0), None)
     if best is None:
         return {
@@ -208,6 +214,8 @@ def execute_professional_run(
             "request": prepared_request,
             "snapshot": snapshot.identity(),
             "leaderboard": leaderboard[:100],
+            "independent_leaderboard": independent_leaderboard[:100],
+            "path_analysis": path_analysis,
             "selected": None,
             "wf": None,
             "baselines": None,
@@ -237,9 +245,9 @@ def execute_professional_run(
     progress("BASELINES", 78, "生成固定种子随机与 MA20/60 基线")
     market = snapshot.load_daily(start=snapshot.data_start, end=windows["oos"][1])
     n_trades = max(20, int(best["oos"].get("net_n_trades") or 40))
-    hold_days = int(best["exit"]["exit_window"])
+    hold_days = int(best["exit"]["max_hold_days"])
     baselines = {
-        "random": _clean(
+        "random": normalize_portfolio_metrics(_clean(
             random_baseline_trades(
                 market,
                 n_trades=n_trades,
@@ -249,8 +257,8 @@ def execute_professional_run(
                 codes=list(snapshot.universe),
                 portfolio_policy=policy,
             )
-        ),
-        "ma20_60": _clean(
+        )),
+        "ma20_60": normalize_portfolio_metrics(_clean(
             ma_cross_baseline(
                 market,
                 hold_days=hold_days,
@@ -260,7 +268,7 @@ def execute_professional_run(
                 codes=list(snapshot.universe),
                 portfolio_policy=policy,
             )
-        ),
+        )),
     }
 
     progress("COST", 88, "对入选组合执行 2 倍成本压力")
@@ -283,7 +291,7 @@ def execute_professional_run(
     cost_stress = {
         "multiplier": "2x",
         "policy_fingerprint": stress_policy.fingerprint(),
-        "metrics": _clean(stress.get("metrics") or {}),
+        "metrics": normalize_portfolio_metrics(_clean(stress.get("metrics") or {})),
     }
 
     progress("REPORT", 96, "生成探索性研究报告")
@@ -300,7 +308,11 @@ def execute_professional_run(
             "fingerprint": policy.fingerprint(),
         },
         "leaderboard": [_clean(row) for row in leaderboard[:100]],
+        "independent_leaderboard": [
+            _clean(row) for row in independent_leaderboard[:100]
+        ],
         "evaluated_combinations": len(leaderboard),
+        "path_analysis": path_analysis,
         "selected": _clean(best),
         "wf": wf,
         "baselines": baselines,
@@ -382,6 +394,7 @@ def _exit_key(payload: dict[str, Any]) -> tuple[Any, ...]:
         round(float(payload["vol_ratio_min"]), 10),
         int(payload["strong_reset"]),
         int(payload["exit_window"]),
+        int(payload["max_hold_days"]),
         round(float(payload["stop_pct"]), 10),
         round(float(payload["target_pct"]), 10),
     )
@@ -392,13 +405,16 @@ _METRICS = (
     "net_n_trades", "net_win_rate", "net_avg_return", "net_profit_factor",
     "net_max_drawdown", "portfolio_status", "portfolio_total_return",
     "portfolio_max_drawdown", "portfolio_final_equity_fen", "portfolio_rejected_count",
+    "portfolio_equity_sha256",
 )
 
 
 def _metric_subset(row: dict[str, Any] | None) -> dict[str, Any]:
     if not row:
         return {"net_n_trades": 0, "evidence_complete": False}
-    result = {key: _clean(row.get(key)) for key in _METRICS if key in row}
+    result = normalize_portfolio_metrics(
+        {key: _clean(row.get(key)) for key in _METRICS if key in row}
+    )
     result["evidence_complete"] = bool(
         int(result.get("net_n_trades") or 0) > 0
         and result.get("portfolio_status") == "PASS"
@@ -410,7 +426,7 @@ def _is_rank(row: dict[str, Any]) -> tuple[float, float, int]:
     metrics = row["is"]
     return (
         _finite(metrics.get("net_profit_factor"), -1.0),
-        _finite(metrics.get("portfolio_total_return"), -1.0),
+        _finite(portfolio_total_return(metrics), -1.0),
         int(metrics.get("net_n_trades") or 0),
     )
 
@@ -435,6 +451,71 @@ def _clean(value: Any) -> Any:
     return value
 
 
+def _path_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Count exact portfolio paths; never infer equality from rounded metrics."""
+    nominal = len(rows)
+    if not rows:
+        return {
+            "method": "combined_portfolio_equity_sha256",
+            "evidence_complete": False,
+            "nominal_combinations": 0,
+            "independent_is_paths": None,
+            "independent_oos_paths": None,
+            "independent_joint_paths": None,
+            "duplicate_group_count": 0,
+        }
+    identities: list[tuple[str, str]] = []
+    for row in rows:
+        is_hash = str((row.get("is") or {}).get("portfolio_equity_sha256") or "")
+        oos_hash = str((row.get("oos") or {}).get("portfolio_equity_sha256") or "")
+        if not is_hash or not oos_hash:
+            return {
+                "method": "combined_portfolio_equity_sha256",
+                "evidence_complete": False,
+                "nominal_combinations": nominal,
+                "independent_is_paths": None,
+                "independent_oos_paths": None,
+                "independent_joint_paths": None,
+                "duplicate_group_count": 0,
+            }
+        identities.append((is_hash, oos_hash))
+    group_sizes: dict[tuple[str, str], int] = {}
+    for identity in identities:
+        group_sizes[identity] = group_sizes.get(identity, 0) + 1
+    return {
+        "method": "combined_portfolio_equity_sha256",
+        "evidence_complete": True,
+        "nominal_combinations": nominal,
+        "independent_is_paths": len({identity[0] for identity in identities}),
+        "independent_oos_paths": len({identity[1] for identity in identities}),
+        "independent_joint_paths": len(group_sizes),
+        "duplicate_group_count": sum(size > 1 for size in group_sizes.values()),
+    }
+
+
+def _independent_leaderboard(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse only rows proven to share the exact IS and OOS equity paths."""
+    result: list[dict[str, Any]] = []
+    by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        is_hash = str((row.get("is") or {}).get("portfolio_equity_sha256") or "")
+        oos_hash = str((row.get("oos") or {}).get("portfolio_equity_sha256") or "")
+        if not is_hash or not oos_hash:
+            result.append({**row, "equivalent_parameter_count": 1})
+            continue
+        identity = (is_hash, oos_hash)
+        existing = by_identity.get(identity)
+        if existing is None:
+            representative = {**row, "equivalent_parameter_count": 1}
+            by_identity[identity] = representative
+            result.append(representative)
+        else:
+            existing["equivalent_parameter_count"] = (
+                int(existing["equivalent_parameter_count"]) + 1
+            )
+    return result
+
+
 def _verdict(
     best: dict[str, Any],
     wf: dict[str, Any] | None,
@@ -450,13 +531,14 @@ def _verdict(
         reasons.append("滚动窗口证据不完整")
     elif not bool(wf.get("wf_pass")):
         reasons.append("滚动窗口稳定性未通过")
-    stress_return = (stress.get("metrics") or {}).get("portfolio_total_return")
+    stress_return = portfolio_total_return(stress.get("metrics") or {})
     if stress_return is None or float(stress_return) <= 0:
         reasons.append("2 倍成本下组合收益未保持为正")
-    candidate_return = oos.get("portfolio_total_return")
+    candidate_return = portfolio_total_return(oos)
     baseline_returns = [
-        item.get("portfolio_total_return") for item in baselines.values()
-        if item.get("portfolio_total_return") is not None
+        value
+        for item in baselines.values()
+        if (value := portfolio_total_return(item)) is not None
     ]
     if candidate_return is None or not baseline_returns or not all(
         float(candidate_return) > float(value) for value in baseline_returns
@@ -493,6 +575,13 @@ def _report_markdown(result: dict[str, Any]) -> str:
             f"- 结论：{result['verdict_label']}",
             f"- 参数空间：{result['request']['parameter_space']['count']} 组，"
             f"SHA-256 `{result['request']['parameter_space']['sha256']}`",
+            (
+                "- 独立收益路径："
+                f"{result['path_analysis']['independent_joint_paths']} / "
+                f"{result['path_analysis']['nominal_combinations']}"
+                if result.get("path_analysis", {}).get("evidence_complete")
+                else "- 独立收益路径：证据不完整（缺组合权益哈希）"
+            ),
             f"- 冻结股票池：{result['request']['universe']['count']} 只，"
             f"SHA-256 `{result['request']['universe']['sha256']}`",
             f"- 分类标准：{universe.get('classification_title', '细分行业')}，分组：{group_text}",

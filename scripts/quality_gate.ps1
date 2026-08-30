@@ -15,8 +15,11 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
-# 权威运行时：优先 .venv312（Python 3.12），退回系统 python。
-$Py = Join-Path $Root ".venv312\Scripts\python.exe"
+# 权威运行时：允许 worktree 显式复用主仓库的 Python 3.12；否则优先本地 .venv312。
+$Py = $env:AB_PYTHON
+if ([string]::IsNullOrWhiteSpace($Py)) {
+    $Py = Join-Path $Root ".venv312\Scripts\python.exe"
+}
 if (-not (Test-Path $Py)) { $Py = "python" }
 
 $Stages = @(

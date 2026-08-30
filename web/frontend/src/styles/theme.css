@@ -879,6 +879,7 @@
   .guide-feedback { display: flex; flex-direction: column; gap: 4px; border-radius: 10px; padding: 11px 13px; }
   .guide-feedback.error { border: 1px solid color-mix(in srgb, var(--up) 55%, var(--border)); background: var(--up-soft); }
   .guide-feedback.success { border: 1px solid color-mix(in srgb, var(--ok) 55%, var(--border)); background: var(--ok-soft); }
+  .guide-feedback.warning { border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--border)); background: var(--warn-soft); }
   .guide-feedback span, .guide-feedback details { color: var(--muted); }
   .guide-feedback code { white-space: normal; overflow-wrap: anywhere; }
   .guide-position { display: flex; gap: 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); }

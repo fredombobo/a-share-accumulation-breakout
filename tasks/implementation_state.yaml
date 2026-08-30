@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T14:41:37+08:00"
+updated_at: "2026-08-30T22:55:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -16,6 +16,22 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION:
+    status: in_progress
+    started_at: "2026-08-30T22:30:00+08:00"
+    work_package: WP97
+    dependencies:
+      - BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI
+      - MANUAL-RESEARCH-PARAMETERS-LARGE-GRID
+    result: "docs/ACCEPTANCE-PROFESSIONAL-BACKTEST-RESULT-CONTRACT-2026-08-30.md"
+    note: >
+      纠正历史专业任务中组合收益别名造成的自动结论误判；分离最长持有与二次出货
+      观察窗，并按精确 IS/OOS 权益哈希折叠重复参数路径。旧任务不改写，完成后用
+      当前干净代码身份发起新的真实历史研究任务。
+    current_evidence:
+      - "29 个后端定向回归测试通过，专业回测前端 7 个 Vitest 通过"
+      - "新契约 professional-backtest-v1.3.0 / professional-grid-v1.3.0"
+      - "严格质量门、8001 重启和新真实任务仍待完成"
   BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI:
     status: complete
     started_at: "2026-08-30T14:15:14+08:00"

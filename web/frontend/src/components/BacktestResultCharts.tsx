@@ -3,21 +3,13 @@ import type { EChartsOption } from 'echarts'
 
 import type { BacktestMetrics, BacktestResult, BacktestWalkForwardWindow } from '../api/client'
 import EChart from './EChart'
+import {
+  finiteMetric,
+  portfolioMaxDrawdown,
+  portfolioProfitFactor,
+  portfolioTotalReturn,
+} from './backtestMetricContract'
 import { useChartColors } from '../theme/ThemeContext'
-
-function finite(value: unknown): number | null {
-  if (value == null || value === '') return null
-  const parsed = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function metricReturn(metrics: BacktestMetrics | null | undefined): number | null {
-  return finite(metrics?.portfolio_total_return ?? metrics?.net_total_return ?? metrics?.net_avg_return)
-}
-
-function metricProfitFactor(metrics: BacktestMetrics | null | undefined): number | null {
-  return finite(metrics?.net_profit_factor)
-}
 
 function percent(value: number): string {
   return `${value.toFixed(2)}%`
@@ -50,17 +42,20 @@ function ResultChartPanel({
 }
 
 function wfRows(result: BacktestResult): BacktestWalkForwardWindow[] {
-  return (result.wf?.wf_detail || []).filter((row) => finite(row.train_pf) != null || finite(row.test_pf) != null)
+  return (result.wf?.wf_detail || []).filter((row) => (
+    finiteMetric(row.train_pf) != null || finiteMetric(row.test_pf) != null || row.test_n === 0
+  ))
 }
 
 export default function BacktestResultCharts({ result }: { result: BacktestResult }) {
   const colors = useChartColors()
   const selected = result.selected
+  const rankedRows = result.independent_leaderboard || result.leaderboard
 
   const comparison = useMemo(() => {
     const rows: { label: string; value: number }[] = []
     const add = (label: string, metrics: BacktestMetrics | null | undefined) => {
-      const value = metricReturn(metrics)
+      const value = portfolioTotalReturn(metrics)
       if (value != null) rows.push({ label, value: value * 100 })
     }
     add('IS 样本内', selected?.is)
@@ -104,7 +99,7 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
   const qualityComparison = useMemo(() => {
     const rows: { label: string; value: number }[] = []
     const add = (label: string, metrics: BacktestMetrics | null | undefined) => {
-      const value = metricProfitFactor(metrics)
+      const value = portfolioProfitFactor(metrics)
       if (value != null) rows.push({ label, value })
     }
     add('IS 样本内', selected?.is)
@@ -147,9 +142,9 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
     }
   }, [colors, qualityComparison])
 
-  const riskRows = useMemo(() => result.leaderboard.flatMap((row, index) => {
-    const returnValue = metricReturn(row.oos)
-    const drawdown = finite(row.oos.portfolio_max_drawdown ?? row.oos.net_max_drawdown)
+  const riskRows = useMemo(() => rankedRows.flatMap((row, index) => {
+    const returnValue = portfolioTotalReturn(row.oos)
+    const drawdown = portfolioMaxDrawdown(row.oos)
     if (returnValue == null || drawdown == null) return []
     return [{
       name: `组合 ${index + 1}`,
@@ -160,7 +155,7 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
         borderWidth: index === 0 ? 2 : 0,
       },
     }]
-  }), [colors, result.leaderboard])
+  }), [colors, rankedRows])
 
   const riskOption = useMemo<EChartsOption | null>(() => {
     if (!riskRows.length) return null
@@ -195,10 +190,10 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
     }
   }, [colors, riskRows])
 
-  const topRows = useMemo(() => result.leaderboard.slice(0, 10).flatMap((row, index) => {
-    const value = metricReturn(row.oos)
+  const topRows = useMemo(() => rankedRows.slice(0, 10).flatMap((row, index) => {
+    const value = portfolioTotalReturn(row.oos)
     return value == null ? [] : [{ label: `#${index + 1} · ${String(row.signal.box_max_days ?? '?')}日 · ${String(row.signal.breakout_vol_ratio ?? '?')}倍量`, value: value * 100 }]
-  }), [result.leaderboard])
+  }), [rankedRows])
 
   const topOption = useMemo<EChartsOption | null>(() => {
     if (!topRows.length) return null
@@ -242,8 +237,8 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
         axisLabel: { color: colors.subtext }, splitLine: { lineStyle: { color: colors.split } },
       },
       series: [
-        { name: '训练窗 PF', type: 'line', data: walkForward.map((row) => finite(row.train_pf)), symbolSize: 8, smooth: false },
-        { name: '测试窗 PF', type: 'line', data: walkForward.map((row) => finite(row.test_pf)), symbolSize: 8, smooth: false },
+        { name: '训练窗 PF', type: 'line', data: walkForward.map((row) => finiteMetric(row.train_pf)), symbolSize: 8, smooth: false },
+        { name: '测试窗 PF', type: 'line', data: walkForward.map((row) => finiteMetric(row.test_pf)), symbolSize: 8, smooth: false },
       ],
     }
   }, [colors, walkForward])
@@ -275,18 +270,18 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
         />
         <ResultChartPanel
           title="参数风险收益分布"
-          description="每个点是一组参数；横轴越小、纵轴越高越有利，点大小代表成交数。"
+          description="每个点是一条独立收益路径；横轴越小、纵轴越高越有利，点大小代表成交数。"
           sample={`${riskRows.length} 组有效数据`}
           option={riskOption}
-          empty="排行榜没有同时提供 OOS 组合净收益和最大回撤。"
+          empty="独立路径排行榜没有同时提供 OOS 组合净收益和最大回撤。"
         />
         <ResultChartPanel
-          title="排行榜前十的 OOS 收益"
-          description="保持 IS 选参后的原排行榜顺序，不按 OOS 重新挑选，避免样本外再择优。"
+          title="独立路径前十的 OOS 收益"
+          description="按精确 IS+OOS 权益路径折叠等效参数，并保持 IS 选参顺序；不按 OOS 重新挑选。"
           sample={`${topRows.length} 组可绘制`}
           option={topOption}
           height={330}
-          empty="排行榜没有可用的 OOS 组合净收益。"
+          empty="独立路径排行榜没有可用的 OOS 组合净收益。"
         />
         <ResultChartPanel
           title="WF 窗口稳定性"

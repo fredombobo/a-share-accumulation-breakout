@@ -56,6 +56,7 @@ function manualParametersFromProfile(state: StrategyProfileState): ManualStrateg
     vol_ratio_min: Number(exit.vol_ratio_min),
     stop_pct: Number(exit.stop_pct),
     target_pct: Number(exit.target_pct ?? 0.12),
+    max_hold_days: Number(exit.max_hold_days ?? 30),
     exit_window: Number(exit.exit_window),
     strong_reset: Number(exit.strong_reset),
   }
@@ -681,6 +682,7 @@ export default function Overview() {
               <label><span>建仓量 / 前 5 日均量</span><input type="number" min="1" max="4" step="0.1" value={manualProfile.vol_ratio_min} onChange={(event) => updateManualNumber('vol_ratio_min', event.target.value)} /></label>
               <label className="risk-field"><span>止损（%）</span><input type="number" min="1" max="25" step="0.5" value={percentInputValue(manualProfile.stop_pct)} onChange={(event) => updateManualNumber('stop_pct', event.target.value, true)} /></label>
               <label className="risk-field"><span>止盈（%）</span><input type="number" min="2" max="100" step="0.5" value={percentInputValue(manualProfile.target_pct)} onChange={(event) => updateManualNumber('target_pct', event.target.value, true)} /></label>
+              <label><span>最长持有（交易日）</span><input type="number" min="2" max="120" value={manualProfile.max_hold_days} onChange={(event) => updateManualNumber('max_hold_days', event.target.value)} /></label>
               <label><span>二次出货观察窗（日）</span><input type="number" min="3" max="40" value={manualProfile.exit_window} onChange={(event) => updateManualNumber('exit_window', event.target.value)} /></label>
               <label><span>强势日清零根数</span><input type="number" min="1" max="10" value={manualProfile.strong_reset} onChange={(event) => updateManualNumber('strong_reset', event.target.value)} /></label>
               <label className="manual-checkbox"><input type="checkbox" checked={manualProfile.require_structure} onChange={(event) => setManualProfile((current) => current ? { ...current, require_structure: event.target.checked } : current)} /><span>要求完整吸筹结构</span></label>

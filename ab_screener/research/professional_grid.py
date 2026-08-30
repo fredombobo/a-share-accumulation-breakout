@@ -19,6 +19,7 @@ from ab_screener.domain.market_classification import (
     normalize_group,
 )
 from config import (
+    BENCH_MAX_HOLD_DAYS,
     BOX_MAX_AMP,
     BREAKOUT_CHG_MAX,
     BREAKOUT_CHG_MIN,
@@ -28,7 +29,7 @@ from config import (
 LONG_RUNNING_WARNING_COMBINATIONS = 512
 MAX_COMBINATIONS = 5_120
 MAX_UNIVERSE_CODES = 1500
-GRID_CONTRACT_VERSION = "professional-grid-v1.2.0"
+GRID_CONTRACT_VERSION = "professional-grid-v1.3.0"
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,9 @@ PARAMETERS: tuple[ParameterDefinition, ...] = (
     ParameterDefinition("target_pct", "止盈比例", "exit", "number", 0.02, 1.00,
                         {"mode": "values", "values": [0.10, 0.12, 0.15]},
                         "买入后下一交易日起触发；同日同时触及止损时优先按止损"),
+    ParameterDefinition("max_hold_days", "最长持有天数", "exit", "integer", 2, 120,
+                        {"mode": "fixed", "value": BENCH_MAX_HOLD_DAYS},
+                        "从信号次日开盘买入后计算；到期按收盘价退出"),
     ParameterDefinition("exit_window", "二次出货观察窗", "exit", "integer", 3, 40,
                         {"mode": "values", "values": [7, 10, 15]}, "窗口内累计量达到基准后的退出检查"),
     ParameterDefinition("strong_reset", "强势日清零根数", "exit", "integer", 1, 10,
@@ -173,8 +177,13 @@ def validate_fixed_parameters(raw: Any) -> dict[str, dict[str, Any]]:
     """Validate one complete manual profile against the professional contract."""
     if not isinstance(raw, dict):
         raise ProfessionalGridError("INVALID_MANUAL_PARAMETERS", "手工参数必须是对象")
-    missing = sorted(set(_BY_KEY) - set(raw))
-    unknown = sorted(set(raw) - set(_BY_KEY))
+    source = dict(raw)
+    # v1.2 clients did not expose the true max-hold parameter.  Preserve their
+    # exact 30-day engine behavior instead of rejecting an otherwise complete
+    # manual profile during the v1.3 transition.
+    source.setdefault("max_hold_days", BENCH_MAX_HOLD_DAYS)
+    missing = sorted(set(_BY_KEY) - set(source))
+    unknown = sorted(set(source) - set(_BY_KEY))
     if missing:
         raise ProfessionalGridError(
             "MISSING_MANUAL_PARAMETER",
@@ -188,7 +197,7 @@ def validate_fixed_parameters(raw: Any) -> dict[str, dict[str, Any]]:
             {"keys": unknown},
         )
     expanded = expand_parameter_space(
-        {key: {"mode": "fixed", "value": raw[key]} for key in _BY_KEY},
+        {key: {"mode": "fixed", "value": source[key]} for key in _BY_KEY},
         max_combinations=1,
     )
     combination = expanded["combinations"][0]

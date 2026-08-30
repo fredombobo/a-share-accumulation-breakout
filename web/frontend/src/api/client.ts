@@ -537,6 +537,7 @@ export interface ManualStrategyParameters {
   vol_ratio_min: number
   stop_pct: number
   target_pct: number
+  max_hold_days: number
   exit_window: number
   strong_reset: number
 }
@@ -556,6 +557,7 @@ export interface BacktestMetrics {
 
 export interface BacktestLeaderboardRow {
   param_id: string
+  equivalent_parameter_count?: number
   signal: Record<string, number | boolean>
   exit: Record<string, number>
   is: BacktestMetrics
@@ -581,8 +583,18 @@ export interface BacktestResult {
   can_claim_edge: false
   request: PreparedBacktestRequest
   leaderboard: BacktestLeaderboardRow[]
+  independent_leaderboard?: BacktestLeaderboardRow[]
   selected: BacktestLeaderboardRow | null
   evaluated_combinations?: number
+  path_analysis?: {
+    method: string
+    evidence_complete: boolean
+    nominal_combinations: number
+    independent_is_paths: number | null
+    independent_oos_paths: number | null
+    independent_joint_paths: number | null
+    duplicate_group_count: number
+  }
   wf: {
     evidence_complete?: boolean
     wf_pass?: boolean
@@ -636,6 +648,7 @@ export interface StrategyProfileSnapshot {
   exit_window: number
   stop_pct: number
   target_pct: number
+  max_hold_days: number
   source_kind: string
   source_task_id?: string | null
 }

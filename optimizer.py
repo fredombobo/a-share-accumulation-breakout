@@ -31,7 +31,7 @@ from ab_screener.research.portfolio_accounting import (
     prepare_portfolio_market,
     simulate_portfolio,
 )
-from config import BT_MIN_TRADES, GRID_BENCH
+from config import BENCH_MAX_HOLD_DAYS, BT_MIN_TRADES, GRID_BENCH
 from trade_sim import simulate_trade, summarize
 
 if TYPE_CHECKING:
@@ -214,6 +214,11 @@ def _validated_combo_overrides(
             "exit_window": int(raw["exit_window"]),
             "stop_pct": float(raw["stop_pct"]),
         }
+        # Keep preregistered legacy parameter identities stable.  New callers
+        # include max_hold_days explicitly; older formal/WF jobs must retain
+        # their original param_id and use the engine's conservative default.
+        if raw.get("max_hold_days") is not None:
+            combo["max_hold_days"] = int(raw["max_hold_days"])
         if raw.get("target_pct") is not None:
             combo["target_pct"] = float(raw["target_pct"])
         normalized[param_id(strategy, combo)] = combo
@@ -375,6 +380,7 @@ def _replay_params(df: pd.DataFrame, signals: list[dict], combos: list[dict]) ->
                     "bench_vol": bv,
                     "stop_pct": combo["stop_pct"],
                     "exit_window": combo["exit_window"],
+                    "max_hold": int(combo.get("max_hold_days") or BENCH_MAX_HOLD_DAYS),
                     "strong_reset": combo["strong_reset"],
                     "target_pct": combo.get("target_pct"),
                 },

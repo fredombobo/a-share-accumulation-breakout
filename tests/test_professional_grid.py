@@ -33,6 +33,7 @@ def test_default_grid_is_multi_parameter_deterministic_and_supports_200_days() -
     assert first["values"]["box_max_days"] == [60, 80, 100, 120, 140, 160, 180, 200]
     assert first["values"]["breakout_vol_ratio"] == [1.4, 1.6, 1.8]
     assert first["values"]["target_pct"] == [0.1, 0.12, 0.15]
+    assert first["values"]["max_hold_days"] == [30]
     assert first["long_running"] is False
     assert first["horizon"] >= 265
 
@@ -93,6 +94,10 @@ def test_manual_fixed_parameters_reuse_grid_validation() -> None:
     values = {**first["signal"], **first["exit"]}
     validated = validate_fixed_parameters(values)
     assert validated == first
+
+    legacy_values = dict(values)
+    legacy_values.pop("max_hold_days")
+    assert validate_fixed_parameters(legacy_values)["exit"]["max_hold_days"] == 30
 
     with pytest.raises(ProfessionalGridError) as missing:
         validate_fixed_parameters({"box_min_days": 60})

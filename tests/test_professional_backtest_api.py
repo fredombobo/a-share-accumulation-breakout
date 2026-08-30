@@ -72,6 +72,8 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     assert payload["parameter_space"]["count"] == 432
     assert payload["parameter_space"]["long_running"] is False
     assert payload["parameters"]["target_pct"]["values"] == [0.1, 0.12, 0.15]
+    assert payload["parameters"]["max_hold_days"] == {"mode": "fixed", "value": 30}
+    assert payload["contract_version"] == "professional-backtest-v1.3.0"
     assert payload["parameter_space"]["horizon"] >= 265
     assert payload["universe"]["count"] == 25
     assert len(payload["universe"]["sha256"]) == 64

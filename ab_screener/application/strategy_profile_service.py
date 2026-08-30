@@ -12,6 +12,7 @@ from ab_screener.data.strategy_profile_repository import (
 )
 from ab_screener.domain.profile import StrategyProfile
 from ab_screener.research.pit_reader import ResearchPitError, latest_research_cutoff
+from ab_screener.research.portfolio_metric_contract import portfolio_total_return
 from ab_screener.research.professional_grid import (
     ProfessionalGridError,
     validate_fixed_parameters,
@@ -19,7 +20,7 @@ from ab_screener.research.professional_grid import (
 from build_version import build_version
 
 PROFILE_ID = "professional-backtest-daily-scan"
-PROFILE_SCHEMA_VERSION = 3
+PROFILE_SCHEMA_VERSION = 4
 MANUAL_PROFILE_ID = "manual-daily-research-scan"
 PROFILE_BOUNDARY = {
     "scope": "DAILY_A_POOL_TECHNICAL_ENTRY",
@@ -179,9 +180,9 @@ def _compact_evidence(result: dict[str, Any]) -> dict[str, Any]:
         "oos": selected.get("oos") or {},
         "wf_pass": bool(wf.get("wf_pass")),
         "wf_evidence_complete": bool(wf.get("evidence_complete")),
-        "cost_2x_portfolio_total_return": cost_metrics.get("portfolio_total_return"),
+        "cost_2x_portfolio_total_return": portfolio_total_return(cost_metrics),
         "baseline_portfolio_total_returns": {
-            key: value.get("portfolio_total_return")
+            key: portfolio_total_return(value)
             for key, value in (result.get("baselines") or {}).items()
             if isinstance(value, dict)
         },
@@ -214,6 +215,7 @@ def _profile_from_task(task: dict[str, Any]) -> StrategyProfile:
             exit_window=int(exit_params["exit_window"]),
             stop_pct=float(exit_params["stop_pct"]),
             target_pct=float(exit_params.get("target_pct", 0.12)),
+            max_hold_days=int(exit_params.get("max_hold_days", 30)),
             notes=[
                 "仅用于每日 A 池技术入场参数；B 池与额外生产门禁不随档案变化。",
                 "这是人工启用的探索性候选档案，不代表正式研究晋级或收益承诺。",
@@ -314,6 +316,7 @@ def activate_manual_profile(
         exit_window=int(exit_params["exit_window"]),
         stop_pct=float(exit_params["stop_pct"]),
         target_pct=float(exit_params["target_pct"]),
+        max_hold_days=int(exit_params["max_hold_days"]),
         notes=[
             "由用户直接输入，未经过 IS/OOS、WF、基线或成本压力验证。",
             "只用于下一次 A 池研究扫描和风险参考，不构成荐股或买入指令。",

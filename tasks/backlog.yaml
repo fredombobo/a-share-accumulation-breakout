@@ -541,3 +541,21 @@ tasks:
       988 Pytest、15 Vitest、Ruff、Mypy、严格架构和构建通过，Playwright 10/10 及
       真实 8001 验收通过。运行中的 probt-0503a30ccdef 未被重启或取消，实盘保持关闭。
       证据见 docs/ACCEPTANCE-BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI-2026-08-30.md。
+
+  - id: PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION
+    title: 专业回测收益口径、最长持有与独立路径纠错
+    status: in_progress
+    work_package: WP97
+    phase: product-correctness
+    dependencies:
+      - BACKTEST-CHECK-DIALOG-RESULT-VISUALS-UI
+      - MANUAL-RESEARCH-PARAMETERS-LARGE-GRID
+    acceptance:
+      - IS、OOS、成本压力和双基线统一使用可复算的组合净收益字段
+      - 最长持有成为独立真实参数并进入成交、WF、基线、档案和参数身份
+      - 二次出货观察窗不再被误称为最长持有
+      - 排行榜按精确 IS 与 OOS 权益路径折叠并披露等效参数数量
+      - WF 零成交窗口明确标记无验证证据，采样间隔大于一明确标记抽样研究
+      - 旧任务保持不可变且兼容读取，新任务使用 v1.3 结果契约
+      - 严格质量门、真实 8001 API 与浏览器验收通过
+      - LIVE_TRADING_ENABLED 保持 false
