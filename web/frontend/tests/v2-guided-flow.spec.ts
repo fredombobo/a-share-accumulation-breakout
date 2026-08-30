@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 
 /** 精简产品 E2E：每日选股 + 专业回测，旧入口回首页。 */
 
-async function mockBackendApi(page: Page) {
+async function mockBackendApi(page: Page, options: { activeScan?: boolean } = {}) {
   await page.route(
     (url) => url.pathname.startsWith('/api/'),
     (route) => {
@@ -14,7 +14,14 @@ async function mockBackendApi(page: Page) {
       else if (path === '/api/sector-flow') body = { items: [] }
       else if (path === '/api/money-heatmap') body = { trade_date: '20260828', total_wan: 0, items: [] }
       else if (path === '/api/today') body = { next_action: 'NONE', title: '今日无需操作', reason: '测试', primary_label: '完成' }
-      else if (path === '/api/scan/status') body = { status: 'idle' }
+      else if (path === '/api/scan/status') body = options.activeScan
+        ? {
+            id: 'scan-global-progress', status: 'running', stage: '资金流核验', progress: 46,
+            cancel_requested: false,
+            started_at: new Date(Date.now() - 90_000).toISOString(),
+            updated_at: new Date().toISOString(),
+          }
+        : { status: 'idle' }
       else if (path === '/api/sync/status') body = { status: 'idle', latest_daily: '20260828', failed_dates: [] }
       else if (path === '/api/backtest/catalog') body = {
         version: 'test-v1', max_combinations: 512, parameters: [], conditions: [],
@@ -98,4 +105,23 @@ test('专业回测必须先预览参数空间', async ({ page }) => {
   await page.getByRole('button', { name: '检查参数空间' }).click()
   await expect(page.getByText('有效组合').locator('..').getByText('144')).toBeVisible()
   await expect(run).toBeEnabled()
+})
+
+test('@a11y 扫描进度切页后仍显眼可见且窄屏不溢出', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockBackendApi(page, { activeScan: true })
+  await page.goto('/')
+
+  const progress = page.getByRole('progressbar', { name: '全市场扫描进度' })
+  await expect(progress).toBeVisible()
+  await expect(progress).toHaveAttribute('aria-valuenow', '46')
+  await expect(page.getByText('资金流核验')).toBeVisible()
+
+  await page.getByRole('button', { name: /专业回测/ }).click()
+  await expect(page).toHaveURL(/\/backtest$/)
+  await expect(progress).toBeVisible()
+  const overflow = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  )
+  expect(overflow).toBe(false)
 })

@@ -217,6 +217,7 @@ def _clear_overview_cache() -> None:
 
 def _new_task(top: int, days: int) -> str:
     task_id = uuid.uuid4().hex[:12]
+    created_at = datetime.now().astimezone().isoformat(timespec="seconds")
     with _SCAN_LOCK:
         _SCAN_TASKS[task_id] = {
             "id": task_id,
@@ -225,7 +226,10 @@ def _new_task(top: int, days: int) -> str:
             "status": "pending",
             "stage": "排队中",
             "progress": 0,
+            "created_at": created_at,
             "started_at": None,
+            "updated_at": created_at,
+            "heartbeat_at": created_at,
             "finished_at": None,
             "cancel_requested": False,
             "result": None,
@@ -353,14 +357,20 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             t = _SCAN_TASKS.get(task_id)
             if t is None or is_terminal(t.get("status")):
                 return
+            now = datetime.now().astimezone().isoformat(timespec="seconds")
+            next_progress = clamp_progress(progress)
             if t.get("cancel_requested") or t.get("status") == "cancelling":
                 t["status"] = "cancelling"
                 base = stage or t.get("stage") or ""
-                t["stage"] = base if "取消" in str(base) else (f"取消中…{base}" if base else "取消中…")
+                next_stage = base if "取消" in str(base) else (f"取消中…{base}" if base else "取消中…")
             else:
                 t["status"] = "running"
-                t["stage"] = stage
-            t["progress"] = clamp_progress(progress)
+                next_stage = stage
+            if t.get("progress") != next_progress or t.get("stage") != next_stage:
+                t["updated_at"] = now
+            t["stage"] = next_stage
+            t["progress"] = next_progress
+            t["heartbeat_at"] = now
             if msg:
                 _log(t, msg)
 
@@ -389,7 +399,10 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
     proc: ScanChild | None = None
     try:
         with _SCAN_LOCK:
-            task["started_at"] = datetime.now().isoformat()
+            started_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            task["started_at"] = started_at
+            task["updated_at"] = started_at
+            task["heartbeat_at"] = started_at
         report("数据准备", 2, f"启动子进程扫描 top={top} days={days}")
 
         if cancel_requested():
@@ -516,7 +529,10 @@ def _run_scan_worker(task_id: str, top: int, days: int) -> None:
             t["status"] = "done"
             t["progress"] = 100
             t["stage"] = "完成"
-            t["finished_at"] = datetime.now().isoformat()
+            finished_at = datetime.now().astimezone().isoformat(timespec="seconds")
+            t["finished_at"] = finished_at
+            t["updated_at"] = finished_at
+            t["heartbeat_at"] = finished_at
             t["worker_pid"] = None
             t["result"] = {
                 "status": "ok",
@@ -620,12 +636,20 @@ def scan_status(task_id: str | None = None):
             if task is None:
                 task = None
             else:
-                keys = ("id", "status", "stage", "progress", "cancel_requested", "result", "error", "worker_pid")
+                keys = (
+                    "id", "status", "stage", "progress", "cancel_requested", "result",
+                    "error", "worker_pid", "created_at", "started_at", "updated_at",
+                    "heartbeat_at", "finished_at",
+                )
                 return {k: task.get(k) for k in keys}
         elif _SCAN_TASKS:
             # 返回最新内存任务
             latest = max(_SCAN_TASKS.values(), key=lambda t: t.get("started_at") or "")
-            keys = ("id", "status", "stage", "progress", "cancel_requested", "result", "error", "worker_pid")
+            keys = (
+                "id", "status", "stage", "progress", "cancel_requested", "result",
+                "error", "worker_pid", "created_at", "started_at", "updated_at",
+                "heartbeat_at", "finished_at",
+            )
             return {k: latest.get(k) for k in keys}
 
     # 服务重启后从持久任务表恢复查询语义。

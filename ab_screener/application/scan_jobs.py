@@ -306,6 +306,11 @@ def to_api_status(job: dict[str, Any] | None) -> dict[str, Any]:
         "run_id": job.get("run_id"),
         "error": redact_sensitive_text(job.get("error_message") or "") or None,
         "result": cp.get("result"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+        "heartbeat_at": job.get("heartbeat_at"),
+        "finished_at": job.get("finished_at"),
     }
 
 

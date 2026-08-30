@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router'
 import { api, SyncStatus } from '../api/client'
 import { useTheme } from '../theme/ThemeContext'
 import { IcoMoon, IcoRefresh, IcoSearch, IcoSun } from '../components/Icons'
+import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
 
 type PageMeta = { kicker: string; title: string; sub: string }
 
@@ -65,6 +66,7 @@ export default function Topbar() {
     try {
       await api.syncStart()
       setSync({ status: 'running', message: '开始同步…', started_at: null, finished_at: null, latest_daily: null, latest_moneyflow: null, failed_dates: [] })
+      window.dispatchEvent(new Event(RUN_TASK_EVENT))
     } catch (e) {
       setError(String(e))
     }

@@ -13,6 +13,7 @@ import {
   BacktestUniverseCatalog,
   ParameterSpec,
 } from '../api/client'
+import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
 
 const ACTIVE_STATUSES: BacktestTask['status'][] = ['pending', 'running', 'cancelling']
 const PRIMARY_KEYS = new Set([
@@ -377,9 +378,11 @@ export default function ProfessionalBacktest() {
     setError('')
     try {
       const started = await api.backtestRun(request)
+      window.dispatchEvent(new Event(RUN_TASK_EVENT))
       setTask(await api.backtestStatus(started.task_id))
     } catch (reason) {
       if (reason instanceof ApiError && reason.code === 'BACKTEST_ALREADY_RUNNING' && typeof reason.details.task_id === 'string') {
+        window.dispatchEvent(new Event(RUN_TASK_EVENT))
         setTask(await api.backtestStatus(reason.details.task_id))
       } else {
         setError(errorMessage(reason))

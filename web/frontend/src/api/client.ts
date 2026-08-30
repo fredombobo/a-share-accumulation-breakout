@@ -283,6 +283,11 @@ export interface ScanStatus {
   cancel_requested: boolean
   result?: Record<string, unknown> | null
   error?: string | null
+  created_at?: string | null
+  started_at?: string | null
+  updated_at?: string | null
+  heartbeat_at?: string | null
+  finished_at?: string | null
 }
 
 export const api = {
@@ -487,7 +492,9 @@ export interface BacktestTask {
   request: PreparedBacktestRequest
   result: BacktestResult | null
   created_at: string
+  started_at?: string | null
   updated_at: string
+  heartbeat_at?: string | null
 }
 
 // ── AI 证据评测 ──

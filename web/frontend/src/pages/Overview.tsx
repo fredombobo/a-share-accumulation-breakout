@@ -6,6 +6,7 @@ import EChart from '../components/EChart'
 import SectorFlowPanel from '../components/SectorFlowPanel'
 import MoneyHeatmap from '../components/MoneyHeatmap'
 import { IcoFlame, IcoLayers, IcoScan, IcoShield, IcoStop, IcoTarget, IcoWallet } from '../components/Icons'
+import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
 import {
   loadOverviewCache,
   loadParams,
@@ -295,6 +296,7 @@ export default function Overview() {
     try {
       const resp = await api.scan(topN, days, false)
       setScanTask(resp.task_id)
+      window.dispatchEvent(new Event(RUN_TASK_EVENT))
       // 用户在拿到 task_id 前已点取消 → 立即发取消
       if (pendingCancelRef.current) {
         pendingCancelRef.current = false

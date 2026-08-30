@@ -107,3 +107,21 @@ def test_scan_failure_redacts_vendor_echo_before_db_and_api(tmp_path: Path) -> N
     assert credential not in str(job["error_message"])
     assert "[REDACTED]" in str(job["error_message"])
     assert credential not in str(to_api_status(job)["error"])
+
+
+def test_scan_api_status_exposes_lifecycle_timestamps(tmp_path: Path) -> None:
+    db_path = tmp_path / "scan-timestamps.db"
+    LocalStore(db_path)
+    store = ScanJobStore(db_path)
+    store.upsert_running("task-clock", top_n=20, days=160)
+    store.heartbeat("task-clock", {"stage": "预筛", "progress": 17})
+
+    job = store.get("task-clock")
+    assert job is not None
+    status = to_api_status(job)
+
+    assert status["started_at"] == job["started_at"]
+    assert status["updated_at"] == job["updated_at"]
+    assert status["heartbeat_at"] == job["heartbeat_at"]
+    assert status["stage"] == "预筛"
+    assert status["progress"] == 17

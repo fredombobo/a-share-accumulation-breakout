@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { Navigate, Route, Routes } from 'react-router'
 import Sidebar from './layout/Sidebar'
 import Topbar from './layout/Topbar'
+import GlobalRunProgress from './components/GlobalRunProgress'
 
 const Overview = lazy(() => import('./pages/Overview'))
 const StockDetail = lazy(() => import('./pages/StockDetail'))
@@ -13,6 +14,7 @@ export default function App() {
       <Sidebar />
       <div className="main">
         <Topbar />
+        <GlobalRunProgress />
         <div className="content">
           <Suspense fallback={<div className="loading">正在加载页面…</div>}>
             <Routes>
