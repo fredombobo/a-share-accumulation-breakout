@@ -496,7 +496,7 @@ tasks:
 
   - id: MANUAL-RESEARCH-PARAMETERS-LARGE-GRID
     title: 手工今日研究参数、十倍组合预算与止盈止损闭环
-    status: ready
+    status: complete
     work_package: WP95
     phase: product-closure
     dependencies:
@@ -510,3 +510,10 @@ tasks:
       - 页面明确定位为研究学习平台，不构成荐股或买入指令
       - 严格质量门与真实 8001 桌面、390px 浏览器验收通过
       - LIVE_TRADING_ENABLED 保持 false
+    completion_note: >
+      3ba871e/9579e67/817339f/d366342 完成系统默认、手工研究参数和专业回测档案
+      三来源独立闭环；组合硬上限提升至 5120，超过 512 二次提醒；止盈止损进入
+      T+1 回测、WF、成本压力、报告和每日风险参考。严格质量门 988 Pytest、12
+      Vitest、Ruff、Mypy、严格架构及构建通过；Playwright 9/9 与真实 8001
+      桌面/390px 通过。生产档案保持 default、历史 0，LIVE_TRADING_ENABLED=false。
+      证据见 docs/ACCEPTANCE-MANUAL-RESEARCH-PARAMETERS-LARGE-GRID-2026-08-30.md。

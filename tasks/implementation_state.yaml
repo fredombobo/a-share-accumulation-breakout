@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-30T11:20:00+08:00"
+updated_at: "2026-08-30T13:04:37+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -17,7 +17,7 @@ protected_user_docs:
 ready_now: []
 tasks:
   MANUAL-RESEARCH-PARAMETERS-LARGE-GRID:
-    status: in_progress
+    status: complete
     started_at: "2026-08-30T11:20:00+08:00"
     work_package: WP95
     dependencies:
@@ -44,6 +44,15 @@ tasks:
     note: >
       手工参数不要求回测通过，但必须显式标记未验证并保留不可变版本；专业回测
       仍遵守原证据门槛。组合预算只提升探索容量，不改变反过拟合或正式晋级规则。
+    completed_at: "2026-08-30T13:04:37+08:00"
+    result: "docs/ACCEPTANCE-MANUAL-RESEARCH-PARAMETERS-LARGE-GRID-2026-08-30.md"
+    completed_evidence:
+      - "系统默认、MANUAL_RESEARCH 和 PROFESSIONAL_BACKTEST 三种参数来源独立且可追溯"
+      - "513-5120 组允许并二次提醒；真实 576 组预览通过，5184 组结构化拒绝"
+      - "止盈止损百分比进入 T+1 退出、参数身份、IS/OOS/WF、成本压力、报告与风险参考"
+      - "严格质量门 PASS：988 Pytest、12 Vitest、Ruff、Mypy、strict architecture、frontend build"
+      - "Playwright 9/9 与真实 8001 桌面/390px PASS；浏览器错误与失败请求为 0"
+      - "生产档案仍为 default、历史 0；accumulation_breakout/8001 新鲜，LIVE_TRADING_ENABLED=false"
   BACKTEST-TO-DAILY-PROFILE-CLOSED-LOOP:
     status: complete
     started_at: "2026-08-30T10:12:18+08:00"
