@@ -1,5 +1,5 @@
 version: 1
-updated_at: "2026-08-29T22:41:08+08:00"
+updated_at: "2026-08-30T09:10:00+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
@@ -14,8 +14,25 @@ live_trading_enabled: false
 protected_user_docs:
   - docs/STATUS.md
   - docs/RESEARCH-ROADMAP.md
-ready_now: []
+ready_now:
+  - GLOBAL-RUN-PROGRESS-VISIBILITY
 tasks:
+  GLOBAL-RUN-PROGRESS-VISIBILITY:
+    status: ready
+    work_package: WP92
+    dependencies:
+      - WINDOWS_SCAN_PROGRESS_REPLACE
+      - PROFESSIONAL-BACKTEST-AI-REVIEW
+    planned_files:
+      - "ab_screener/api/routers/legacy_scan.py"
+      - "ab_screener/application/scan_jobs.py"
+      - "web/frontend/src/App.tsx"
+      - "web/frontend/src/api/client.ts"
+      - "web/frontend/src/components/GlobalRunProgress.tsx"
+      - "web/frontend/src/styles/theme.css"
+      - "web/frontend/tests/global-run-progress.test.tsx"
+      - "tests/test_scan_runtime.py"
+    note: "用户要求运行任务必须有显眼进度，并能判断是否长时间无推进；只展示服务端事实，不伪造进度。"
   PROFESSIONAL-BACKTEST-AI-REVIEW:
     status: complete
     started_at: "2026-08-29T19:05:00+08:00"

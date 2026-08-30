@@ -424,3 +424,19 @@ tasks:
       随机与 MA20/60 基线及 2x 成本压力，并诚实返回 EXPLORATORY_WEAK、
       candidate_eligible=false。个股本地 AI 证据评测只读可用，外部模型未配置时
       按钮前置禁用。严格质量门和 8001 浏览器验收通过；总机构/实盘闸门仍 BLOCKED。
+
+  - id: GLOBAL-RUN-PROGRESS-VISIBILITY
+    title: 全局长任务进度、心跳与疑似卡住提示
+    status: ready
+    work_package: WP92
+    phase: product-usability
+    dependencies:
+      - WINDOWS_SCAN_PROGRESS_REPLACE
+      - PROFESSIONAL-BACKTEST-AI-REVIEW
+    acceptance:
+      - 扫描与专业回测在任意发布页面均显示真实阶段、百分比、已耗时和最近推进时间
+      - 行情同步使用明确的不定进度，不伪造百分比
+      - 长时间无进度变化时显示“可能仍在重计算”而不是虚构失败
+      - 切页、窗口失焦与刷新后从服务端恢复活动任务
+      - 深浅主题、减少动态效果、键盘操作与 390px 窄屏通过
+      - 严格质量门及真实 8001 浏览器验收通过
