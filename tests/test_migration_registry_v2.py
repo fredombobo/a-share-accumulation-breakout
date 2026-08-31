@@ -75,3 +75,27 @@ def test_dry_run_does_not_apply(tmp_path):
         assert mr.pending_migrations(conn)  # dry-run 后仍应有 pending（未落库）
     finally:
         conn.close()
+
+
+def test_schema_compatible_accepts_legacy_and_retired_ledger_rows(tmp_path):
+    db = tmp_path / "legacy-ledger.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        mr.apply_pending(conn)
+        current = mr.registered_ids()[0]
+        conn.execute(
+            "UPDATE schema_migrations_v2 SET checksum=? WHERE migration_id=?",
+            ("sha256:" + "a" * 64, current),
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations_v2(migration_id,checksum,applied_at,duration_ms)"
+            " VALUES (?,?,datetime('now'),0)",
+            ("v2:retired_historical_intent", "sha256:" + "b" * 64),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    ok, issues = mr.schema_compatible(db)
+    assert ok is True
+    assert issues == []

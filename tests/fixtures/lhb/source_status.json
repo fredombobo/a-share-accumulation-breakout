@@ -1,0 +1,15 @@
+{
+  "valid_empty": [],
+  "complete_top_inst": [
+    {
+      "ts_code": "000001.SZ",
+      "trade_date": "20260810",
+      "exalter": "机构专用",
+      "side": "0",
+      "buy": 12.5,
+      "sell": 0,
+      "net_buy": 12.5,
+      "reason": "日涨幅偏离值达到7%"
+    }
+  ]
+}

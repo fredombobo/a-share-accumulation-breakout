@@ -145,7 +145,15 @@ def schema_compatible(db_path: str | Path) -> tuple[bool, list[str]]:
         pending = pending_migrations(conn)
         applied = applied_migrations(conn)
         drift = []
+        registered = set(registered_ids())
         for mid, rec in applied.items():
+            # 历史版本曾使用 ``sha256:<64 hex>`` 记录迁移文件内容哈希，且
+            # 账本里保留了已退役的迁移 id。它们是不可变的历史事实，不应让
+            # 新版 registry 在启动时 KeyError，也不能拿新 16 位算法误报漂移。
+            if mid not in registered:
+                continue
+            if rec.checksum.startswith("sha256:") and len(rec.checksum) == 71:
+                continue
             if rec.checksum != migration_checksum(mid):
                 drift.append(f"{mid}: checksum 漂移")
         issues = [f"MIGRATION_PENDING:{m}" for m in pending] + drift

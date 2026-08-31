@@ -15,6 +15,12 @@ const V2Intelligence = lazy(() => import('./pages/v2/Intelligence'))
 const V2Strategies = lazy(() => import('./pages/v2/Strategies'))
 const V2Signals = lazy(() => import('./pages/v2/Signals'))
 const V2Research = lazy(() => import('./pages/v2/Research'))
+const LhbRadar = lazy(() => import('./pages/v2/LhbRadar'))
+const LhbProfile = lazy(() => import('./pages/v2/LhbProfile'))
+const LhbStockTimeline = lazy(() => import('./pages/v2/LhbStockTimeline'))
+const LhbNetwork = lazy(() => import('./pages/v2/LhbNetwork'))
+const LhbQuality = lazy(() => import('./pages/v2/LhbQuality'))
+const LhbBacktest = lazy(() => import('./pages/v2/LhbBacktest'))
 
 export default function App() {
   return (
@@ -35,6 +41,12 @@ export default function App() {
               <Route path="/v2/strategies" element={<V2Strategies />} />
               <Route path="/v2/signals" element={<V2Signals />} />
               <Route path="/v2/research" element={<V2Research />} />
+              <Route path="/v2/lhb/radar" element={<LhbRadar />} />
+              <Route path="/v2/lhb/profile" element={<LhbProfile />} />
+              <Route path="/v2/lhb/timeline" element={<LhbStockTimeline />} />
+              <Route path="/v2/lhb/network" element={<LhbNetwork />} />
+              <Route path="/v2/lhb/quality" element={<LhbQuality />} />
+              <Route path="/v2/lhb/backtest" element={<LhbBacktest />} />
               <Route path="*" element={<Overview />} />
             </Routes>
           </Suspense>

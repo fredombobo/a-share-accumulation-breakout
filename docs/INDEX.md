@@ -1,7 +1,7 @@
 # 文档索引（INDEX）
 
 > accumulation_breakout「横盘吸筹 → 启动」选股系统 · v2 机构级控制台
-> 更新：2026-08-21 · 本索引指向当前有效文档；历史验收记录见文末 archive。
+> 更新：2026-08-29 · 本索引指向当前有效文档；历史验收记录见文末 archive。
 
 ## 入门与使用
 
@@ -24,7 +24,8 @@
 
 - [STATUS](./STATUS.md) —— 项目状态看板（用户维护，勿由 Agent 覆盖）
 - [RESEARCH-ROADMAP](./RESEARCH-ROADMAP.md) —— 研究路线图（用户维护）
-- [个人机构化收口五件套](./superpowers/plans/2026-08-21-institutional-closers-index.md) —— 当前收口主线（D/O/E/R/F/G 波次）
+- [收口下一刀 2026-08-22](./superpowers/plans/2026-08-22-closers-next-index.md) —— **当前实现入口**（先修 E2 NameError，再 D/O）
+- [个人机构化收口五件套](./superpowers/plans/2026-08-21-institutional-closers-index.md) —— 收口主线背景（D/O/E/R/F/G）
 - [IMPROVEMENT-PROGRAM-2026-08-20](./IMPROVEMENT-PROGRAM-2026-08-20.md) —— 完善计划 G0–G8（工程债主线）
 - [SUPERCHARGE-PLAN-2026-08-18](./SUPERCHARGE-PLAN-2026-08-18.md) —— 深度增强计划（PIT 完整化 / 风险模型 / 因子库）
 - [VOLUME-PRICE-LOGIC-PLATFORM](./VOLUME-PRICE-LOGIC-PLATFORM.md) —— 量价预测·逻辑生成平台规格
@@ -32,13 +33,18 @@
 ## 运维
 
 - [BACKUP-RESTORE-RUNBOOK-V2](./BACKUP-RESTORE-RUNBOOK-V2.md) —— 备份/回滚 Runbook
+- [龙虎榜研究产品运行手册](./LHB-PRODUCT-RUNBOOK.md) —— 隔离副本、每日盘后流水线、启动与安全边界
 - [ADR](./ADR/) —— 架构决策记录
 
 ## 交接与近期验收
 
+- [ACCEPTANCE-LHB-V1](./ACCEPTANCE-LHB-V1.md) —— 龙虎榜研究产品验收；本地产品 READY、研究状态 RESEARCH_BLOCKED
+- [龙虎榜实施清单](./LHB-TRACKING-IMPLEMENTATION-CHECKLIST.md) —— T01–T12 功能、验收标准与剩余硬门
 - [HANDOFF-V2-P0-P3-2026-08-18](./HANDOFF-V2-P0-P3-2026-08-18.md) —— v2 P0–P3 交接
 - [ACCEPTANCE-V2-P8-EVIDENCE-2026-08-18](./ACCEPTANCE-V2-P8-EVIDENCE-2026-08-18.md) —— P8 最终验收证据索引
 - [ACCEPTANCE-ASTOCK-BRIDGE-V1-2026-08-21](./ACCEPTANCE-ASTOCK-BRIDGE-V1-2026-08-21.md) —— astock 情报桥 v1 验收
+- [ACCEPTANCE-CLOSERS-2026-08-22](./ACCEPTANCE-CLOSERS-2026-08-22.md) —— 收口独立检查（E2 须修 / E3 切片通过；已被下一刀覆盖）
+- [ACCEPTANCE-CLOSERS-NEXT-2026-08-22](./ACCEPTANCE-CLOSERS-NEXT-2026-08-22.md) —— 下一刀独立检查（N0 通过 / N1–N3 未做 / 总状态 BLOCKED）
 - [handoffs/](./handoffs/) —— 各任务 handoff 文档
 - [superpowers/plans/](./superpowers/plans/) —— 冻结实施计划与验收矩阵
 

@@ -10,4 +10,5 @@ export {
   type ReqOpts,
 } from './client'
 
-export const V2_BASE = '/api/v2'
+// request() already prefixes every path with `/api`.
+export const V2_BASE = '/v2'

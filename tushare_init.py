@@ -2,8 +2,8 @@
 Tushare 唯一标准初始化入口（全项目只引用本文件）
 ================================================
 
-用户指定的标准调用方式（2026-08-16 权威版，后续所有模块一律引用本文件初始化，
-不得在其它文件重复初始化）：
+用户指定并冻结的标准调用方式（2026-08-29 再确认，后续所有模块一律引用本文件初始化，
+不得在其它文件重复 `ts.pro_api` / 第二套 URL）：
 
 ```python
 import os
@@ -11,6 +11,8 @@ import tushare as ts
 pro = ts.pro_api(os.environ['TUSHARE_TOKEN'])
 pro._DataApi__http_url = 'http://a.sszhixia.cn/'
 ```
+
+Token 只放项目 `.env` 的 `TUSHARE_TOKEN`，禁止写进仓库源码。
 
 其余模块统一：
 

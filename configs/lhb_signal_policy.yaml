@@ -1,0 +1,19 @@
+version: lhb-signal-v1
+research_only: true
+overlay_enabled: false
+min_net_over_amount: 0.03
+min_net_over_adv20: 0.05
+min_purity: 0.55
+min_independent_actors: 2
+min_identity_confidence: 0.4
+max_turnover_crowd: 25.0
+hard_vetoes:
+  - DATA_INCOMPLETE
+  - IDENTITY_LOW_CONF
+  - UNFILLABLE
+  - ILLIQUID
+  - CROWDED_HIGH
+  - SEVERE_ABNORMAL
+confirmed_requires_data_complete: true
+shadow_min_events: 30
+shadow_min_months: 3

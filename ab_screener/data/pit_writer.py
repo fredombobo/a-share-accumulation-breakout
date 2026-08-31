@@ -17,7 +17,17 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ab_screener.data.migration_intents.aux_history_v2 import ALL_HISTORY_TABLES as HISTORY_TABLES
+from ab_screener.data.migration_intents.aux_history_v2 import ALL_HISTORY_TABLES as _AUX_HISTORY_TABLES
+from ab_screener.data.migration_intents.lhb_tracking_v2 import LHB_PIT_HISTORY_TABLES
+
+
+def _history_tables() -> dict[str, list[str]]:
+    tables = dict(_AUX_HISTORY_TABLES)
+    tables.update(LHB_PIT_HISTORY_TABLES)
+    return tables
+
+
+HISTORY_TABLES = _history_tables()
 from ab_screener.domain.data_point import (
     PitRecord,
     canonical_json,

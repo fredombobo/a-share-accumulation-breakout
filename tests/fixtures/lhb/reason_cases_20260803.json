@@ -1,0 +1,22 @@
+[
+  {
+    "reason_raw": "有价格涨跌幅限制的日收盘价格涨幅达到15%的前五只证券",
+    "reason_code": "PRICE_UP_1D",
+    "window_code": "D1"
+  },
+  {
+    "reason_raw": "有价格涨跌幅限制的日收盘价格跌幅达到15%的前五只证券",
+    "reason_code": "PRICE_DOWN_1D",
+    "window_code": "D1"
+  },
+  {
+    "reason_raw": "连续3个交易日内收盘价格涨跌幅偏离值累计达到40%",
+    "reason_code": "PCT_DEV_BOTH_3D",
+    "window_code": "D3"
+  },
+  {
+    "reason_raw": "连续三个交易日内，涨幅偏离值累计达到20%",
+    "reason_code": "PCT_DEV_UP_3D",
+    "window_code": "D3"
+  }
+]

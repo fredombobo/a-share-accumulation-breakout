@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from ab_screener.api.routers import legacy_misc
 from ab_screener.application.today_guide import build_today_guide
 from ab_screener.data.migrations_v2 import run_v2_migrations
 from local_store import LocalStore
@@ -111,6 +112,7 @@ def test_today_api_returns_the_server_derived_action(monkeypatch, tmp_path: Path
     db = tmp_path / "today-api.db"
     _setup(db)
     monkeypatch.setattr(backend, "_DB", db)
+    monkeypatch.setattr(legacy_misc, "_DB", db)
     client = TestClient(backend.app)
 
     response = client.get("/api/today", params={"at": "2026-08-07T18:00:00+08:00"})

@@ -14,19 +14,20 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from ab_screener.api.deps import default_db_path
+from ab_screener.research.store import ResearchRunStore
 from build_version import build_version as _compute_build_version
 from local_store import LocalStore
-from ab_screener.research.store import ResearchRunStore
 
 _PARENT = Path(__file__).resolve().parents[2]  # ab_screener/api → 项目根
-_DB = _PARENT / "runtime" / "stock_data.db"
+_DB = default_db_path()
 
 _BUILD_VERSION = _compute_build_version()
 _STARTED_AT = datetime.now().isoformat(timespec="seconds")
 _INSTANCE_ID = uuid.uuid4().hex[:12]
 _LOGGER = logging.getLogger(__name__)
 
-_store = LocalStore()
+_store = LocalStore(db_path=_DB)
 
 _SECTOR_FLOW_CACHE: dict = {}  # {(days, data_version): (dates, pivot_df)}
 _SIG_CACHE: dict = {}          # {(ts_code, as_of): sig} 个股信号缓存
