@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from ab_screener.api.routers.ai_insight import router as ai_insight_router
 from ab_screener.api.routers.desk import router as desk_router
 from ab_screener.api.routers.intelligence import router as intelligence_router
+from ab_screener.api.routers.lhb import router as lhb_router
 from ab_screener.api.routers.monitor import router as monitor_router
 from ab_screener.api.routers.paper import router as paper_router
 from ab_screener.api.routers.professional_backtest import router as professional_backtest_router
@@ -38,6 +39,7 @@ CONSOLE_V2_ROUTERS = (
     ai_insight_router,
     desk_router,
     intelligence_router,
+    lhb_router,
     monitor_router,
     research_router,
     review_router,

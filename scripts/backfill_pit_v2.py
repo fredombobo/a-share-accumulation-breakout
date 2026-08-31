@@ -21,7 +21,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ab_screener.application.pit_backfill import ALL_DATASETS, CorporateActionBackfill, PitBackfill
+from ab_screener.application.pit_backfill import (
+    ALL_DATASETS,
+    CorporateActionBackfill,
+    PitBackfill,
+    assert_copy_database,
+)
 from ab_screener.data.migration_registry import pending_migrations
 
 DEFAULT_DATASETS = list(ALL_DATASETS)
@@ -50,8 +55,13 @@ def main() -> int:
     args = parser.parse_args()
 
     db = Path(args.db)
-    if not db.is_absolute():
-        print("错误: --db 必须是绝对路径（防误操作）")
+    try:
+        db = assert_copy_database(db, maintenance_authorized=False)
+    except ValueError as exc:
+        print(f"错误: {exc}")
+        return 2
+    if db.name == "stock_data.db" and "runtime" in db.parts:
+        print("错误: 拒绝操作生产库 runtime/stock_data.db")
         return 2
     if not db.is_file():
         print(f"错误: 数据库不存在: {db}")

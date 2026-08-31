@@ -1,0 +1,19 @@
+# 龙虎榜身份假设政策（T05）。第三方游资名录不得标为 A 级。
+version: v1
+hot_money_max_evidence_grade: B
+hot_money_display_prefix: 疑似
+hot_money_display_suffix: （候选）
+institution_channel_label: 机构专用通道
+connect_channel_label: 沪深股通聚合通道
+as_of_required: true
+knowledge_as_of_required: true
+auto_merge: false
+precision:
+  min_coverage: 0.8
+  max_mis_merge_rate: 0.05
+official_tags:
+  INSTITUTION_CHANNEL: ["机构专用"]
+  SH_CONNECT: ["沪股通专用", "沪股通"]
+  SZ_CONNECT: ["深股通专用", "深股通"]
+  HQ_NON_BRANCH: ["总部", "非营业场所"]
+  BRANCH: ["营业部", "分公司"]

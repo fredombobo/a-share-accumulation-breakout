@@ -1,0 +1,96 @@
+{
+  "disclose_date": "20260810",
+  "calendar": ["20260806", "20260807", "20260810"],
+  "available_at": "2026-08-10T16:00:00+08:00",
+  "dual_board": {
+    "top_list": [
+      {
+        "ts_code": "000001.SZ",
+        "trade_date": "20260810",
+        "reason": "日涨幅偏离值达到7%",
+        "net_amount": 6,
+        "amount": 5000
+      }
+    ],
+    "top_inst": [
+      {
+        "ts_code": "000001.SZ",
+        "trade_date": "20260810",
+        "exalter": "某证券深圳益田路营业部",
+        "side": "0",
+        "buy": 8,
+        "sell": 0,
+        "reason": "日涨幅偏离值达到7%"
+      },
+      {
+        "ts_code": "000001.SZ",
+        "trade_date": "20260810",
+        "exalter": "某证券深圳益田路营业部",
+        "side": "1",
+        "buy": 0,
+        "sell": 2,
+        "reason": "日涨幅偏离值达到7%"
+      }
+    ]
+  },
+  "multi_reason": {
+    "top_list": [
+      {
+        "ts_code": "000002.SZ",
+        "trade_date": "20260810",
+        "reason": "日涨幅偏离值达到7%",
+        "net_amount": 1,
+        "amount": 2000
+      },
+      {
+        "ts_code": "000002.SZ",
+        "trade_date": "20260810",
+        "reason": "日换手率达到20%",
+        "net_amount": 1,
+        "amount": 2000
+      }
+    ],
+    "top_inst": [
+      {
+        "ts_code": "000002.SZ",
+        "trade_date": "20260810",
+        "exalter": "机构专用",
+        "side": "0",
+        "buy": 1,
+        "sell": 0,
+        "reason": "日涨幅偏离值达到7%"
+      },
+      {
+        "ts_code": "000002.SZ",
+        "trade_date": "20260810",
+        "exalter": "机构专用",
+        "side": "0",
+        "buy": 1,
+        "sell": 0,
+        "reason": "日换手率达到20%"
+      }
+    ]
+  },
+  "cumulative_3d": {
+    "top_list": [
+      {
+        "ts_code": "000003.SZ",
+        "trade_date": "20260810",
+        "reason": "连续三个交易日内，涨幅偏离值累计达到20%",
+        "net_amount": 50,
+        "amount": 800
+      }
+    ],
+    "top_inst": [
+      {
+        "ts_code": "000003.SZ",
+        "trade_date": "20260810",
+        "exalter": "某证券总部",
+        "side": "0",
+        "buy": 50,
+        "sell": 0,
+        "reason": "连续三个交易日内，涨幅偏离值累计达到20%"
+      }
+    ]
+  }
+}

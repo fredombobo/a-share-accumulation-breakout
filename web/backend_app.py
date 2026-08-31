@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 os.environ.pop("PYTHONPATH", None)
@@ -45,9 +46,19 @@ if os.environ.get("LIVE_TRADING_ENABLED", "false").lower() == "true":
 # 未应用迁移/checksum 漂移 → 拒绝启动（fail-closed）。
 from ab_screener.data.schema_check import assert_schema_compatible
 
-assert_schema_compatible(_DB)
 
-app = FastAPI(title="A股 横盘吸筹→启动 选股系统", version="2.0.0")
+@asynccontextmanager
+async def _runtime_lifespan(_: FastAPI):
+    """进程启动才校验实际运行库；模块导入不碰生产迁移。"""
+    assert_schema_compatible(_DB)
+    yield
+
+
+app = FastAPI(
+    title="A股 横盘吸筹→启动 选股系统",
+    version="2.0.0",
+    lifespan=_runtime_lifespan,
+)
 
 # 精简产品装配：8001 只挂专业回测、平台就绪度与系统审计底座。
 # 纸面、研究控制台和六形态等完整路由仍可由离线开发 app 显式装配，不进入日用产品。

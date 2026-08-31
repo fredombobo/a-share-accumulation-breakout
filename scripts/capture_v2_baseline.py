@@ -22,6 +22,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def sha256_of_bytes(data: bytes) -> str:
@@ -177,7 +179,10 @@ def main() -> int:
 
     git = git_facts()
     cfg = config_hash()
-    db = db_facts((ROOT / args.db_path).resolve())
+    # 与后端一致：显式 AB_DB_PATH 时采集该隔离运行库；未设置才落到生产默认库。
+    from ab_screener.api.deps import default_db_path
+
+    db = db_facts(default_db_path())
     front = frontend_facts()
     deps = dependency_hash()
 

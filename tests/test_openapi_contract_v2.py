@@ -43,6 +43,15 @@ REQUIRED_V2_PATHS = {
     "GET /api/v2/system/health",
     "GET /api/v2/system/backups",
     "GET /api/v2/system/audit",
+    "GET /api/v2/lhb/radar",
+    "GET /api/v2/lhb/events",
+    "GET /api/v2/lhb/seats/{seat_id}",
+    "GET /api/v2/lhb/actors/{actor_id}",
+    "GET /api/v2/lhb/stocks/{ts_code}/timeline",
+    "GET /api/v2/lhb/network",
+    "GET /api/v2/lhb/quality",
+    "GET /api/v2/lhb/signals",
+    "GET /api/v2/lhb/backtest",
 }
 
 

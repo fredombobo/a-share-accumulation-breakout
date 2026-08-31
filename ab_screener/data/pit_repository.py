@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ab_screener.data.migration_intents.aux_history_v2 import ALL_HISTORY_TABLES as HISTORY_TABLES
+from ab_screener.data.pit_writer import HISTORY_TABLES
 from ab_screener.domain.data_point import normalize_ts
 
 

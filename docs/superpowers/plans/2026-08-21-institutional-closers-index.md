@@ -2,7 +2,8 @@
 
 > 给实现 Agent / 检查 Agent 用。不是宣传材料。  
 > **禁止**自行宣布 `PERSONAL_INSTITUTIONAL_READY`。  
-> `LIVE_TRADING_ENABLED` 必须保持 false。
+> `LIVE_TRADING_ENABLED` 必须保持 false。  
+> **当前下一刀（2026-08-22 独立检查后）：** [2026-08-22-closers-next-index.md](2026-08-22-closers-next-index.md) —— 先修 E2 回归再 D/O。本五件套保留为背景合同。
 
 ## 读这套文档的顺序
 

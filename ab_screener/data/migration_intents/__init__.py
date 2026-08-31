@@ -5,6 +5,8 @@ from ab_screener.data.migration_intents import (
     corporate_actions_v2,  # noqa: F401
     execution_lineage_v2,  # noqa: F401
     instrument_history_v2,  # noqa: F401
+    lhb_ops_v2,  # noqa: F401
+    lhb_tracking_v2,  # noqa: F401
     operations_v2,  # noqa: F401
     pit_history_v2,  # noqa: F401
     portfolio_risk_v2,  # noqa: F401

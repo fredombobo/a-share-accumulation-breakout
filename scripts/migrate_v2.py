@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from ab_screener.application.pit_backfill import assert_copy_database
 from ab_screener.data.migration_intents import pit_history_v2  # noqa: F401  侧效应：注册全部迁移意图
 from ab_screener.data.migration_registry import (
     apply_pending,
@@ -29,9 +30,10 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="应用待迁移（在副本上）")
     args = parser.parse_args()
 
-    db = Path(args.db)
-    if not db.is_absolute():
-        print("错误: --db 必须是绝对路径（防误操作）")
+    try:
+        db = assert_copy_database(Path(args.db), maintenance_authorized=False)
+    except ValueError as exc:
+        print(f"错误: {exc}")
         return 2
     if not db.is_file():
         print(f"错误: 数据库不存在: {db}")

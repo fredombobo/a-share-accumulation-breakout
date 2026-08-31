@@ -25,10 +25,16 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ab_screener.data.adapters.tushare_pit import df_to_pit_rows, fetch_corporate_actions, get_pro_handle
+from ab_screener.data.adapters.tushare_pit import (
+    df_to_pit_rows,
+    fetch_corporate_actions,
+    fetch_pit_rows,
+    get_pro_handle,
+)
 from ab_screener.data.corporate_action_repository import CorporateActionError, CorporateActionRepository
-from ab_screener.data.migration_intents.aux_history_v2 import ALL_HISTORY_TABLES as HISTORY_TABLES
-from ab_screener.data.pit_writer import MAX_ROWS_PER_TX, build_records, write_chunk
+# HISTORY_TABLES 取 pit_writer：它在 aux_history 基础上并入了 LHB_PIT_HISTORY_TABLES，
+# 直接用 aux_history_v2.ALL_HISTORY_TABLES 会让 top_inst 等龙虎榜分区被判为未知数据集。
+from ab_screener.data.pit_writer import HISTORY_TABLES, MAX_ROWS_PER_TX, build_records, write_chunk
 from ab_screener.domain.data_point import normalize_ts
 
 _TZ = ZoneInfo("Asia/Shanghai")
@@ -37,16 +43,39 @@ SOURCE = "tushare"
 # daily 族按交易日分区；fina_indicator 按 ann_date 月分区；stock_basic 单块全量。
 # aux 族（B 阶段）：top_list/margin/cyq 按交易日；holder 按 ts_code（报告期）。
 _DAILY_FAMILY = ("daily", "daily_basic", "moneyflow", "adj_factor")
-_AUX_DAILY_FAMILY = ("top_list", "margin", "cyq")
+_AUX_DAILY_FAMILY = ("top_list", "top_inst", "margin", "cyq")
+_LHB_EMPTY_FAIL_CLOSED = frozenset({"top_list", "top_inst"})
+_LHB_REVISION_DATASETS = frozenset({"top_list", "top_inst"})
+DEFAULT_LHB_REVISION_RECHECK_DAYS = 5
+PRODUCTION_DB_NAME = "stock_data.db"
 
 # 数据集短名全集（表名 = {ds}_history）：checkpoint/CLI/coverage 统一用短名。
-ALL_DATASETS = tuple(sorted({t[: -len("_history")] for t in HISTORY_TABLES}))
+ALL_DATASETS = tuple(
+    sorted(
+        t[: -len("_history")]
+        for t in HISTORY_TABLES
+        if not t.startswith("lhb_official")
+    )
+)
+
+
+def assert_copy_database(db_path: str | Path, *, maintenance_authorized: bool = False) -> Path:
+    """真实回填只允许绝对路径副本；默认拒绝 runtime/stock_data.db。"""
+    path = Path(db_path)
+    if not path.is_absolute():
+        raise ValueError("数据库路径必须是绝对路径（防误操作）")
+    resolved = path.resolve()
+    is_prod = resolved.name == PRODUCTION_DB_NAME and "runtime" in resolved.parts
+    if is_prod and not maintenance_authorized:
+        raise ValueError(f"拒绝操作生产库: {resolved}")
+    return resolved
 
 
 def _hash_rows(rows: list[dict[str, Any]]) -> str:
-    blob = "\n".join(
+    row_hashes = sorted(
         hashlib.sha256(str(sorted(r.items())).encode("utf-8")).hexdigest() for r in rows
     )
+    blob = "\n".join(row_hashes)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
@@ -95,6 +124,8 @@ class PitBackfill:
             df = handle.stock_basic()
         elif dataset == "top_list":
             df = handle.top_list(trade_date=key)
+        elif dataset in ("top_inst", "hm_list"):
+            return fetch_pit_rows(dataset, start=key, end=key, pro=self._pro)
         elif dataset == "margin":
             df = handle.margin_detail(trade_date=key)
         elif dataset == "cyq":
@@ -126,6 +157,7 @@ class PitBackfill:
         end: str | None = None,
         partitions: dict[str, list[str]] | None = None,
         workers: int = 1,
+        lhb_revision_recheck_days: int = DEFAULT_LHB_REVISION_RECHECK_DAYS,
         progress_cb: Callable[[str, int], None] | None = None,
     ) -> dict[str, Any]:
         """按数据集顺序回填。partitions 显式给出时优先（离线测试）。
@@ -140,6 +172,8 @@ class PitBackfill:
         total_rows = 0
         total_skipped = 0
         total_failed = 0
+        total_revalidated = 0
+        total_revised = 0
         per_dataset: dict[str, dict[str, Any]] = {}
 
         for dataset, keys in plan.items():
@@ -147,15 +181,27 @@ class PitBackfill:
             skipped = 0
             rows = 0
             failed: list[str] = []
-            pending = []
+            revalidated = 0
+            revised = 0
+            pending: list[str] = []
+            previous_hashes: dict[str, str] = {}
+            recheck_keys = (
+                set(keys[-max(0, lhb_revision_recheck_days):])
+                if dataset in _LHB_REVISION_DATASETS and lhb_revision_recheck_days > 0
+                else set()
+            )
             with self._conn() as conn:
                 for key in keys:
                     cp = conn.execute(
-                        "SELECT status FROM pit_backfill_checkpoints"
+                        "SELECT status, source_hash FROM pit_backfill_checkpoints"
                         " WHERE dataset=? AND partition_key=?", (dataset, key)
                     ).fetchone()
                     if cp and cp[0] == "done":
-                        skipped += 1
+                        if key in recheck_keys:
+                            pending.append(key)
+                            previous_hashes[key] = str(cp[1] or "")
+                        else:
+                            skipped += 1
                     else:
                         pending.append(key)
             # 并发预拉取（分批，控制内存）
@@ -187,11 +233,26 @@ class PitBackfill:
                     if isinstance(chunk, dict) and "__error__" in chunk:
                         failed.append(f"{key}: {chunk['__error__']}")
                         continue
+                    if dataset in _LHB_EMPTY_FAIL_CLOSED and len(chunk) == 0:
+                        failed.append(f"{key}: EMPTY_WITHOUT_PUBLISHED_FLAG")
+                        continue
                     if len(chunk) > MAX_ROWS_PER_TX:
                         raise ValueError(
                             f"分区 {dataset}/{key} 行数 {len(chunk)} 超预算 {MAX_ROWS_PER_TX}"
                         )
                     src_hash = _hash_rows(chunk)
+                    previous_hash = previous_hashes.get(key)
+                    if previous_hash is not None and previous_hash == src_hash:
+                        with self._conn() as conn:
+                            conn.execute(
+                                "UPDATE pit_backfill_checkpoints SET updated_at=?"
+                                " WHERE dataset=? AND partition_key=?",
+                                (_now_iso(), dataset, key),
+                            )
+                            conn.commit()
+                        skipped += 1
+                        revalidated += 1
+                        continue
                     with self._conn() as conn:
                         conn.execute(
                             "INSERT INTO pit_backfill_checkpoints (dataset, partition_key, status,"
@@ -217,17 +278,21 @@ class PitBackfill:
                         )
                         conn.commit()
                     done += 1
+                    if previous_hash is not None:
+                        revised += 1
                     rows += len(chunk)
                     if progress_cb:
                         progress_cb(f"{dataset}/{key}", rows)
             per_dataset[dataset] = {
                 "partitions_done": done, "rows": rows, "skipped": skipped,
-                "failed": failed,
+                "failed": failed, "revalidated": revalidated, "revised": revised,
             }
             total_done += done
             total_rows += rows
             total_skipped += skipped
             total_failed += len(failed)
+            total_revalidated += revalidated
+            total_revised += revised
 
         return {
             "datasets": sorted(per_dataset),
@@ -235,6 +300,8 @@ class PitBackfill:
             "rows": total_rows,
             "skipped": total_skipped,
             "failed": total_failed,
+            "revalidated": total_revalidated,
+            "revised": total_revised,
             "per_dataset": per_dataset,
         }
 
@@ -279,6 +346,10 @@ class PitBackfill:
                         "（镜像网关不支持纯 period 查询，必须按标的拉取）"
                     )
                 plan[ds] = sorted(codes)
+            elif ds == "hm_list":
+                if not end:
+                    raise ValueError("hm_list 需要 end（list_date）")
+                plan[ds] = [end]
             elif ds == "holder":
                 codes = self._basic_ts_codes()
                 if not codes:
