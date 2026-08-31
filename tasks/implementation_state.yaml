@@ -1,10 +1,11 @@
 version: 1
-updated_at: "2026-08-31T07:14:29+08:00"
+updated_at: "2026-08-31T08:42:51+08:00"
 program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
 overall_status: BLOCKED
 overall_note: >
   P7.1 组合会计、P7.2 冻结 PIT 研究读取与 P7.3 正式晋级硬门均已完成；
   当前权威研究 v2auth20260828g 在生产一致的因果市场环境过滤下仍诚实 FAIL/NO_CANDIDATE；
+  WP98 新经济机制逐日复验同样为 NO_CANDIDATE，WF1/WF2 均无测试成交且 2x 成本为负；
   当前身份 D/P/L/G 已复验 PASS，
   R/O=FAIL、S=INSUFFICIENT，因此 P8 继续 BLOCKED；
   Do not claim PERSONAL_INSTITUTIONAL_READY.
@@ -17,13 +18,15 @@ protected_user_docs:
 ready_now: []
 tasks:
   V2-P7.7-R-POST-BREAKOUT-SUPPLY-DRY-UP:
-    status: in_progress
+    status: complete
     started_at: "2026-08-31T07:14:29+08:00"
+    completed_at: "2026-08-31T08:42:51+08:00"
     work_package: WP98
     dependencies:
       - PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION
       - V2-P7.6-R-RESILIENT-ABSORPTION
     plan: "docs/V2-R-POST-BREAKOUT-SUPPLY-DRY-UP-PREREGISTRATION-2026-08-31.md"
+    result: "docs/V2-R-POST-BREAKOUT-SUPPLY-DRY-UP-RESULT-2026-08-31.md"
     note: >
       只验证突破后下一交易日供给枯竭与价格接受这一项新时间序列机制；不调整
       市场状态、箱体、量比、涨幅或退出阈值。固定一组既有参数、600 只冻结股票，
@@ -38,10 +41,18 @@ tasks:
       - "tests/test_post_breakout_supply_dry_up.py"
       - "tests/test_professional_backtest_api.py"
       - "web/frontend/tests/professional-backtest.test.tsx"
-    current_evidence:
-      - "预登记规则已冻结；尚未实现，未读取任何新机制历史结果"
-      - "WP97 基准 probt-e0a5962dc8aa 保持不可变，WF2=0，EXPLORATORY_WEAK"
-      - "LIVE_TRADING_ENABLED=false"
+    completed_evidence:
+      - "预登记提交 b648e0f 早于实现提交 8ec54ac 和真实结果"
+      - "唯一任务 probt-9e81998befa2：DONE/100，代码 75d868301b44，input f740c98f80e4db8654e02c6bc22f16cc8df333dd0b4e48e91b1769560bc7ea25"
+      - "v1.5 契约；POST_BREAKOUT_SUPPLY_DRY_UP_V1；语义 b7e14b269fc810af；parameter_search=none"
+      - "固定 1 组参数、600 只股票、sample_step=1；同 input hash 只有 1 条运行"
+      - "IS 67 笔/-0.1843%/PF 0.9932；OOS 77 笔/-1.3073%/PF 0.9652"
+      - "WF1/WF2/WF3 测试成交 0/0/48；WF evidence_complete=false、wf_pass=false"
+      - "随机/MA 基线 -10.2314%/-5.7734%；2x 成本 -3.6925%"
+      - "NO_CANDIDATE；candidate_eligible=false；can_claim_edge=false；研究机制不能启用每日选股"
+      - "报告 SHA-256 5431044b8695aa26f35de2d0d7f8d10fe68dbce564b48d0a9f5d2a92cc88c543 复算一致"
+      - "严格门 PASS：1001 Pytest、17 Vitest、Ruff、Mypy、strict architecture、frontend build、真实 8001 浏览器"
+      - "WP97 记录与报告哈希保持不变；LIVE_TRADING_ENABLED=false"
   PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION:
     status: complete
     started_at: "2026-08-30T22:30:00+08:00"

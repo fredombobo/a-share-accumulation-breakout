@@ -569,13 +569,14 @@ tasks:
 
   - id: V2-P7.7-R-POST-BREAKOUT-SUPPLY-DRY-UP
     title: 预登记突破后供给枯竭确认机制并执行逐日复验
-    status: in_progress
+    status: complete
     work_package: WP98
     phase: P7
     dependencies:
       - PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION
       - V2-P7.6-R-RESILIENT-ABSORPTION
     plan: docs/V2-R-POST-BREAKOUT-SUPPLY-DRY-UP-PREREGISTRATION-2026-08-31.md
+    result: docs/V2-R-POST-BREAKOUT-SUPPLY-DRY-UP-RESULT-2026-08-31.md
     acceptance:
       - 机制只接受原严格突破后的下一交易日缩量站稳与正 CLV，不修改既有阈值
       - 信号推迟到确认日收盘且最早下一开盘成交，缺失或非相邻交易日 fail-closed
@@ -584,3 +585,9 @@ tasks:
       - 旧基础机制及已否决韧性机制结果不变，旧任务保持不可变
       - 严格质量门和真实 8001 浏览器验收通过
       - 历史通过也只记为 HISTORICAL_SUPPORT_ONLY，实盘保持关闭
+    completion_note: >
+      WP98 先以 b648e0f 预登记，再以 8ec54ac 实现，唯一真实任务
+      probt-9e81998befa2 使用 v1.5 契约、固定 1 组参数、600 只冻结股票和
+      sample_step=1 完成。OOS 77 笔、净收益 -1.3073%、PF 0.9652；WF1/WF2
+      均为 0 笔，WF3 48 笔；2 倍成本净收益 -3.6925%。结论 NO_CANDIDATE，
+      不修改机制或阈值，不启用今日选股，LIVE_TRADING_ENABLED=false。
