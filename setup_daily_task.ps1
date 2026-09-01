@@ -14,6 +14,7 @@
   · 这只是替你按时执行 daily_run.ps1，跑的是同一条手动链路。
   · 与应用内部的 DAILY_SCHEDULER_ENABLED 无关 —— 那个仍然是 false，本脚本不碰。
   · 只在你登录时运行，不需要保存密码。机器关着错过的那次，开机后会补跑。
+  · 失败（含行情尚未发布）会隔 45 分钟自动重试，最多 3 次。
   · 节假日照跑：同步按交易日历 diff，没有新交易日就是 0 行，扫描结果 as_of 不变，
     不会产生假信号，只会多一份日志。
 #>
@@ -80,12 +81,17 @@ $action = New-ScheduledTaskAction `
 $trigger = New-ScheduledTaskTrigger -Weekly `
     -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $At
 
+# 失败自动重试：Tushare 的 daily_basic / moneyflow 发布时间会飘，
+# 18:30 撞上晚发布时 sync 会 fail-closed 退出 1。让计划任务隔 45 分钟再试，
+# 最多 3 次（约 19:15 / 20:00 / 20:45），比把时间一味推后更稳。
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -DontStopIfGoingOnBatteries `
     -AllowStartIfOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2) `
-    -MultipleInstances IgnoreNew
+    -MultipleInstances IgnoreNew `
+    -RestartInterval (New-TimeSpan -Minutes 45) `
+    -RestartCount 3
 
 if (Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue) {
     Say "已存在同名任务，先移除再重建…" 'Yellow'
@@ -101,6 +107,7 @@ $info = Get-ScheduledTaskInfo -TaskName $TaskName
 Say ''
 Say "OK  已注册 $TaskName" 'Green'
 Say "    周一~周五 $At 自动运行；下次 $($info.NextRunTime)"
+Say "    失败自动重试：隔 45 分钟一次，最多 3 次（行情晚发布不至于白等一天）"
 Say "    日志写到 $Root\runtime\daily_task_*.log（只留最近 30 份）"
 Say ''
 Say '硬门未被改动：LIVE_TRADING / DAILY_SCHEDULER / V2_PIT_READ 仍由 daily_run.ps1 强制 false。' 'DarkGray'
