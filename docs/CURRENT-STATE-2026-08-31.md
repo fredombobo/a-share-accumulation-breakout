@@ -1,109 +1,103 @@
-# 当前状态与收口路线（2026-08-31）
+# 当前状态与收口记录（2026-08-31）
 
-> 本文件由外部检查生成，用于记录 **2026-08-31 当天的真实仓库与运行态**。
+> 本文件记录 2026-08-31 的收口过程与结果。
 > 不覆盖 `docs/STATUS.md`（该文件按约定由用户维护）。
-> 工程状态 ≠ 研究结论。本文件不构成任何 edge、可跟单或收益承诺。
+> **工程状态 ≠ 研究结论。本文件不构成任何 edge、可跟单或收益承诺。**
 
-## 0. 一句话结论
+## 0. 结论
 
-系统**已经在跑、也已经可用**：8001 后端正在服务、行情新鲜、扫描正常。
-真正的问题不是"坏了"，而是**同一个项目分裂成两份代码副本**——权威文档指向主副本，
-实际开发和运行却在集成工作树里，且这批工作从未合回 `main`。收口 = 把这条岔路合上。
+代码分裂已收口。`origin/main` 从 `2c04962`（08-21）快进到 `b3f4d58`，
+全量测试 **1144 passed / 0 failed**，前端构建通过。
 
-## 1. 真实拓扑（关键，容易搞错）
+剩余的全部阻断都在**研究门禁**，不是工程债——其中一条（闸门 R）按定义无法通过工程手段解决。
 
-| 位置 | 分支 | 最后提交 | 角色 |
-|---|---|---|---|
-| `E:\CODEX\Stock_selection\accumulation_breakout` | `closers-g2-split` | 2026-08-23 | 文档宣称的权威副本，**代码已落后** |
-| `E:\CODEX\Stock_selection\worktrees\v2r-final-integration` | `v2r-final-integration` | **2026-08-31 08:44** | 实际开发 + 实际运行的副本 |
-| `origin/main`（GitHub） | `main` | `2c04962` / 2026-08-21 | **落后所有本地工作** |
+## 1. 收口前的问题
 
-- 共 **15 个本地分支 / 13 个 git 工作树**（`v2r-a/d/f/n/o1/o2/q1/r/s/x`、两个 wave 集成分支、`regime-parity`）。
-- 8001 后端进程由 `runtime/start_backend_authoritative.ps1` 拉起：**代码取工作树，数据取主副本的生产库**
-  （`AB_DB_PATH=...\accumulation_breakout\runtime\stock_data.db`，约 16.5 GB）。
-- 风险：双击主副本的 `一键启动.bat` 会启动 **08-23 的旧代码**，而不是每天在用的那份。
+| 问题 | 严重度 |
+|---|---|
+| 龙虎榜 T01–T12 全部工作**从未提交**（159 文件处于未跟踪/未暂存状态，零备份） | 最高 |
+| 主副本停在 `closers-g2-split`（08-23），实际开发与运行在 `v2r-final-integration` 工作树 | 高 |
+| `origin/main` 落后本地全部工作 166 个提交 | 高 |
+| 15 个本地分支 / 13 个 git 工作树 | 中 |
+| 文档宣称的权威副本与实际运行副本不一致 | 中 |
 
-## 2. 运行态快照
+## 2. 处置过程
 
-- 行情基准日 `as_of = 20260828`，新鲜度「滞后 0 个交易日」。
-- 最近一次扫描：市场环境 **防守**（沪深300 收于 MA20 下方）→ `allow_new_entries=false`，
-  **A 池 = 0、B 池 = 30**。这是风控设计的预期行为，不是故障。
-- 当前生效参数 `profile_id=manual-daily-research-scan`，`source_kind=MANUAL_RESEARCH`，
-  自带标注：**未经 IS/OOS、WF、基线与成本压力验证**。
-- 8-24 起工作树新增的产品能力：精简版日用面（每日选股 / 个股详情 / 专业回测）、
-  专业回测网格与 AI 证据评测、全局长任务进度、应用内引导与分类维度、供给枯竭机制预登记。
+1. **抢救**：`lhb-rescue-20260831` / `f3da54c`，159 文件 / +15180 行，推远端。
+2. **合并**：`收口-20260831` 从 `v2r-final-integration` 拉出，并入抢救分支。
+   - `closers-g2-split` 经 `merge-base --is-ancestor` 确认已被集成分支包含，可删。
+   - 17 个冲突：7 个为前端构建产物（整体取集成分支后重新 `npm run build`），
+     `Sidebar.tsx` 取集成分支，其余 9 个人工合并。
+3. **构建**：`tsc -b && vite build` 通过，6 个龙虎榜 chunk 正常生成。
+4. **测试**：4 个失败 → 全部修复 → `1144 passed`。
+5. **快进**：`git push origin 收口-20260831:main`，`2c04962..b3f4d58`。
 
-## 3. 龙虎榜 T01–T12 剩余量
+## 3. 合并中发现的两个真问题
 
-工程实现 **T01–T12 全部已交付并有 handoff**；卡点集中在第 6 节的"正式通过"条件。
+**`components/common/` 被 git 静默删除。** 集成分支删了 `ApiErrorPanel` / `EmptyState` /
+`StatusStrip`，龙虎榜分支未修改它们——「一边删、一边没动」不产生冲突，git 直接采纳删除。
+6 个龙虎榜页面全部 import 这三个文件，`npm run build` 必然失败。已从抢救分支恢复。
 
-| 任务 | 工程 | 唯一未打勾的验收项 |
+**两个分支的 migration checksum 算法相反。** 集成分支的新算法是 `sha256:`（修「换个
+worktree 检出 checksum 就变」），16 位是历史遗留，并建了 `_LEGACY_CHECKSUM_COMPATIBILITY`
+做一次性映射；龙虎榜分支恰好相反。合并时若照搬龙虎榜的
+`if checksum.startswith("sha256:") and len == 71: continue`，在新算法下会匹配**全部**
+当前 checksum，等于把迁移漂移检测整体短路。已改为只跳过未注册的退役 id，历史 checksum
+交回 `_checksum_matches` 经兼容表识别。
+
+## 4. 四个测试失败的修复
+
+| 失败 | 根因 | 处理 |
 |---|---|---|
-| T01 契约与迁移 | 完成 | — |
-| T02 抓取与原始快照 | 完成 | — |
-| T03 回填与跨源对账 | 完成 | 对账代码就绪，**真实官方数据未授权** |
-| T04 事件标准化去重 | 完成 | — |
-| T05 席位主数据与身份图谱 | 完成 | — |
-| T06 行为特征与协同网络 | 完成 | — |
-| T07 画像 | 完成 | — |
-| T08 信号与硬否决 | 完成 | — |
-| T09 事件研究与反过拟合 | 完成 | — |
-| T10 API 与仪表盘 | 完成 | — |
-| T11 盘后 DAG 与告警 | 完成 | 告警全部 `CREATED + dry_run=1`，**未送达未 ACK** |
-| T12 Shadow 与发布门禁 | 完成 | **shadow maturity 未达标**（需 ≥3 个月且 ≥30 个成熟独立信号） |
+| `test_lhb_migrations` | 常量钉的是旧算法输出 | 刷新为新算法的 11 个值 |
+| `test_migration_registry_v2` | 兼容用例用的是随手编的 `sha256:aaa…` | 改用兼容表里的真实历史值 |
+| `test_v2_baseline_manifest` | `default_db_path()` 覆盖了 `--db-path` | 显式 `--db-path` 恢复优先 |
+| `test_lhb_product_pipeline` | 共享 DAG 运行器新增 `ctx` 参数 | `build_lhb_dag` 加按签名过滤的适配层 |
 
-第 4 节「边界情况验收清单」20 项**整段未勾选**（清单里从未逐项签收）。
+## 5. 一处主动放宽的守卫（需知情）
 
-### 第 6 节三道未过的硬门，按可关闭性分类
+`test_lean_product_surface::test_frontend_route_manifest_is_lean` 原本禁止 App.tsx 出现
+**任何** `/v2/` 路由。现收窄为：`/lab`、`/paper` 照旧禁止，`/v2/` 仅允许 `/v2/lhb/`。
 
-| 硬门 | 能否快速关闭 | 原因 |
-|---|---|---|
-| 全仓 Ruff 114 条存量债 | **能** | 纯代码整改，与研究无关 |
-| 官方跨源核验 `NOT_AUTHORIZED` | **不能** | 交易所数据授权问题，写代码解决不了 |
-| Shadow maturity | **不能** | 按定义需要 3–12 个月真实积累 |
+理由：龙虎榜由 8123 隔离产品（`scripts/serve_lhb_product.py`）服务，但与 8001
+共用同一份 dist，路由删掉会导致 8123 界面白屏。**8001 的导航与 API 仍不含龙虎榜**，
+由同文件另外两个用例把守，二者均通过且未改动。
 
-结论：LHB 的"正式工程通过"在拿到官方数据授权之前**不可能**宣告。当前 `READY（仅隔离副本、盘后研究）`
-已经是这批工作能达到的最高诚实状态，继续往前推的性价比很低。
+## 6. 日常使用
 
-## 4. 收口路线（按此顺序）
-
-### 第 1 刀 —— 先体检，不动手
-```
-双击 收口诊断.bat
-```
-只读。打印工作树拓扑、各分支与 `origin/main` 的落差、**合并冲突预演**、端口占用、
-后端身份、三个数据库体积、硬门状态与最近扫描摘要，并落地一份报告到 `runtime\`。
-
-### 第 2 刀 —— 合并集成分支（看完诊断再做）
-诊断报告的第 3 节说无冲突就直接走：
-```powershell
-cd E:\CODEX\Stock_selection\accumulation_breakout
-git fetch origin
-git switch -c 收口-20260831 origin/main
-git merge --no-ff v2r-final-integration
-# 冲突则逐个解，解完再 commit
-git push -u origin 收口-20260831        # 或直接推 main
-```
-合并后主副本切到该分支，**主副本与工作树的代码才真正一致**。
-`closers-g2-split` 的 12 个提交需单独确认是否已被 `v2r-final-integration` 包含
-（诊断报告第 2 节的落差数字会告诉你）。
-
-### 第 3 刀 —— 日常只用一个入口
 ```
 双击 每日运行.bat
 ```
 同步行情 → 拉起 8001 → 发起扫描 → 打印 A/B 池与市场环境。
-硬门在脚本里强制为 `false`，且拒绝指向 `lhb_product.db`。
-合并完成后，把 `daily_run.ps1` 里的 `-Root` 默认值改回主副本路径，工作树即可 `git worktree remove`。
+`-Root` 已指向主副本；`LIVE_TRADING_ENABLED` / `DAILY_SCHEDULER_ENABLED` /
+`V2_PIT_READ_ENABLED` 在脚本内强制 false；拒绝指向 `lhb_product.db`。
 
-### 第 4 刀 —— 清理（可选）
-- 12 个已完成的 `v2r-*` 工作树：`git worktree remove` + `git branch -d`。
-- `runtime\lhb_product.db` 16.5 GB：若近期不推进龙虎榜，删除可释放约 16 GB。
-- 主副本 `runtime\` 下 8-06～8-11 的一次性探针脚本（`_probe*.py`、`_lab*.json` 等）。
+只读体检：`双击 收口诊断.bat`。
 
-## 5. 明确不做的事
+## 7. 仍未通过的门禁
+
+`readiness=BLOCKED`，七道闸门全部 fail-closed。**合并不改变这一点。**
+
+| 闸门 | 原因 | 出路 |
+|---|---|---|
+| D | 门禁报告超 24h、构建版本与数据库指纹不符 | 在当前 build 重跑门禁 |
+| S / P / L / G | 证据身份不匹配（证据生成于 2026-08-29 08:31） | 在当前 build 重新生成证据 |
+| O | `AB_BACKUP_ROOT` 未配置；soak 0/5 | 变量已由 `daily_run.ps1` 设置；soak 需攒满 5 日 |
+| R | 权威研究任务 `v2auth20260829k` 结论 **FAIL** | **无出路**——这是研究结论，非工程问题 |
+
+龙虎榜第 6 节三道硬门同样未变：全仓 Ruff 存量债可清；官方跨源核验属数据授权问题；
+shadow maturity 按定义需 3–12 个月。
+
+## 8. 可选清理
+
+- 12 个已完成的 `v2r-*` 工作树与分支：`git worktree remove` + `git branch -d`。
+- `closers-g2-split`：已被包含，可删。
+- `runtime\lhb_product.db` 约 15.4 GB：短期不推进龙虎榜可删除。
+
+## 9. 明确不做的事
 
 - 不打开 `LIVE_TRADING_ENABLED`、`DAILY_SCHEDULER_ENABLED`、`V2_PIT_READ_ENABLED`。
 - 不把 A 池、B 池或龙虎榜信号描述为荐股、可跟单或已验证有效。
-- 不覆盖 `docs/STATUS.md`、不改 `configs/platform_v2.yaml`、不动生产库。
+- 不覆盖 `docs/STATUS.md`，不改 `configs/platform_v2.yaml`，不动生产库。
 - 不把 `MANUAL_RESEARCH` 参数描述为通过验证的参数。
+- 不为了让门禁好看而改写验收结论——工程 PASS 不等于 edge PASS。
