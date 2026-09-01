@@ -11,6 +11,9 @@
 
 剩余的全部阻断都在**研究门禁**，不是工程债——其中一条（闸门 R）按定义无法通过工程手段解决。
 
+> 2026-09-01 补：合并后暴露的 schema 冲突已按「代码让步、不动生产库」解决，见第 5b 节。
+> 日常链路实测通过：`as_of=20260831`，环境中性，A 池 7 / B 池 30。
+
 ## 1. 收口前的问题
 
 | 问题 | 严重度 |
@@ -62,6 +65,32 @@ worktree 检出 checksum 就变」），16 位是历史遗留，并建了 `_LEGA
 理由：龙虎榜由 8123 隔离产品（`scripts/serve_lhb_product.py`）服务，但与 8001
 共用同一份 dist，路由删掉会导致 8123 界面白屏。**8001 的导航与 API 仍不含龙虎榜**，
 由同文件另外两个用例把守，二者均通过且未改动。
+
+## 5b. 龙虎榜迁移改为显式注册（2026-09-01）
+
+合并后 8001 无法启动：
+
+```
+RuntimeError: 数据库 schema 与代码不兼容，拒绝启动
+['MIGRATION_PENDING:v2:lhb_ops', 'MIGRATION_PENDING:v2:lhb_tracking']
+```
+
+两个分支的设计在此互斥：龙虎榜分支让迁移意图在模块导入时自注册，
+而产品边界规定龙虎榜只活在隔离副本、生产库从不建 `lhb*` 表
+（`migrate_v2.py` 甚至用 `assert_copy_database` 主动拒绝生产库）。
+合并后二者相遇，启动断言就要求迁移 15.4 GB 的生产库。
+
+**选择：让代码让步，不动生产库。**
+
+- `lhb_tracking_v2.py` / `lhb_ops_v2.py`：删除模块底部的自注册调用。
+  必须如此——`pit_writer` 仅为取 `LHB_PIT_HISTORY_TABLES` 就会 import 该模块，
+  只改 `__init__.py` 拦不住。
+- `migration_intents/__init__.py`：默认导入不含 LHB；新增 `register_lhb_intents()`。
+- 显式调用方：`prepare_lhb_product_db.py`、`serve_lhb_product.py`、
+  `run_lhb_eod.py`、`migrate_v2.py`（只接受副本）、`tests/conftest.py`（一次性临时库）。
+
+结果：8001 启动正常（build `e20f1dbf54d1`），全量仍为 1144 passed，
+生产库未被写入任何 DDL。
 
 ## 6. 日常使用
 

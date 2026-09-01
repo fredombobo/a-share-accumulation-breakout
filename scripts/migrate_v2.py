@@ -15,7 +15,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ab_screener.application.pit_backfill import assert_copy_database
-from ab_screener.data.migration_intents import pit_history_v2  # noqa: F401  侧效应：注册全部迁移意图
+from ab_screener.data.migration_intents import (  # noqa: F401  侧效应：注册全部生产迁移意图
+    pit_history_v2,
+    register_lhb_intents,
+)
+
+# 本命令只对副本执行（assert_copy_database 拒绝生产库），因此可以安全地把
+# 龙虎榜意图一并注册——副本需要它们，生产库永远走不到这里。
+register_lhb_intents()
 from ab_screener.data.migration_registry import (
     apply_pending,
     legacy_checksum_upgrades,

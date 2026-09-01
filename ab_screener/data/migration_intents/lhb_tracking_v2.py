@@ -372,4 +372,7 @@ def register_lhb_tracking_migration() -> None:
     register_lhb_tracking_migration._registered = True  # type: ignore[attr-defined]
 
 
-register_lhb_tracking_migration()
+# 刻意不在模块导入时自注册：pit_writer 只为取 LHB_PIT_HISTORY_TABLES 就会 import 本模块，
+# 若在此注册，8001 启动时的 schema 断言会要求生产库也建龙虎榜表，
+# 与「龙虎榜只活在隔离副本、禁止直接操作生产库」的产品边界冲突。
+# 需要的入口请调用 migration_intents.register_lhb_intents()。

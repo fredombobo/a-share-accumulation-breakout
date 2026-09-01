@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ab_screener.application.pit_backfill import assert_copy_database
+from ab_screener.data.migration_intents import register_lhb_intents
 from ab_screener.data.schema_check import assert_schema_compatible
+
+# 8123 服务的是龙虎榜副本，schema 断言必须把 LHB 迁移算进来。
+register_lhb_intents()
 
 
 def main() -> int:

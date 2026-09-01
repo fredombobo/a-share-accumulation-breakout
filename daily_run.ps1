@@ -31,7 +31,8 @@ param(
     [int]$ScanTimeoutMinutes = 30,
     [switch]$SkipSync,
     [switch]$SkipScan,
-    [switch]$NoBrowser
+    [switch]$NoBrowser,
+    [switch]$AllowForeignBackend
 )
 
 $ErrorActionPreference = 'Stop'
@@ -140,9 +141,17 @@ if (Test-Port $Port) {
     $owner = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($owner) {
         $op = Get-Process -Id $owner.OwningProcess -ErrorAction SilentlyContinue
-        if ($op -and $op.Path -and $op.Path -ne $Python) {
-            Warn "该进程不是本脚本的解释器：$($op.Path)"
-            Warn "它的环境变量（AB_BACKUP_ROOT / AB_DB_PATH）未必与本次一致。要对齐就先跑 停止.bat 再重来。"
+        if ($op -and $op.Path -and $op.Path -ne $Python -and -not $AllowForeignBackend) {
+            Write-Host ''
+            Warn "占用 $Port 的进程不是本脚本的解释器："
+            Warn "    $($op.Path)  (PID=$($owner.OwningProcess))"
+            Warn "它多半来自另一个代码副本，扫描结果会写进它自己的 runtime，本脚本读不到，"
+            Warn "继续下去只会拿到过期结果。先结束它再重跑："
+            Write-Host ''
+            Write-Host "    Get-NetTCPConnection -LocalPort $Port -State Listen |" -ForegroundColor White
+            Write-Host "      ForEach-Object { Stop-Process -Id `$_.OwningProcess -Force }" -ForegroundColor White
+            Write-Host ''
+            Die "拒绝在陌生后端上扫描。（确实要将就用它：加 -AllowForeignBackend）"
         }
     }
 } else {
@@ -224,18 +233,32 @@ if ($SkipScan) {
 
     $rf = Join-Path $Root "runtime\scan_$taskId.result.json"
     if (Test-Path $rf) { $result = Read-JsonFile $rf }
-    else { Warn "未找到结果文件 $rf（可能仍在运行或已失败），改用最近一次结果。"
-           $latest = Get-ChildItem (Join-Path $Root 'runtime') -Filter 'scan_*.result.json' -ErrorAction SilentlyContinue |
-               Sort-Object LastWriteTime -Descending | Select-Object -First 1
-           if ($latest) { $result = Read-JsonFile $latest.FullName } }
+    else {
+        Write-Host ''
+        Warn "本次扫描 $taskId 的结果文件不存在：$rf"
+        Warn "常见原因：8001 上的后端来自另一个代码副本，结果写进了它自己的 runtime。"
+        Die "不显示任何结果。绝不拿上一次的旧池子冒充本次扫描。"
+    }
 }
 
 # ---------------------------------------------------------------- 5 结果
 Step 5 '结果'
 
+$dbLatest = $null
+try {
+    $dbLatest = (& $Python -c "import sqlite3,os;c=sqlite3.connect('file:'+os.environ['AB_DB_PATH']+'?mode=ro',uri=True);print(c.execute('SELECT MAX(trade_date) FROM daily').fetchone()[0] or '')" 2>$null).Trim()
+} catch { }
+
 if (-not $result) {
     Warn '没有可显示的扫描结果。'
 } else {
+    if ($dbLatest -and $result.latest_date -and "$($result.latest_date)" -ne "$dbLatest") {
+        Write-Host ''
+        Write-Host '  ############################################################' -ForegroundColor Red
+        Write-Host ("  # 结果已过期：本次显示的是 {0} 的扫描，库内行情已到 {1}" -f $result.latest_date, $dbLatest) -ForegroundColor Red
+        Write-Host '  # 不要按这份 A 池做任何判断。' -ForegroundColor Red
+        Write-Host '  ############################################################' -ForegroundColor Red
+    }
     Write-Host ''
     Write-Host ("  数据基准日 as_of : {0}   新鲜度 {1}" -f $result.latest_date, $result.freshness.stale_label)
     Write-Host ("  市场环境         : {0}   允许新开仓 {1}   最大持仓位 {2}" -f `

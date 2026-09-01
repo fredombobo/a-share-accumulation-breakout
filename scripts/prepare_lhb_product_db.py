@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ab_screener.application.pit_backfill import assert_copy_database
+from ab_screener.data.migration_intents import register_lhb_intents
 from ab_screener.data.migration_registry import apply_pending, schema_compatible
+
+# 本脚本专门准备龙虎榜隔离副本，必须显式打开 LHB 迁移意图。
+register_lhb_intents()
 
 
 def prepare(source: Path, target: Path) -> dict[str, object]:

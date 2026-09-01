@@ -18,6 +18,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+from ab_screener.data.migration_intents import register_lhb_intents
 from ab_screener.data.migration_registry import apply_pending
 from local_store import LocalStore
 
@@ -34,6 +35,9 @@ os.environ["AB_DB_PATH"] = str(_TEST_DB_PATH)
 
 # LocalStore creates the legacy/core tables; the unified runner then records all
 # registered v2 migration identities and makes the startup schema assertion pass.
+# 测试用的是一次性临时库，把龙虎榜意图也注册上，让 LHB 测试拿到完整 schema。
+# 生产库不受影响：那条路径永远不会调用 register_lhb_intents()。
+register_lhb_intents()
 LocalStore(db_path=_TEST_DB_PATH)
 with sqlite3.connect(str(_TEST_DB_PATH), timeout=30) as _conn:
     apply_pending(_conn)

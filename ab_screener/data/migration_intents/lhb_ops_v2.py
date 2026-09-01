@@ -63,4 +63,4 @@ def register_lhb_ops_migration() -> None:
     register_lhb_ops_migration._registered = True  # type: ignore[attr-defined]
 
 
-register_lhb_ops_migration()
+# 同 lhb_tracking_v2：不在导入时自注册，改由 register_lhb_intents() 显式开启。

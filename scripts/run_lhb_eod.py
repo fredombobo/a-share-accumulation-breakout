@@ -10,7 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ab_screener.application.lhb_product import run_lhb_product_day
+from ab_screener.data.migration_intents import register_lhb_intents
 from ab_screener.data.schema_check import assert_schema_compatible
+
+register_lhb_intents()
 
 
 def main() -> int:
