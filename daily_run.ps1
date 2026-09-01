@@ -1,11 +1,18 @@
 ﻿<#
 每日运行 —— 横盘吸筹→启动 选股系统的单一日常入口。
 
-做四件事，按顺序 fail-closed：
+做五件事，按顺序 fail-closed：
     1) 净化环境（代理 / PYTHONPATH），只从 .env 读取 Token
     2) 增量同步行情到生产库（失败即停，不允许用过期数据出结果）
     3) 拉起 8001 单端口后端（绑定生产库，硬门强制 false）
-    4) 触发一次全市场扫描，等待完成，打印 A/B 池与市场环境
+    4) 触发一次全市场扫描，等待完成
+    5) 生产纸面日清：DAG、风险快照、内部对账、审计外部锚点、整库备份、soak 证据
+    6) 打印 A/B 池与市场环境
+
+第 5 步是闸门 L / O / P 与 soak 天数唯一的推进路径（2026-09-01 接入）。
+它只写运维表，不产生任何交易指令；LIVE_TRADING 仍然强制 false。
+日清失败**不**中断本脚本 —— A 池在第 4 步就已经出来了，日清是门禁证据，
+不是当日可用性的前提。失败会红字打出来，不会静默。
 
 本脚本永不打开 LIVE_TRADING_ENABLED / DAILY_SCHEDULER_ENABLED / V2_PIT_READ_ENABLED，
 永不指向龙虎榜产品副本 lhb_product.db，永不写研究结论。
@@ -16,6 +23,7 @@
     或    powershell -NoProfile -ExecutionPolicy Bypass -File 每日运行.ps1
     只开界面不扫描：  -SkipScan
     行情已同步过：    -SkipSync
+    不跑日清（快）：  -SkipEod
 #>
 
 param(
@@ -25,12 +33,15 @@ param(
     [string]$EnvFile = 'E:\CODEX\Stock_selection\accumulation_breakout\.env',
     [string]$Python  = 'E:\CODEX\Stock_selection\accumulation_breakout\.venv312\Scripts\python.exe',
     [string]$BackupRoot = 'E:\ab-backups',
+    [string]$AnchorDir  = 'E:\ab-backups\audit-anchors',
+    [string]$SigningKeyFile = 'E:\ab-backups\security\audit-signing.key',
     [int]$Port       = 8001,
     [int]$Top        = 20,
     [int]$Days       = 160,
     [int]$ScanTimeoutMinutes = 30,
     [switch]$SkipSync,
     [switch]$SkipScan,
+    [switch]$SkipEod,
     [switch]$NoBrowser,
     [switch]$AllowForeignBackend
 )
@@ -40,7 +51,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Step([int]$n, [string]$t) {
     Write-Host ''
-    Write-Host ("[{0}/5] {1}" -f $n, $t) -ForegroundColor Cyan
+    Write-Host ("[{0}/6] {1}" -f $n, $t) -ForegroundColor Cyan
     Write-Host ('-' * 60) -ForegroundColor DarkGray
 }
 function Ok([string]$t)   { Write-Host "  OK  $t" -ForegroundColor Green }
@@ -241,8 +252,77 @@ if ($SkipScan) {
     }
 }
 
-# ---------------------------------------------------------------- 5 结果
-Step 5 '结果'
+# ---------------------------------------------------------------- 5 日清
+Step 5 '生产纸面日清（DAG · 风险 · 对账 · 审计锚点 · 备份 · soak）'
+
+# 这一步推进闸门 L / O-07 / P 与 soak 天数。它对生产库是**追加写**（运维表），
+# 不改行情数据，不产生交易指令。run_eod_v2 自身有四道前置断言：
+#   · 只允许日清"库内最新交易日"
+#   · 该交易日必须已有 status=SUCCEEDED 的扫描
+#   · 该扫描的 code_version 必须等于当前构建（防止拿旧构建的扫描充数）
+#   · 工作树必须干净（脏工作树拒绝出具生产证据）
+# 任何一条不满足它自己会 FAIL 退出，这里只负责如实转述，不绕过。
+$SoakDir = Join-Path $Root 'runtime\v2\soak'
+
+if ($SkipEod) {
+    Warn '已按 -SkipEod 跳过。闸门 L / O / P 与 soak 天数今天不会推进。'
+} elseif ($SkipScan) {
+    Warn '已跳过扫描，而日清要求"当前构建在当日的成功扫描"，因此一并跳过。'
+} else {
+    foreach ($d in @($AnchorDir, (Split-Path -Parent $SigningKeyFile), $SoakDir)) {
+        if (-not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+    }
+
+    if (-not (Test-Path -LiteralPath $SigningKeyFile)) {
+        # 审计签名密钥是信任根：一旦换掉，此前所有外部锚点都无法再验证。
+        # 所以绝不由日常脚本自动生成，必须人工执行一次带 --initialize-signing-key 的命令。
+        Warn "审计签名密钥不存在：$SigningKeyFile"
+        Warn '不自动创建（换密钥会让历史锚点全部失效）。需要时手动执行一次：'
+        Write-Host ("    {0} scripts\run_eod_v2.py --db `"{1}`" --anchor-dir `"{2}`" ``" -f $Python, $DbPath, $AnchorDir) -ForegroundColor White
+        Write-Host ("      --signing-key-file `"{0}`" --soak-dir `"{1}`" --backup-root `"{2}`" ``" -f $SigningKeyFile, $SoakDir, $BackupRoot) -ForegroundColor White
+        Write-Host '      --initialize-signing-key' -ForegroundColor White
+    } else {
+        $eodDir = Join-Path $Root 'runtime\v2\eod'
+        if (-not (Test-Path -LiteralPath $eodDir)) { New-Item -ItemType Directory -Path $eodDir -Force | Out-Null }
+        $eodReport = Join-Path $eodDir ("eod_{0}.json" -f (Get-Date -Format 'yyyyMMdd_HHmmss'))
+
+        Write-Host '  运行中 —— 含整库压缩备份，通常 20-30 分钟…' -ForegroundColor Cyan
+        Push-Location $Root
+        try {
+            $eodOut = & $Python 'scripts\run_eod_v2.py' `
+                --db $DbPath --anchor-dir $AnchorDir --signing-key-file $SigningKeyFile `
+                --soak-dir $SoakDir --backup-root $BackupRoot --report $eodReport 2>&1
+            $eodCode = $LASTEXITCODE
+        } finally { Pop-Location }
+
+        if ($eodCode -ne 0) {
+            Write-Host ''
+            Write-Host '  日清未通过 —— A 池仍然可用，但闸门 L / O / P 与 soak 今天不前进。' -ForegroundColor Red
+            Write-Host ($eodOut -join [Environment]::NewLine) -ForegroundColor DarkGray
+            Write-Host ''
+        } elseif (Test-Path -LiteralPath $eodReport) {
+            $eod = Read-JsonFile $eodReport
+            Ok ("日清完成 trade_date={0}  DAG={1}" -f $eod.trade_date, $eod.dag.status)
+            Ok ("审计链 events={0} 有效={1}  外部锚点={2}" -f `
+                $eod.audit.events, $eod.audit.chain_valid, $eod.audit.anchor_valid)
+            if ($eod.backup) {
+                Ok ("备份 {0:N2} GB  {1}" -f ($eod.backup.size_bytes / 1GB), (Split-Path -Leaf $eod.backup.path))
+            }
+            $soakDays = @($eod.soak.completed_trade_days).Count
+            if ($eod.soak.status -eq 'PASS') {
+                Ok ("soak {0}/{1} —— O-12 已满足" -f $soakDays, $eod.soak.required)
+            } else {
+                Warn ("soak {0}/{1} —— 还需 {2} 个完成交易日（不伪造，只能等）" -f `
+                    $soakDays, $eod.soak.required, ($eod.soak.required - $soakDays))
+            }
+        } else {
+            Warn "日清退出码 0 但没有报告文件：$eodReport"
+        }
+    }
+}
+
+# ---------------------------------------------------------------- 6 结果
+Step 6 '结果'
 
 $dbLatest = $null
 try {
