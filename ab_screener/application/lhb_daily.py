@@ -1,6 +1,7 @@
 """龙虎榜盘后 DAG（T11）。独立于冻结的 DAG_STEPS，mode=LHB_EOD。"""
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from collections.abc import Callable
 from typing import Any
@@ -47,6 +48,28 @@ def build_lhb_dag(
     def _noop(**_: Any) -> None:
         return None
 
+    def _adapt(fn: Callable[..., Any]) -> Callable[..., Any]:
+        """共享 DAG 运行器会向步骤传 ctx；龙虎榜步骤只关心 trade_date。
+
+        运行器签名演进过一次（新增 ctx），直接调用会 TypeError 并让整条流水线
+        FAILED。这里按被包装函数实际接受的参数过滤：既不用改各步骤签名，
+        运行器将来再加参数也不会二次踩坑。
+        """
+        params = inspect.signature(fn).parameters
+        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return fn
+        accepted = {
+            name
+            for name, p in params.items()
+            if p.kind
+            in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        }
+
+        def _wrapped(**kwargs: Any) -> Any:
+            return fn(**{k: v for k, v in kwargs.items() if k in accepted})
+
+        return _wrapped
+
     steps: list[StepSpec] = []
     prev: str | None = None
     for name in LHB_DAG_STEPS:
@@ -55,7 +78,7 @@ def build_lhb_dag(
                 name=name,
                 scope_type="GLOBAL",
                 scope_id="lhb",
-                fn=impl.get(name, _noop),
+                fn=_adapt(impl.get(name, _noop)),
                 depends_on=(prev,) if prev else (),
             )
         )

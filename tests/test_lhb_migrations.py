@@ -16,17 +16,20 @@ from ab_screener.data.migration_intents.lhb_tracking_v2 import (
 from ab_screener.domain.lhb_contracts import LhbEventKey, require_available_at
 
 PUBLISHED_MIGRATION_CHECKSUMS = {
-    "v2:aux_history": "db22e80e7cdd9c98",
-    "v2:corporate_actions": "7e04e70bb86ef50b",
-    "v2:execution_lineage": "1b35fa03e104c000",
-    "v2:instrument_rules": "159d954eeb354661",
-    "v2:operations": "8a52183189d9e002",
-    "v2:pit_history": "5d679ee799f7e4b3",
-    "v2:portfolio_risk": "289b762bd8dc9d59",
-    "v2:research_governance": "928d12bf7acadb0c",
-    "v2:review": "9ea13e5a14fb3e08",
-    "v2:scan_profiles": "4060a78dc1df41e0",
-    "v2:signals": "020a6fe663ada0a1",
+    # 2026-08-31 收口：checksum 算法已从 co_filename/co_firstlineno 改为与检出路径
+    # 无关的 sha256（见 migration_registry._LEGACY_CHECKSUM_COMPATIBILITY 的一次性
+    # 迁移映射）。这里钉住的是新算法的输出；旧值仍由兼容表识别，账本无需重写。
+    "v2:aux_history": "sha256:ae8b06792af34f11607d58b359137e612ca627a755314ac685357ccdd6dd2963",
+    "v2:corporate_actions": "sha256:0f552f48f90eced217c832c5e30f101bf3ed07b4e3a56deb32fe2843a054f8cf",
+    "v2:execution_lineage": "sha256:ddcf22c4508a27d9d0538e71d26af96e8da7b8b7b0bcbd69138536d7bc55cb86",
+    "v2:instrument_rules": "sha256:3bdb99b3415e0f285d0b47492af098c92f6a92bc473f597fda3da5ca1e1c8a49",
+    "v2:operations": "sha256:59e14b921be5fa9fe6bfde0a956f41a85ec296508b65e42f462fac7fd276582a",
+    "v2:pit_history": "sha256:2fb53337f1ff2bff6537ff3edbb4b153924950e7683ccf72128672eec61b6203",
+    "v2:portfolio_risk": "sha256:6f9af47509c77c32610be63d25c73b5353b01d4e74c14d09c485b11bce7d4edf",
+    "v2:research_governance": "sha256:fc0516e63ffb78d5bdbab8e4e30f4119474d32be9c76815e25cae811324b9833",
+    "v2:review": "sha256:fcab36a5aecaef7f0b1cdaa2c7f1a7cb4d461de7859d11cc733c33ed7fff62f8",
+    "v2:scan_profiles": "sha256:b251bcdea8f6d8dbaa420da16b56ccd20e21dcf71604ad3c537696094a0e768c",
+    "v2:signals": "sha256:68b7d926a5a13d0d368182b7f1d1293317acd6ff59b19a207fc0bd396200928c",
 }
 
 _TS = "2026-08-10T16:00:00+08:00"

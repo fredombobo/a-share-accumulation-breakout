@@ -1,6 +1,7 @@
 """8001 publishes two product workflows, stock detail, AI review and help."""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from web.backend_app import app
@@ -48,8 +49,15 @@ def test_frontend_route_manifest_is_lean() -> None:
     assert '<Route path="/stock/:tsCode"' in source
     assert '<Route path="/backtest"' in source
     assert '<Route path="/guide"' in source
-    for removed in ('path="/lab"', 'path="/paper"', 'path="/v2/'):
+    for removed in ('path="/lab"', 'path="/paper"'):
         assert removed not in source
+
+    # 龙虎榜页面与 8001 无关：它们只由 8123 隔离产品（scripts/serve_lhb_product.py）
+    # 提供服务，但与 8001 共用同一份 dist，所以路由必须留在 App.tsx 里。
+    # 8001 的导航和 API 都不含龙虎榜——由本文件另外两个用例分别把守。
+    v2_routes = re.findall(r'path="(/v2/[^"]*)"', source)
+    assert v2_routes, "龙虎榜路由不应被整体删除，否则 8123 产品界面会白屏"
+    assert all(route.startswith("/v2/lhb/") for route in v2_routes), v2_routes
 
 
 def test_sidebar_has_two_product_entries_and_one_help_entry() -> None:

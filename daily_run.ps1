@@ -19,7 +19,8 @@
 #>
 
 param(
-    [string]$Root    = 'E:\CODEX\Stock_selection\worktrees\v2r-final-integration',
+    # 2026-08-31 收口后：主副本已含全部合并结果，不再指向集成工作树。
+    [string]$Root    = 'E:\CODEX\Stock_selection\accumulation_breakout',
     [string]$DbPath  = 'E:\CODEX\Stock_selection\accumulation_breakout\runtime\stock_data.db',
     [string]$EnvFile = 'E:\CODEX\Stock_selection\accumulation_breakout\.env',
     [string]$Python  = 'E:\CODEX\Stock_selection\accumulation_breakout\.venv312\Scripts\python.exe',
@@ -183,7 +184,7 @@ try {
         $blocked = (@($st.readiness_detail.blocked_gates) -join ',')
         $idb     = (@($st.readiness_detail.identity_blockers) -join ',')
         Warn ("七闸门 readiness={0}  受阻闸门={1}" -f $st.readiness, $blocked)
-        if ($idb) { Warn ("身份阻断={0} —— 后端代码副本与配置身份不一致，收口合并后应消失。" -f $idb) }
+        if ($idb) { Warn ("身份阻断={0} —— 闸门证据产生于更早的 build，需在当前构建上重跑证据。" -f $idb) }
         Warn '这是研究/发布门禁，不阻断日常扫描。'
     }
 } catch {

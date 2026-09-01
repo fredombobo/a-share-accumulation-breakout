@@ -289,12 +289,10 @@ def schema_compatible(db_path: str | Path) -> tuple[bool, list[str]]:
         pending = [mid for mid in registered_ids() if mid not in applied]
         drift = []
         for mid, rec in applied.items():
-            # 账本里可能留有已退役的 migration id，以及历史版本写入的
-            # ``sha256:<64 hex>`` 内容哈希。它们是不可变的历史事实：既不该让
-            # 启动校验崩溃，也不能被新版 16 位算法误报为漂移。
+            # 账本里可能留有已退役的 migration id（历史事实，不可变），
+            # 直接跳过；旧算法写下的历史 checksum 由 _checksum_matches 经
+            # _LEGACY_CHECKSUM_COMPATIBILITY 单独识别，不在这里放行。
             if mid not in registered:
-                continue
-            if rec.checksum.startswith("sha256:") and len(rec.checksum) == 71:
                 continue
             if not _checksum_matches(mid, rec.checksum):
                 drift.append(f"{mid}: checksum 漂移")

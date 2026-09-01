@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import sqlite3
 import subprocess
@@ -179,10 +180,16 @@ def main() -> int:
 
     git = git_facts()
     cfg = config_hash()
-    # 与后端一致：显式 AB_DB_PATH 时采集该隔离运行库；未设置才落到生产默认库。
-    from ab_screener.api.deps import default_db_path
+    # 显式 --db-path 永远优先（--db-path 的 help 明确写了「测试必须传临时库」）；
+    # 只有沿用默认值时，才与后端保持一致，去看 AB_DB_PATH 指向的隔离运行库。
+    if args.db_path != parser.get_default("db_path"):
+        db = db_facts((ROOT / args.db_path).resolve())
+    elif os.environ.get("AB_DB_PATH"):
+        from ab_screener.api.deps import default_db_path
 
-    db = db_facts(default_db_path())
+        db = db_facts(default_db_path())
+    else:
+        db = db_facts((ROOT / args.db_path).resolve())
     front = frontend_facts()
     deps = dependency_hash()
 

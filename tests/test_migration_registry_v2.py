@@ -146,10 +146,17 @@ def test_schema_compatible_accepts_legacy_and_retired_ledger_rows(tmp_path):
     conn = sqlite3.connect(str(db))
     try:
         mr.apply_pending(conn)
-        current = mr.registered_ids()[0]
+        # 取一个仍在注册表里、且有已知历史 checksum 的迁移：账本里留着旧算法
+        # 写下的值，不应被新算法误报为漂移。用真实历史值而不是随手编的哈希，
+        # 否则这条用例会退化成「任何 sha256 都放行」，把漂移检测一起废掉。
+        legacy_id, (legacy_checksum, _new) = next(
+            (mid, pair)
+            for mid, pair in mr._LEGACY_CHECKSUM_COMPATIBILITY.items()
+            if mid in mr.registered_ids()
+        )
         conn.execute(
             "UPDATE schema_migrations_v2 SET checksum=? WHERE migration_id=?",
-            ("sha256:" + "a" * 64, current),
+            (legacy_checksum, legacy_id),
         )
         conn.execute(
             "INSERT INTO schema_migrations_v2(migration_id,checksum,applied_at,duration_ms)"
