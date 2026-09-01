@@ -1,4 +1,4 @@
-<#
+﻿<#
 在当前构建上重新生成 S / P / L / O / G 五道闸门的证据。
 
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\rebuild_gate_evidence.ps1
