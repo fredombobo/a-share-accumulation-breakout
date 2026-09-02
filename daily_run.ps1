@@ -7,12 +7,21 @@
     3) 拉起 8001 单端口后端（绑定生产库，硬门强制 false）
     4) 触发一次全市场扫描，等待完成
     5) 生产纸面日清：DAG、风险快照、内部对账、审计外部锚点、整库备份、soak 证据
-    6) 打印 A/B 池与市场环境
+    6) 刷新门禁证据：真实数据门禁 D、以及 S/P/L/O/G 五道
+    7) 打印 A/B 池与市场环境
 
 第 5 步是闸门 L / O / P 与 soak 天数唯一的推进路径（2026-09-01 接入）。
 它只写运维表，不产生任何交易指令；LIVE_TRADING 仍然强制 false。
-日清失败**不**中断本脚本 —— A 池在第 4 步就已经出来了，日清是门禁证据，
-不是当日可用性的前提。失败会红字打出来，不会静默。
+
+第 6 步（2026-09-02 接入）解决的是「闸门会过期」这件事：
+  · D  门禁报告超过 24 小时即失效
+  · G  传输探针要求**当下**能连通供应商，断一次就红一次
+  · P/L/O  依赖当天日清写下的运维记录
+这几道不是推绿一次就完事的，是每天都要重新出证据的状态量。
+所以放进日常链路，而不是靠人记得手工重跑。
+
+第 5、6 步失败**都不**中断本脚本 —— A 池在第 4 步就已经出来了，
+门禁是研究/发布证据，不是当日可用性的前提。失败会红字打出来，不会静默。
 
 本脚本永不打开 LIVE_TRADING_ENABLED / DAILY_SCHEDULER_ENABLED / V2_PIT_READ_ENABLED，
 永不指向龙虎榜产品副本 lhb_product.db，永不写研究结论。
@@ -24,6 +33,7 @@
     只开界面不扫描：  -SkipScan
     行情已同步过：    -SkipSync
     不跑日清（快）：  -SkipEod
+    不刷新门禁证据：  -SkipGates
 #>
 
 param(
@@ -42,6 +52,7 @@ param(
     [switch]$SkipSync,
     [switch]$SkipScan,
     [switch]$SkipEod,
+    [switch]$SkipGates,
     [switch]$NoBrowser,
     [switch]$AllowForeignBackend
 )
@@ -51,7 +62,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 function Step([int]$n, [string]$t) {
     Write-Host ''
-    Write-Host ("[{0}/6] {1}" -f $n, $t) -ForegroundColor Cyan
+    Write-Host ("[{0}/7] {1}" -f $n, $t) -ForegroundColor Cyan
     Write-Host ('-' * 60) -ForegroundColor DarkGray
 }
 function Ok([string]$t)   { Write-Host "  OK  $t" -ForegroundColor Green }
@@ -321,8 +332,43 @@ if ($SkipEod) {
     }
 }
 
-# ---------------------------------------------------------------- 6 结果
-Step 6 '结果'
+# ---------------------------------------------------------------- 6 门禁证据
+Step 6 '刷新门禁证据（D · S/P/L/O/G）'
+
+# 为什么每天都要跑：闸门 D 的报告 24 小时过期，G 的传输探针只能证明"此刻"能连通，
+# P/L/O 读的是当天日清写下的运维记录。这三类都是状态量，不是一次性成就。
+# 两个子脚本都自带 fail-closed，这里只负责调用与如实转述，不解释、不掩盖。
+if ($SkipGates) {
+    Warn '已按 -SkipGates 跳过。闸门 D 的报告超过 24 小时后会自动失效。'
+} elseif ($SkipEod -or $SkipScan) {
+    # 没跑日清就刷新，P/L 会拿旧交易日的 manifest 去签当前身份 —— 那是给过期结论
+    # 盖新章，比不刷新更糟。宁可留着旧证据，也不产生误导性的新证据。
+    Warn '本次未跑扫描/日清，刷新会把旧运维记录签成当前身份的新证据 —— 跳过。'
+} else {
+    $gateD = Join-Path $Root 'scripts\run_real_data_gate.ps1'
+    $gateE = Join-Path $Root 'scripts\rebuild_gate_evidence.ps1'
+
+    if (Test-Path -LiteralPath $gateD) {
+        Write-Host '  [6a] 真实数据门禁 D —— 源端抽样核验，通常几分钟…' -ForegroundColor Cyan
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $gateD -Root $Root -DbPath $DbPath
+        if ($LASTEXITCODE -ne 0) { Warn '闸门 D 未通过（上面是报告内容）。' } else { Ok '闸门 D 报告已刷新' }
+    } else { Warn "找不到 $gateD" }
+
+    if (Test-Path -LiteralPath $gateE) {
+        Write-Host ''
+        Write-Host '  [6b] 重建 S / P / L / O / G 证据…' -ForegroundColor Cyan
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $gateE `
+            -Root $Root -DbPath $DbPath -BackupRoot $BackupRoot `
+            -AnchorDir $AnchorDir -SigningKeyFile $SigningKeyFile
+        if ($LASTEXITCODE -ne 0) { Warn '证据重建未完成（多半是工作树不干净）。' }
+    } else { Warn "找不到 $gateE" }
+
+    Write-Host ''
+    Warn '证据刷新只更新"当前是什么状态"，不改变结论。G 断线、S 未成熟、R FAIL 都不会因此变绿。'
+}
+
+# ---------------------------------------------------------------- 7 结果
+Step 7 '结果'
 
 $dbLatest = $null
 try {
