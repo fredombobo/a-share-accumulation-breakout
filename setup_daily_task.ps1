@@ -38,17 +38,46 @@ if ($Show) {
     $t = Get-ScheduledTask -TaskName $TaskName -EA SilentlyContinue
     if (-not $t) { Say "任务 $TaskName 不存在。" 'Yellow'; exit 0 }
     $info = Get-ScheduledTaskInfo -TaskName $TaskName
+    $rc = $info.LastTaskResult
+    # 这几个是 Task Scheduler 的状态码，不是脚本退出码。裸数字没人看得懂，直接翻译。
+    $rcText = switch ($rc) {
+        0      { '成功' }
+        1      { '脚本以 1 退出 —— 多半是行情未发布，等重试' }
+        267009 { '正在运行' }
+        267011 { '从未运行过（重新注册后会重置历史）' }
+        267014 { '被终止 —— 见下方说明，不一定是失败' }
+        default { '' }
+    }
+    $rcColor = if ($rc -eq 0) { 'Green' } elseif ($rc -eq 267011 -or $rc -eq 267009) { 'Gray' } else { 'Yellow' }
+
     Say ''
     Say "任务      : $TaskName" 'White'
     Say "状态      : $($t.State)"
     Say "触发      : $(($t.Triggers | ForEach-Object { $_.StartBoundary }) -join ', ')"
-    Say "上次运行  : $($info.LastRunTime)   结果=$($info.LastTaskResult)"
+    Say "上次运行  : $($info.LastRunTime)"
+    Say ("结果      : {0}  {1}" -f $rc, $rcText) $rcColor
     Say "下次运行  : $($info.NextRunTime)"
     Say ''
     Say "最近日志：" 'White'
-    Get-ChildItem (Join-Path $Root 'runtime') -Filter 'daily_task_*.log' -EA SilentlyContinue |
-        Sort-Object LastWriteTime -Descending | Select-Object -First 5 |
-        ForEach-Object { Say ("  {0}  {1:N0} KB" -f $_.Name, ($_.Length / 1KB)) }
+    $logs = @(Get-ChildItem (Join-Path $Root 'runtime') -Filter 'daily_task_*.log' -EA SilentlyContinue |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 5)
+    foreach ($f in $logs) {
+        $kb = $f.Length / 1KB
+        $c  = if ($f.Length -eq 0) { 'Yellow' } else { 'Gray' }
+        Say ("  {0}  {1:N0} KB{2}" -f $f.Name, $kb, $(if ($f.Length -eq 0) { '   ← 空日志，那次没留下任何记录' } else { '' })) $c
+    }
+
+    if ($rc -eq 267014) {
+        Say ''
+        Say '关于 267014（被终止）：' 'White'
+        Say '  daily_run.ps1 会拉起 8001 后端并让它继续运行（有意为之）。计划任务把它算作' 'DarkGray'
+        Say '  自己的子进程，于是任务一直显示 Running，直到 ExecutionTimeLimit（2 小时）到点被' 'DarkGray'
+        Say '  强制终止 —— 这时 LastTaskResult 就是 267014。' 'DarkGray'
+        Say '  判断当天到底跑没跑成，不要看这个码，看这三样：' 'DarkGray'
+        Say '    runtime\v2\eod\eod_<当天>.json     日清报告存在即闭环' 'White'
+        Say '    runtime\v2\soak\<当天>.json        soak 证据当天已收集' 'White'
+        Say '    E:\ab-backups 下当天的 .db.gz     备份已生成' 'White'
+    }
     Say ''
     try { [Console]::OutputEncoding = $__prevOut } catch { }
     exit 0
