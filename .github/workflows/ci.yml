@@ -45,12 +45,21 @@ jobs:
       - name: Architecture boundaries
         run: python scripts/check_architecture.py --strict
 
+      - name: PowerShell contract-test runtime
+        run: |
+          # Ubuntu provides PowerShell Core as pwsh; existing script contracts
+          # invoke the Windows-compatible executable name. Do not skip them.
+          pwsh_path="$(command -v pwsh)"
+          ln -s "$pwsh_path" "$RUNNER_TEMP/powershell"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
       - name: Pytest (offline suite)
         env:
           # SDK construction requires a nonempty token even when tests mock queries.
           # These are deliberately invalid fixtures, never live vendor credentials.
           TUSHARE_TOKEN: offline-ci-not-a-valid-token
           TUSHARE_HTTP_URL: https://offline-vendor.invalid/
+          TEMP: ${{ runner.temp }}
         run: pytest tests/ -q -k "not browser"
 
   frontend:
