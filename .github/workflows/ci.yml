@@ -46,6 +46,11 @@ jobs:
         run: python scripts/check_architecture.py --strict
 
       - name: Pytest (offline suite)
+        env:
+          # SDK construction requires a nonempty token even when tests mock queries.
+          # These are deliberately invalid fixtures, never live vendor credentials.
+          TUSHARE_TOKEN: offline-ci-not-a-valid-token
+          TUSHARE_HTTP_URL: https://offline-vendor.invalid/
         run: pytest tests/ -q -k "not browser"
 
   frontend:
