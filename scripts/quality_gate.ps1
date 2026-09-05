@@ -26,6 +26,7 @@ $Stages = @(
     @{ Name = "ruff"; Cmd = { & $Py -m ruff check $Root --exclude "$Root\web\frontend\node_modules" } },
     @{ Name = "mypy"; Cmd = {
         & $Py -m mypy `
+            "$Root\launcher_runtime.py" "$Root\bootstrap.py" "$Root\easy_start.py" `
             "$Root\signals.py" "$Root\optimizer.py" "$Root\walkforward.py" `
             "$Root\local_store.py" "$Root\config.py" `
             "$Root\ab_screener\domain\costs.py" `

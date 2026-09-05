@@ -1,11 +1,11 @@
 version: 1
-updated_at: "2026-09-05T18:00:00+08:00"
+updated_at: "2026-09-05T18:46:00+08:00"
 program: PERSONAL-RESEARCH-WORKBENCH
 overall_status: ENGINEERING_ACCEPTED
 overall_note: >
   当前范围为 AB/8001 每日选股、专业回测与使用说明；不恢复纸面交易或机构控制台。
   离线质量、正常日用链路及桌面/窄屏已验收；固定参数两次回放的权益、成交、成本和数据快照完全一致。
-  当前构建 30df60d6a142，最终工程回放 probt-49462a73e38d 仍为 EXPLORATORY_WEAK；不自动晋级。
+  最近研究验收构建 30df60d6a142 的工程回放 probt-49462a73e38d 仍为 EXPLORATORY_WEAK；不自动晋级。
   原机构 P8 和策略研究失败保留，不等同个人研究产品不能使用，也不包装成策略已通过。
 historical_institutional_status: BLOCKED
 historical_institutional_note: >
@@ -23,6 +23,11 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  ONE-CLICK-RUNTIME-HOTFIX-20260905:
+    status: complete
+    plan: docs/ONE-CLICK-START-HOTFIX-2026-09-05.md
+    build_version: e25e0af25c92
+    note: 同一批处理入口已实际启动 AB/8001；Python 3.14 调用仍选择 .venv312；1171 Python、21 前端及严格质量门通过，云端结果以 Actions 对应提交为准。
   PERSONAL-RESEARCH-CLOSEOUT-20260905:
     status: complete
     plan: docs/PERSONAL-RESEARCH-CLOSEOUT-2026-09-05.md

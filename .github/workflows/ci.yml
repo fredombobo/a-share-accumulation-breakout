@@ -6,6 +6,22 @@ on:
   pull_request:
 
 jobs:
+  windows-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install isolated launcher-test dependencies
+        run: python -m pip install pytest packaging
+      - name: Actual cmd.exe success and failure contracts
+        run: python -m pytest --noconftest tests/test_launcher_runtime.py -q
+
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -26,7 +42,7 @@ jobs:
 
       - name: Mypy (key modules)
         run: |
-          mypy signals.py optimizer.py walkforward.py local_store.py config.py \
+          mypy launcher_runtime.py bootstrap.py easy_start.py signals.py optimizer.py walkforward.py local_store.py config.py \
             ab_screener/domain/costs.py ab_screener/domain/entry_definition.py \
             ab_screener/domain/entry_definition_v2.py \
             ab_screener/research/backtest_engine.py ab_screener/research/trusted_run.py \

@@ -1,40 +1,44 @@
 @echo off
+setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-title 横盘吸筹选股 - 一键启动
-echo.
-echo  ========================================
-echo    横盘吸筹选股系统  ·  小白一键启动
-echo  ========================================
-echo.
+title AB-Screener - One-click start
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONPATH="
 
-where python >nul 2>&1
-if errorlevel 1 (
-  if exist "C:\Python314\python.exe" (
-    set "PY=C:\Python314\python.exe"
-  ) else if exist "C:\Python313\python.exe" (
-    set "PY=C:\Python313\python.exe"
-  ) else (
-    echo [错误] 未找到 Python。请先安装 Python 3.11+ 并勾选 Add to PATH
-    echo 下载: https://www.python.org/downloads/
-    pause
-    exit /b 1
+REM ASCII-only shell wrapper. Python prints the Chinese instructions.
+REM Shared runtime selection validates 3.12 before any pip installation.
+if exist ".venv312\Scripts\python.exe" (
+  set "AB_LAUNCH_PY=%~dp0.venv312\Scripts\python.exe"
+  goto launch
+)
+where py >nul 2>&1
+if not errorlevel 1 (
+  py -3.12 -c "import sys; sys.exit(sys.version_info[:2] != (3,12))" >nul 2>&1
+  if not errorlevel 1 (
+    py -3.12 easy_start.py %*
+    goto result
   )
-) else (
-  set "PY=python"
 )
+where python >nul 2>&1
+if not errorlevel 1 (
+  set "AB_LAUNCH_PY=python"
+  goto launch
+)
+if exist "C:\Python312\python.exe" (
+  set "AB_LAUNCH_PY=C:\Python312\python.exe"
+  goto launch
+)
+echo [ERROR] Python 3.12 was not found. Install Python 3.12 and retry.
+set "AB_START_EXIT=1"
+goto finish
 
-REM 若已设置环境变量 TUSHARE_TOKEN，走全自动 bootstrap
-if defined TUSHARE_TOKEN (
-  "%PY%" bootstrap.py --yes
-) else (
-  "%PY%" easy_start.py
-)
-if errorlevel 1 (
-  echo.
-  echo 启动失败，请把上面的报错截图保存。
-  echo Agent 模式: python bootstrap.py --token 你的TOKEN --yes
-  pause
-  exit /b 1
-)
-pause
+:launch
+"%AB_LAUNCH_PY%" easy_start.py %*
+:result
+set "AB_START_EXIT=%ERRORLEVEL%"
+:finish
+if not "%AB_START_EXIT%"=="0" echo [ERROR] Startup failed. Please keep the error shown above.
+if not defined AB_START_NO_PAUSE pause
+exit /b %AB_START_EXIT%

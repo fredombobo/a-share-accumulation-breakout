@@ -22,6 +22,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+from launcher_runtime import RuntimeSetupError, ensure_dependencies, project_python
+
 ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
@@ -52,17 +54,7 @@ def _log(msg: str) -> None:
 
 
 def _find_python() -> str:
-    # 优先当前解释器（Agent 通常已选定）
-    if sys.executable:
-        return sys.executable
-    for p in (
-        Path(r"C:\Python314\python.exe"),
-        Path(r"C:\Python313\python.exe"),
-        Path(r"C:\Python312\python.exe"),
-    ):
-        if p.is_file():
-            return str(p)
-    return "python"
+    return project_python(ROOT)
 
 
 def _normalize_token(raw: str | None) -> str:
@@ -152,20 +144,7 @@ def load_dotenv() -> None:
 
 
 def pip_install(py: str) -> None:
-    _log("[1/4] 安装 Python 依赖…")
-    cmd = [py, "-m", "pip", "install", "-r", str(REQ), "-q"]
-    r = subprocess.run(cmd, cwd=str(ROOT), check=False)
-    if r.returncode != 0:
-        # 再试一次非 quiet，方便 Agent 排错
-        r2 = subprocess.run(
-            [py, "-m", "pip", "install", "-r", str(REQ)], cwd=str(ROOT), check=False
-        )
-        if r2.returncode != 0:
-            raise SystemExit(
-                "依赖安装失败。请确认 Python 3.11+ 且网络可用。\n"
-                f"手动: {py} -m pip install -r requirements.txt"
-            )
-    _log("[ok] 依赖就绪")
+    ensure_dependencies(py, ROOT)
 
 
 def sync_market(py: str, days: int | None) -> None:
@@ -317,6 +296,13 @@ def main(argv: list[str] | None = None) -> int:
     _log(" repo root: " + str(ROOT))
     _log("=" * 52)
 
+    try:
+        py = _find_python()
+    except RuntimeSetupError as exc:
+        _log(f"[环境错误] {exc}")
+        return 1
+    _log(f"[env] python = {py}")
+
     token = resolve_token(args.token)
     if not _token_ok(token):
         if args.yes or not sys.stdin.isatty():
@@ -336,9 +322,11 @@ def main(argv: list[str] | None = None) -> int:
     write_env(token)
     load_dotenv()
 
-    py = _find_python()
-    _log(f"[env] python = {py}")
-    pip_install(py)
+    try:
+        pip_install(py)
+    except RuntimeSetupError as exc:
+        _log(f"[依赖错误] {exc}")
+        return 1
     load_dotenv()
 
     if args.install_only:

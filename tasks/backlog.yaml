@@ -5,6 +5,16 @@ notes: >
   Exception: V2-P0-BOOTSTRAP (planning commit only, no business code).
   v1.1 nine-point tasks remain historical complete.
 tasks:
+  - id: ONE-CLICK-RUNTIME-HOTFIX-20260905
+    title: 一键启动统一 Python 3.12、依赖安装与 Windows 批处理回归
+    status: complete
+    dependencies: [PERSONAL-RESEARCH-CLOSEOUT-20260905]
+    plan: docs/ONE-CLICK-START-HOTFIX-2026-09-05.md
+    acceptance:
+      - 不使用 Python 3.14 安装依赖，已有项目环境优先且不破坏已有目录
+      - mplfinance 预发行版本显式固定，已满足依赖时不联网重装
+      - 真正执行批处理成功及失败分支，退出码和带空格路径正确
+      - 实际启动 AB/8001 并验证身份，测试通过，不更改研究参数或账本
   - id: PERSONAL-RESEARCH-CLOSEOUT-20260905
     title: 每日选股与专业回测日用收束、真实结果明细与 GitHub 交付
     status: complete

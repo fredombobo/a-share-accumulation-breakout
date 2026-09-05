@@ -4,7 +4,11 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $BackendPort = 8001
 $FrontendPort = 3001
 $BackendUrl = "http://127.0.0.1:$BackendPort"
-if (Test-Path 'C:\Python314\python.exe') { $Py = 'C:\Python314\python.exe' } else { $Py = 'python' }
+$LocalRuntime = Join-Path $Root '.venv312\Scripts\python.exe'
+if (Test-Path -LiteralPath $LocalRuntime) { $LauncherPython = $LocalRuntime } else { $LauncherPython = 'python' }
+$RuntimeResult = @(& $LauncherPython (Join-Path $Root 'launcher_runtime.py'))
+if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 setup failed; see the error above.' }
+$Py = [string]$RuntimeResult[-1]
 $Backend = Join-Path $Root 'web\backend_app.py'
 $Frontend = Join-Path $Root 'web\frontend'
 $LogDir = Join-Path $Root 'runtime'

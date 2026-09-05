@@ -24,6 +24,8 @@ import time
 import webbrowser
 from pathlib import Path
 
+from launcher_runtime import RuntimeSetupError, ensure_dependencies, project_python
+
 ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
@@ -52,14 +54,7 @@ def _clear_proxy() -> None:
 
 
 def _find_python() -> str:
-    for p in (
-        Path(r"C:\Python314\python.exe"),
-        Path(r"C:\Python313\python.exe"),
-        Path(r"C:\Python312\python.exe"),
-    ):
-        if p.is_file():
-            return str(p)
-    return sys.executable or "python"
+    return project_python(ROOT)
 
 
 def _read_token() -> str:
@@ -115,9 +110,9 @@ def _ensure_env(interactive: bool) -> bool:
         entered = ""
     if not entered:
         print("[配置] 已跳过。请编辑 .env 里的 TUSHARE_TOKEN= 后再双击启动。")
-        if sys.platform.startswith("win"):
+        if sys.platform == "win32":
             try:
-                os.startfile(str(ENV_PATH))  # type: ignore[attr-defined]
+                os.startfile(str(ENV_PATH))
             except OSError:
                 pass
         return False
@@ -141,13 +136,7 @@ def _ensure_env(interactive: bool) -> bool:
 
 
 def _pip_install(py: str) -> None:
-    print("[依赖] 检查 Python 包…")
-    cmd = [py, "-m", "pip", "install", "-r", str(REQ), "-q"]
-    r = subprocess.run(cmd, cwd=str(ROOT), check=False)
-    if r.returncode != 0:
-        print("[依赖] pip 安装失败，请检查网络后重试")
-        sys.exit(1)
-    print("[依赖] OK")
+    ensure_dependencies(py, ROOT)
 
 
 def _load_dotenv() -> None:
@@ -304,12 +293,20 @@ def main(argv: list[str] | None = None) -> int:
     if not DIST.is_file():
         print("[警告] 未找到前端打包文件 web/frontend/dist")
 
-    py = _find_python()
+    try:
+        py = _find_python()
+    except RuntimeSetupError as exc:
+        print(f"[环境错误] {exc}")
+        return 1
     print("[环境] Python =", py)
 
     _load_dotenv()
     ok_token = _ensure_env(interactive=interactive)
-    _pip_install(py)
+    try:
+        _pip_install(py)
+    except RuntimeSetupError as exc:
+        print(f"[依赖错误] {exc}")
+        return 1
     _load_dotenv()
 
     if ok_token and not skip_sync:
@@ -338,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
             if local and remote and local != remote:
                 print(f"[启动] 检测到更新：本地 {local} ≠ 运行中 {remote}")
                 _restart_backend(py, "源码或前端产物已更新，自动重启后端以加载新版本")
-                proc = _start_server(py)
+                _start_server(py)
                 if not _wait_health(timeout=45):
                     print("[错误] 重启后服务未就绪，请查看 runtime/easy_backend.err.log")
                     return 1
@@ -352,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"打开: {BACKEND_ORIGIN}/")
         return 0
 
-    proc = _start_server(py)
+    _start_server(py)
     if not _wait_health(timeout=45):
         print("[错误] 服务未就绪，请查看 runtime/easy_backend.err.log")
         if _port_in_use(BACKEND_PORT):
@@ -367,17 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     if not no_browser:
         webbrowser.open(f"{BACKEND_ORIGIN}/")
 
-    if interactive and sys.platform.startswith("win"):
-        print("服务在后台运行中。按回车仅关闭本窗口…")
-        try:
-            input()
-        except EOFError:
-            pass
-    else:
-        try:
-            proc.wait()
-        except KeyboardInterrupt:
-            proc.terminate()
+    print("服务在后台运行中。关闭启动窗口不会停止服务；停止请用 停止.bat。")
     return 0
 
 

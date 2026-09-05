@@ -1,15 +1,12 @@
-# ── 版本策略（A4）──
-# 全部改用 ~= 兼容区间 pin：锁定当前小版本线（>= 已装版本, < 下一小版本），
-# 防止 2026 年 pandas/matplotlib 等大版本升级破坏既有代码；同时允许补丁级升级。
-# 依据 C:\Python314\python.exe 实测：pandas 2.3.3 / numpy 2.4.3 / matplotlib 3.10.8 /
-# openpyxl 3.1.5 / mplfinance 0.12.10b0 / requests 2.32.5。
+# 运行时：Python 3.12 / 项目 .venv312。新装使用 requirements-lock-py312.txt 约束。
+# mplfinance 当前验收版本为预发行版，必须显式 pin；不要对全体依赖启用 --pre。
 pandas~=2.3.0
 pyarrow~=23.0
 numpy~=2.4.0
 curl_cffi~=0.13
 tushare~=1.4
 openpyxl~=3.1.0
-mplfinance~=0.12.0
+mplfinance==0.12.10b0
 matplotlib~=3.10.0
 fastapi~=0.110
 uvicorn~=0.27
