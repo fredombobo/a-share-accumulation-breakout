@@ -64,10 +64,10 @@ def main() -> int:
                 print("daily 表是空的。", file=sys.stderr)
                 return 2
 
-        print("")
+        print()
         print(f"行情库  {db}")
         print(f"交易日  {date}")
-        print("")
+        print()
 
         ready = True
         for name in DATASETS:
@@ -83,14 +83,14 @@ def main() -> int:
             if count == 0:
                 ready = False
 
-        print("")
+        print()
         if ready:
             print("三张表都有数据，可以跑闸门 D：")
             print("    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\run_real_data_gate.ps1")
         else:
             print("数据还不齐 —— 现在跑闸门 D 一定 FAIL，先等同步。")
             print("Tushare 的 moneyflow 发布时间会飘，计划任务已配 45 分钟 x3 重试。")
-        print("")
+        print()
         return 0 if ready else 1
     finally:
         conn.close()

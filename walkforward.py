@@ -137,6 +137,9 @@ def eval_combo(
         horizon=horizon or 160,
     )
     if df.empty:
+        raw_rows = df.attrs.get("diagnostic_rows", [])
+        if len(raw_rows) == 1:
+            return raw_rows[0]
         return {"n_trades": 0}
     return df.iloc[0].to_dict()
 
@@ -416,6 +419,9 @@ def wf_recheck(
                     "test_dd": test.get("net_max_drawdown"),
                     "test_wr": test.get("net_win_rate"),
                     "test_n": test.get("net_n_trades", 0),
+                    "train_n": train.get("net_n_trades"),
+                    "train_diagnostic": train.get("sample_diagnostic"),
+                    "test_diagnostic": test.get("sample_diagnostic"),
                     "train_portfolio_status": train.get("portfolio_status"),
                     "test_portfolio_status": test.get("portfolio_status"),
                 }
@@ -428,12 +434,24 @@ def wf_recheck(
                 t.get("train_portfolio_status") == "PASS" and t.get("test_portfolio_status") == "PASS"
                 for t in tests
             )
+        # Raw diagnostics now retain rows that run_grid used to drop.  Having
+        # finite metrics is not sufficient evidence when the sample is small.
+        evidence_complete = evidence_complete and all(
+            int(t["test_n"]) >= 30
+            and (t.get("train_n") is None or int(t["train_n"]) >= 30)
+            for t in tests
+        )
         train_pfs = [float(t["train_pf"]) for t in tests] if evidence_complete else []
         test_pfs = [float(t["test_pf"]) for t in tests] if evidence_complete else []
         train_mean = sum(train_pfs) / len(train_pfs) if train_pfs else None
         test_mean = sum(test_pfs) / len(test_pfs) if test_pfs else None
         dd_ok = evidence_complete and all(float(t["test_dd"]) <= 0.25 for t in tests)
         trades_ok = evidence_complete and all(int(t["test_n"]) >= 30 for t in tests)
+        # Legacy artifacts lack train_n; new evaluations must meet the same
+        # training minimum that run_grid previously enforced by dropping rows.
+        trades_ok = trades_ok and all(
+            t.get("train_n") is None or int(t["train_n"]) >= 30 for t in tests
+        )
         ratio_ok = bool(
             evidence_complete
             and train_mean is not None

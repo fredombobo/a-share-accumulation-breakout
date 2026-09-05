@@ -32,6 +32,11 @@ jobs:
             ab_screener/research/backtest_engine.py ab_screener/research/trusted_run.py \
             ab_screener/research/professional_grid.py ab_screener/research/condition_plugins.py \
             ab_screener/research/professional_runner.py \
+            ab_screener/research/data_scope.py ab_screener/research/result_details.py \
+            ab_screener/research/pit_reader.py ab_screener/research/regime_filter.py \
+            ab_screener/research/resilient_absorption.py ab_screener/research/post_breakout_supply_dry_up.py \
+            ab_screener/operations/runtime_identity.py ab_screener/operations/personal_daily.py \
+            ab_screener/data/benchmark_pit_sync.py \
             ab_screener/api/routers/professional_backtest.py \
             ab_screener/api/routers/lean_ai_review.py \
             ab_screener/intelligence/ai_analysis.py ab_screener/application/today_guide.py \

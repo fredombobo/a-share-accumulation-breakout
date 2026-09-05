@@ -1,8 +1,14 @@
 version: 1
-updated_at: "2026-08-31T08:42:51+08:00"
-program: PERSONAL-INSTITUTIONAL-CONSOLE-V2
-overall_status: BLOCKED
+updated_at: "2026-09-05T18:00:00+08:00"
+program: PERSONAL-RESEARCH-WORKBENCH
+overall_status: ENGINEERING_ACCEPTED
 overall_note: >
+  当前范围为 AB/8001 每日选股、专业回测与使用说明；不恢复纸面交易或机构控制台。
+  离线质量、正常日用链路及桌面/窄屏已验收；固定参数两次回放的权益、成交、成本和数据快照完全一致。
+  当前构建 30df60d6a142，最终工程回放 probt-49462a73e38d 仍为 EXPLORATORY_WEAK；不自动晋级。
+  原机构 P8 和策略研究失败保留，不等同个人研究产品不能使用，也不包装成策略已通过。
+historical_institutional_status: BLOCKED
+historical_institutional_note: >
   P7.1 组合会计、P7.2 冻结 PIT 研究读取与 P7.3 正式晋级硬门均已完成；
   当前权威研究 v2auth20260828g 在生产一致的因果市场环境过滤下仍诚实 FAIL/NO_CANDIDATE；
   WP98 新经济机制逐日复验同样为 NO_CANDIDATE，WF1/WF2 均无测试成交且 2x 成本为负；
@@ -17,6 +23,24 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  PERSONAL-RESEARCH-CLOSEOUT-20260905:
+    status: complete
+    plan: docs/PERSONAL-RESEARCH-CLOSEOUT-2026-09-05.md
+    completed_at: "2026-09-05T18:00:00+08:00"
+    build_version: "30df60d6a142"
+    accepted_scope: PERSONAL_RESEARCH_ENGINEERING_ONLY
+    evidence:
+      - "严格质量门通过：1151 Pytest、21 前端测试、Ruff、Mypy、严格架构与构建"
+      - "1440px/390px、运行中离开与刷新、完成报告、只读预览通过"
+      - "100 对供应商历史行情抽查完全一致；日用扫描及完成记录真实"
+      - "probt-49462a73e38d 与 probt-bae3cf36119a 同条件回放会计与行情完全一致"
+      - "WF 证据完整性标签已纠正；新报告 evidence_complete=false、wf_pass=false"
+      - "相同请求返回 cached=true 且不新增任务；pt_* 账本内容未变化"
+    post_release_pending:
+      - "五个新的真实交易日持续运行证据，不将开发当天的重复扫描充数"
+    strategy_edge_verified: false
+    full_history_verified: false
+    note: 用户授权个人研究产品收束和 GitHub 推送；历史机构状态及研究失败保留，不扩回纸面交易。
   V2-P7.7-R-POST-BREAKOUT-SUPPLY-DRY-UP:
     status: complete
     started_at: "2026-08-31T07:14:29+08:00"

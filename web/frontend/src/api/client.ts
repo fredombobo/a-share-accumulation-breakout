@@ -330,9 +330,9 @@ export const api = {
     return request<BacktestUniverseCatalog>(`/backtest/universe?${query.toString()}`, opts)
   },
   backtestPreview: (body: BacktestRequest, opts?: ReqOpts) =>
-    request<BacktestPreview>('/backtest/preview', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+    request<BacktestPreview>('/backtest/preview', { timeoutMs: 180_000, ...opts, method: 'POST', body: JSON.stringify(body) }),
   backtestRun: (body: BacktestRequest, opts?: ReqOpts) =>
-    request<{ task_id: string; status: string; cached: boolean }>('/backtest/run', { ...opts, method: 'POST', body: JSON.stringify(body) }),
+    request<{ task_id: string; status: string; cached: boolean }>('/backtest/run', { timeoutMs: 180_000, ...opts, method: 'POST', body: JSON.stringify(body) }),
   backtestLatest: (opts?: ReqOpts) => request<{ task: BacktestTask | null; profile_activation: ProfileActivation }>('/backtest/latest', opts),
   backtestStatus: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/status/${encodeURIComponent(taskId)}`, opts),
   backtestCancel: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/${encodeURIComponent(taskId)}/cancel`, { ...opts, method: 'POST' }),
@@ -498,6 +498,11 @@ export interface BacktestRequest {
 }
 
 export interface PreparedBacktestRequest extends Omit<BacktestRequest, 'windows'> {
+  data_scope?: {
+    can_run: boolean; browse_start: string; browse_end: string; warmup_start: string
+    history_calendar_days: number; rows_checked: number; missing_metadata: number
+    missing_history: number; issues: string[]; note: string
+  }
   contract_version: string
   entry_mechanism: BacktestEntryMechanismIdentity
   parameter_space: {
@@ -518,6 +523,7 @@ export interface PreparedBacktestRequest extends Omit<BacktestRequest, 'windows'
     classification_note: string
     classification_title: string
     group_label: string
+    sampling?: { method: string; seed: string; population_count: number; sample_exchanges: Record<string, number>; sample_industries: Record<string, number> }
   }
   windows: {
     mode: string
@@ -564,6 +570,7 @@ export interface ManualStrategyParameters {
 }
 
 export interface BacktestMetrics {
+  sample_diagnostic?: BacktestSampleDiagnostic
   net_n_trades?: number
   net_win_rate?: number | null
   net_avg_return?: number | null
@@ -588,6 +595,9 @@ export interface BacktestLeaderboardRow {
 }
 
 export interface BacktestWalkForwardWindow {
+  train_n?: number | null
+  train_diagnostic?: BacktestSampleDiagnostic | null
+  test_diagnostic?: BacktestSampleDiagnostic | null
   window?: string
   train_pf?: number | null
   test_pf?: number | null
@@ -599,6 +609,7 @@ export interface BacktestWalkForwardWindow {
 }
 
 export interface BacktestResult {
+  account_details?: { is?: BacktestAccountDetails; oos?: BacktestAccountDetails }
   verdict: string
   verdict_label: string
   verdict_reasons?: string[]
@@ -634,6 +645,23 @@ export interface BacktestResult {
   warnings: string[]
   report_markdown?: string
 }
+
+export interface BacktestSampleDiagnostic {
+  code: string; message: string; minimum_trades: number; replay_trades: number
+  completed_trades: number; entries?: number; open_positions?: number
+  rejection_counts?: Record<string, number>
+}
+
+export interface BacktestAccountDetails {
+  version: string; equity_sha256: string; initial_equity_fen: string; final_equity_fen: string
+  realized_pnl_fen: string; unrealized_pnl_fen: string; reconciliation: string; note: string
+  equity_curve: { trade_date: string; cash_fen: string; market_value_fen: string; equity_fen: string; drawdown: number }[]
+  monthly: { month: string; net_return: string; net_pnl_fen: string }[]
+  stock_contribution: BacktestContribution[]; industry_contribution: BacktestContribution[]; exit_contribution: BacktestContribution[]
+  events: { event: string; ts_code: string; trade_date: string; qty: number; price_micro?: string; cash_delta_fen?: string; realized_pnl_fen?: string; reason?: string; fee_breakdown?: Record<string, string> }[]
+}
+
+export interface BacktestContribution { name: string; realized_pnl_fen: string }
 
 export interface BacktestTask {
   task_id: string

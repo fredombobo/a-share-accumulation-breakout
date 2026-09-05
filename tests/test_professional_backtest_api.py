@@ -82,7 +82,9 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     assert payload["parameter_space"]["long_running"] is False
     assert payload["parameters"]["target_pct"]["values"] == [0.1, 0.12, 0.15]
     assert payload["parameters"]["max_hold_days"] == {"mode": "fixed", "value": 30}
-    assert payload["contract_version"] == "professional-backtest-v1.5.0"
+    assert payload["contract_version"] == "professional-backtest-v1.6.0"
+    assert preview.json()["can_run"] is False  # Fixture intentionally has no PIT metadata.
+    assert payload["data_scope"]["issues"]
     assert payload["entry_mechanism"] == entry_mechanism_identity(
         BASE_ENTRY_MECHANISM_ID
     )

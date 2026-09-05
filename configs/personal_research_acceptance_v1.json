@@ -1,0 +1,27 @@
+{
+  "purpose": "ENGINEERING_ACCEPTANCE_NOT_STRATEGY_SELECTION",
+  "reference": "Frozen parameters from existing probt-e0a5962dc8aa; not optimized in this acceptance",
+  "strategy": "A",
+  "sample_step": 1,
+  "max_codes": 100,
+  "universe": {"classification": "industry", "groups": [], "codes": []},
+  "windows": {"mode": "auto"},
+  "parameters": {
+    "box_max_amp": {"mode": "fixed", "value": 0.26},
+    "box_max_days": {"mode": "fixed", "value": 200},
+    "box_min_days": {"mode": "fixed", "value": 60},
+    "breakout_chg_max": {"mode": "fixed", "value": 0.095},
+    "breakout_chg_min": {"mode": "fixed", "value": 0.02},
+    "breakout_vol_ratio": {"mode": "fixed", "value": 2.4},
+    "breakout_vs_recent_vol_ratio": {"mode": "fixed", "value": 1.2},
+    "breakout_window_days": {"mode": "fixed", "value": 5},
+    "require_structure": {"mode": "fixed", "value": true},
+    "exit_window": {"mode": "fixed", "value": 7},
+    "max_hold_days": {"mode": "fixed", "value": 30},
+    "stop_pct": {"mode": "fixed", "value": 0.2},
+    "strong_reset": {"mode": "fixed", "value": 3},
+    "target_pct": {"mode": "fixed", "value": 0.2},
+    "vol_ratio_min": {"mode": "fixed", "value": 1.5}
+  },
+  "conditions": []
+}

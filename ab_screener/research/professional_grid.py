@@ -332,7 +332,14 @@ def resolve_universe(
     else:
         selected = rows
         source = "CURRENT_ALL"
-    selected = sorted(selected, key=lambda row: str(row["ts_code"]))[:limit]
+    population = selected
+    if requested_codes and len(selected) > limit:
+        raise ProfessionalGridError(
+            "EXPLICIT_UNIVERSE_EXCEEDS_LIMIT",
+            "勾选股票数超过样本上限，请提高上限或减少勾选；不会静默截断",
+            {"selected": len(selected), "limit": limit},
+        )
+    selected = _stratified_sample(selected, limit)
     if len(selected) < 20:
         raise ProfessionalGridError(
             "UNIVERSE_TOO_SMALL", "专业回测至少需要 20 只股票", {"count": len(selected)}
@@ -353,8 +360,58 @@ def resolve_universe(
         "industries": requested_groups if definition.key == "industry" else [],
         "codes": frozen_codes,
         "count": len(frozen_codes),
+        "industry_by_code": {str(row["ts_code"]): normalize_group(row.get("industry")) for row in selected},
+        "sampling": {
+            "version": "exchange-industry-hamilton-sha256-v1",
+            "seed": "ab-personal-research-20260905",
+            "method": "EXPLICIT_ALL" if requested_codes else "STRATIFIED",
+            "population_count": len(population),
+            "population_exchanges": _distribution(population, "exchange"),
+            "sample_exchanges": _distribution(selected, "exchange"),
+            "sample_industries": _distribution(selected, "industry"),
+        },
         "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     }
+
+
+def _distribution(rows: list[dict[str, Any]], dimension: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = (str(row["ts_code"]).split(".")[-1] if dimension == "exchange"
+               else normalize_group(row.get(dimension)))
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _stratified_sample(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Proportional largest-remainder quotas, then stable seeded hash selection.
+
+    Stratify by exchange first and industry second; never take the code-sorted
+    prefix. This is a reproducible *current* universe, not a PIT membership claim.
+    """
+    def take(items: list[dict[str, Any]], count: int, level: int) -> list[dict[str, Any]]:
+        if count >= len(items):
+            return items
+        if not count:
+            return []
+        if level == 2:
+            return sorted(items, key=lambda row: hashlib.sha256(
+                f"ab-personal-research-20260905:{row['ts_code']}".encode()
+            ).hexdigest())[:count]
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            key = (str(item["ts_code"]).split(".")[-1] if level == 0
+                   else normalize_group(item.get("industry")))
+            buckets.setdefault(key, []).append(item)
+        quotas = {key: count * len(values) // len(items) for key, values in buckets.items()}
+        remainder_order = sorted(buckets, key=lambda key: (
+            -(count * len(buckets[key]) % len(items)), key,
+        ))
+        for key in remainder_order[:count - sum(quotas.values())]:
+            quotas[key] += 1
+        return [row for key in sorted(buckets) for row in take(buckets[key], quotas[key], level + 1)]
+
+    return sorted(take(rows, limit, 0), key=lambda row: str(row["ts_code"]))
 
 
 def request_hash(payload: dict[str, Any]) -> str:

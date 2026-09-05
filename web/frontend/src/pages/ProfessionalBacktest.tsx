@@ -23,6 +23,7 @@ import {
   portfolioTotalReturn,
 } from '../components/backtestMetricContract'
 import ParameterCheckDialog, { type ParameterCheckResult } from '../components/ParameterCheckDialog'
+import BacktestAccountDetails from '../components/BacktestAccountDetails'
 
 const ACTIVE_STATUSES: BacktestTask['status'][] = ['pending', 'running', 'cancelling']
 const PRIMARY_KEYS = new Set([
@@ -41,6 +42,7 @@ const PHASES = [
   ['WF', '滚动复验'],
   ['BASELINES', '基准对照'],
   ['COST', '成本压力'],
+  ['DETAILS', '账户明细'],
   ['REPORT', '生成结论'],
 ] as const
 
@@ -273,7 +275,7 @@ function BacktestResultView({
         <div>
           <span className="guide-eyebrow">探索性结论</span>
           <h2>{result.verdict_label}</h2>
-          <p>本结果不会自动改变每日研究扫描，也不能直接晋级生产参数。</p>
+          <p>本结果不会自动改变每日研究扫描，也不能直接晋级生产参数。{result.request.windows.mode !== 'full' && '当前不是完整验证窗，仅供摸底研究，不可宣称已经验证有效。'}</p>
         </div>
         {result.report_markdown && <button className="btn" type="button" onClick={downloadReport}>下载 Markdown 报告</button>}
       </section>
@@ -340,6 +342,7 @@ function BacktestResultView({
             <ResultMetrics title="2 倍成本压力" metrics={result.cost_stress?.metrics} />
           </div>
           <BacktestResultCharts result={result} />
+          <BacktestAccountDetails result={result} />
           <section className="card section-gap">
             <div className="h-sec"><h2>基准与滚动窗口</h2></div>
             <div className="baseline-grid">
@@ -354,7 +357,7 @@ function BacktestResultView({
                 {(result.wf?.wf_detail || []).map((row, index) => (
                   <div className="stat" key={row.window || index}>
                     <span className="k">{row.window || `WF${index + 1}`} 测试成交</span>
-                    <span className="v">{row.test_n === 0 ? '0 笔（无验证证据）' : row.test_n == null ? 'n/a' : `${row.test_n} 笔`}</span>
+                    <span className="v">{row.test_n === 0 ? (row.test_diagnostic ? '0 笔（见样本诊断）' : '旧记录 0（过滤前未记录）') : row.test_n == null ? '未记录' : `${row.test_n} 笔`}</span>
                   </div>
                 ))}
               </div>
@@ -543,7 +546,9 @@ export default function ProfessionalBacktest() {
     try {
       const next = await api.backtestPreview(request)
       setPreview(next)
-      setCheckDialog({ kind: 'success', preview: next })
+      setCheckDialog(next.can_run ? { kind: 'success', preview: next } : {
+        kind: 'error', message: next.prepared.data_scope?.issues.join('；') || '研究及预热数据未通过检查',
+      })
     } catch (reason) {
       const message = errorMessage(reason)
       setError(message)
@@ -554,7 +559,7 @@ export default function ProfessionalBacktest() {
   }
 
   const handleRun = async () => {
-    if (!preview) return
+    if (!preview?.can_run) return
     const count = preview.prepared.parameter_space.count
     const confirmed = window.confirm(
       preview.estimated_work.long_running
@@ -833,7 +838,7 @@ export default function ProfessionalBacktest() {
             </div>
             <div className="run-actions">
               <button className="btn" type="button" onClick={handlePreview} disabled={busy === 'preview' || Boolean(activeTask)}>{busy === 'preview' ? '检查中...' : '检查参数空间'}</button>
-              <button className="btn primary" type="button" onClick={handleRun} disabled={!preview || busy === 'run' || Boolean(activeTask)}>{busy === 'run' ? '正在启动...' : '启动研究回测'}</button>
+              <button className="btn primary" type="button" onClick={handleRun} disabled={!preview?.can_run || busy === 'run' || Boolean(activeTask)}>{busy === 'run' ? '正在启动...' : '启动研究回测'}</button>
             </div>
           </section>
 
@@ -844,6 +849,8 @@ export default function ProfessionalBacktest() {
               <div><span>动态预热</span><b>{preview.prepared.parameter_space.horizon} 日</b></div>
               <div><span>研究窗口</span><b>{formatDate(preview.prepared.windows.is[0])} 至 {formatDate(preview.prepared.windows.oos[1])}</b></div>
               <p>{preview.prepared.universe.classification_title}：{preview.prepared.universe.groups.length ? preview.prepared.universe.groups.join('、') : '全市场'}。{preview.prepared.universe.classification_note}</p>
+              {preview.prepared.universe.sampling && <p>固定种子分层样本（不是按代码取前 N 只）：{Object.entries(preview.prepared.universe.sampling.sample_exchanges).map(([key, count]) => `${key === 'SH' ? '沪市' : '深市'} ${count} 只`).join('、')}，所选范围共 {preview.prepared.universe.sampling.population_count} 只。</p>}
+              {preview.prepared.data_scope && <p role="status">数据范围检查：{preview.can_run ? '通过本次范围检查，运行时继续验证 PIT 版本' : '未通过'}。含预热从 {formatDate(preview.prepared.data_scope.warmup_start)} 起，共检查 {preview.prepared.data_scope.rows_checked} 条。{preview.prepared.data_scope.issues.join('；')}{preview.prepared.data_scope.note}</p>}
               {preview.estimated_work.long_running && (
                 <p className="long-run-warning" role="alert">
                   长耗时任务：已超过 {preview.estimated_work.warning_threshold} 组常规提醒线。启动时会再次确认；可离开页面，后台进度会保留。

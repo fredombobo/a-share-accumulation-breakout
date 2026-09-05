@@ -521,6 +521,7 @@ def run_grid(
     research_snapshot: ResearchPitSnapshot | None = None,
     combos_override: list[dict[str, Any]] | None = None,
     capture_formal_series: bool = False,
+    capture_portfolio_details: bool = False,
     allowed_signal_dates: frozenset[str] | set[str] | None = None,
 ) -> pd.DataFrame:
     """网格优化主入口。返回每组参数一行统计的 DataFrame（按 profit_factor 降序）。
@@ -534,6 +535,9 @@ def run_grid(
 
     if capture_formal_series and portfolio_policy is None:
         raise ValueError("正式收益序列必须使用版本化组合账户模型")
+    if capture_portfolio_details and (portfolio_policy is None or not combos_override
+                                      or len(combos_override) != 1):
+        raise ValueError("组合明细只允许对一个冻结参数组合重放，不保存全网格明细")
     if _is_cancelled(cancel_check):
         raise ResearchCancelled("用户取消")
     if horizon < 60:
@@ -643,6 +647,8 @@ def run_grid(
                 cancel_check=cancel_check,
                 chunk_codes=chunk_codes,
             )
+            if _lost:
+                raise RuntimeError(f"研究股票分片丢失，拒绝把残缺样本当完整结果: {_lost[:5]}")
         except ResearchCancelled:
             abandoned = True
             raise
@@ -652,7 +658,10 @@ def run_grid(
 
     # 聚合统计
     rows = []
+    diagnostic_rows = []
     combo_map = {param_id(c["strategy"], c): c for c in combos}
+    for pid in combo_map:
+        results.setdefault(pid, [])
     result_count = max(1, len(results))
 
     def ensure_not_cancelled() -> None:
@@ -665,6 +674,14 @@ def run_grid(
         ensure_not_cancelled()
         s = summarize(trades)
         if not s.get("n_trades"):
+            diagnostic_rows.append({
+                "param_id": pid, **combo_map[pid], "net_n_trades": 0,
+                "sample_diagnostic": {
+                    "code": "NO_REPLAY_TRADES", "minimum_trades": BT_MIN_TRADES,
+                    "replay_trades": 0, "completed_trades": 0,
+                    "message": "当前样本、窗口和采样步长未产生可回放交易；不是低于门槛后归零。",
+                },
+            })
             continue
         trade_metrics = summarize_costed_trades(trades)
         mechanism_signals = sorted(
@@ -726,6 +743,21 @@ def run_grid(
             )
             row.update({f"trade_{key}": value for key, value in trade_metrics.items()})
             row.update(portfolio_gate_metrics(portfolio))
+            row["sample_diagnostic"] = {
+                "code": ("SUFFICIENT" if int(row["net_n_trades"]) >= BT_MIN_TRADES
+                         else "BELOW_MINIMUM_TRADES"),
+                "minimum_trades": BT_MIN_TRADES,
+                "replay_trades": len(trades),
+                "completed_trades": int(row["net_n_trades"]),
+                "entries": portfolio["portfolio_n_entries"],
+                "open_positions": portfolio["portfolio_open_positions"],
+                "rejection_counts": portfolio["portfolio_rejection_reasons"],
+                "message": ("达到最小成交样本；仍需检查收益与稳定性。"
+                            if int(row["net_n_trades"]) >= BT_MIN_TRADES
+                            else "真实成交不足最低样本，不等于零交易；不参与晋级。"),
+            }
+            if capture_portfolio_details:
+                row["_portfolio_details"] = portfolio
             if capture_formal_series:
                 dates = [str(item["trade_date"]) for item in portfolio["equity_curve"]]
                 returns = [float(value) for value in portfolio["portfolio_daily_returns"]]
@@ -733,6 +765,7 @@ def run_grid(
                     raise PortfolioAccountingError("组合日收益与权益日期长度不一致")
                 row["_formal_daily_returns"] = dict(zip(dates, returns))
         rows.append(row)
+        diagnostic_rows.append(row)
     if progress_cb:
         progress_cb("组合会计完成", 99)
     df_out = pd.DataFrame(rows)
@@ -749,6 +782,8 @@ def run_grid(
             .drop(columns=["_portfolio_complete"], errors="ignore")
             .reset_index(drop=True)
         )
+    # Preserve raw evidence separately from the unchanged eligibility filter.
+    df_out.attrs["diagnostic_rows"] = diagnostic_rows
     return df_out
 
 

@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException
 from ab_screener.api.legacy_state import (
     _SYNC_LOCK,
     _SYNC_STATE,
+    _store,
 )
 
 router = APIRouter(tags=["legacy"])
@@ -74,6 +75,10 @@ def sync_start():
 @router.get("/api/sync/status")
 def sync_status():
     with _SYNC_LOCK:
-        return dict(_SYNC_STATE)
+        state = dict(_SYNC_STATE)
+    # CLI/计划任务同步不更新进程内状态；日期始终来自同一行情库。
+    state["latest_daily"] = _store.max_trade_date("daily")
+    state["latest_moneyflow"] = _store.max_trade_date("moneyflow")
+    return state
 
 

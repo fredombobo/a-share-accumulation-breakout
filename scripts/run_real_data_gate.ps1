@@ -108,3 +108,9 @@ Say 'D 变绿不代表研究通过 —— R（权威研究 FAIL）不受此影�
 Say ''
 
 try { [Console]::OutputEncoding = $__prevOut } catch { }
+
+# 必须显式传出退出码。
+# 2026-09-03 教训：这里原本自然结束，子 PowerShell 永远返回 0，于是 daily_run.ps1
+# 的第 6a 步在门禁 FAIL 的情况下照样打印「OK 闸门 D 报告已刷新」。
+# 把 FAIL 显示成 OK 是这个项目里最不能出现的一类错误。
+exit $code

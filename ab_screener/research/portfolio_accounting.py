@@ -523,7 +523,13 @@ def _process_exits(
         cash_fen += fill.cash_delta_fen
         position.realized_pnl_fen += fill.cash_delta_fen - sold_cost
         _add_fees(fee_totals, fill)
-        events.append(_event_payload(fill, "EXIT_FILLED"))
+        events.append({
+            **_event_payload(fill, "EXIT_FILLED"),
+            "entry_date": position.entry_date,
+            "exit_type": position.exit_type,
+            "allocated_cost_fen": sold_cost,
+            "realized_pnl_fen": fill.cash_delta_fen - sold_cost,
+        })
         if position.qty == 0:
             realized_pnls.append(position.realized_pnl_fen)
             del positions[position.ts_code]

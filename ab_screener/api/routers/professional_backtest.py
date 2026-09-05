@@ -143,7 +143,7 @@ def preview(
     except ProfessionalGridError as exc:
         _raise_grid_error(exc)
     return {
-        "can_run": True,
+        "can_run": prepared["data_scope"]["can_run"],
         "prepared": prepared,
         "estimated_work": {
             "combinations": prepared["parameter_space"]["count"],
@@ -174,6 +174,11 @@ def run(
         prepared = prepare_professional_request(db_path, body)
     except ProfessionalGridError as exc:
         _raise_grid_error(exc)
+    if not prepared["data_scope"]["can_run"]:
+        _raise_grid_error(ProfessionalGridError(
+            "RESEARCH_DATA_SCOPE_INCOMPLETE", "研究及预热数据检查未通过，请查看缺失原因",
+            prepared["data_scope"],
+        ))
     store = _store(db_path)
     completed = store.completed_by_input_hash(prepared["input_hash"])
     if completed and completed.get("research_mode") == _MODE:

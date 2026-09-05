@@ -13,6 +13,7 @@ from typing import Any
 import pandas as pd
 
 from ab_screener.research.condition_plugins import resolve_enabled_conditions
+from ab_screener.research.data_scope import inspect_scope
 from ab_screener.research.portfolio_metric_contract import (
     normalize_portfolio_metrics,
     portfolio_total_return,
@@ -69,8 +70,31 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
         ) from exc
     dates = _distinct_dates(db_path)
     windows = _resolve_windows(payload.get("windows"), dates)
+    scope_start = min([windows["is"][0]] + [row["train_start"] for row in windows["wf"]])
+    data_scope = inspect_scope(
+        db_path, universe["codes"], scope_start, windows["oos"][1],
+        max(540, parameter_space["horizon"] * 2),
+    )
+    if (str((payload.get("windows") or {}).get("mode") or "auto") == "auto"
+            and data_scope.get("last_incomplete_date")):
+        # Window choice depends only on provenance, never on observed returns.
+        history_days = max(540, parameter_space["horizon"] * 2)
+        first_usable = (pd.to_datetime(data_scope["last_incomplete_date"])
+                        + pd.Timedelta(days=history_days + 1)).strftime("%Y%m%d")
+        usable_dates = [day for day in dates if day >= first_usable]
+        if usable_dates:
+            windows = _resolve_windows(None, usable_dates)
+            windows["notes"] = list(windows.get("notes") or []) + [
+                "自动窗口按来源/时点完整范围及预热需求收缩，未依据收益选窗。"
+            ]
+            scope_start = min([windows["is"][0]] + [row["train_start"] for row in windows["wf"]])
+            data_scope = inspect_scope(db_path, universe["codes"], scope_start, windows["oos"][1], history_days)
+    from build_version import build_version
+
     normalized = {
-        "contract_version": "professional-backtest-v1.5.0",
+        "contract_version": "professional-backtest-v1.6.0",
+        "code_version": build_version(),
+        "data_scope": data_scope,
         "strategy": strategy,
         "sample_step": step,
         "max_codes": max_codes,
@@ -125,6 +149,9 @@ def execute_professional_run(
     from walkforward import wf_recheck
 
     expanded = expand_parameter_space(prepared_request["parameters"])
+    if prepared_request.get("data_scope", {}).get("can_run") is False:
+        raise ProfessionalGridError("RESEARCH_DATA_SCOPE_INCOMPLETE", "研究/预热行情不完整",
+                                    prepared_request["data_scope"])
     entry_mechanism = dict(prepared_request.get("entry_mechanism") or {})
     entry_mechanism_id = str(entry_mechanism.get("id") or BASE_ENTRY_MECHANISM_ID)
     mechanism_kwargs = signal_kwargs_for_entry_mechanism(entry_mechanism_id)
@@ -233,7 +260,7 @@ def execute_professional_run(
     leaderboard = sorted(composites, key=_is_rank, reverse=True)
     path_analysis = _path_analysis(leaderboard)
     independent_leaderboard = _independent_leaderboard(leaderboard)
-    best = next((row for row in leaderboard if int(row["is"].get("net_n_trades") or 0) > 0), None)
+    best = next((row for row in leaderboard if int(row["is"].get("net_n_trades") or 0) >= 30), None)
     if best is None:
         research_only = bool(entry_mechanism.get("research_only"))
         empty_result = {
@@ -331,6 +358,26 @@ def execute_professional_run(
         "metrics": normalize_portfolio_metrics(_clean(stress.get("metrics") or {})),
     }
 
+    progress("DETAILS", 92, "重放入选参数，核对账户权益与成交明细（不重选参数）")
+    from ab_screener.research.result_details import build_details
+
+    details = {}
+    for label in ("is", "oos"):
+        detail_frame = run_grid(
+            start=windows[label][0], end=windows[label][1], strategy="A",
+            step=prepared_request["sample_step"], max_codes=len(snapshot.universe),
+            horizon=horizon, cancel_check=cancel_check,
+            signal_kwargs={**best["signal"], **mechanism_kwargs},
+            portfolio_policy=policy, research_snapshot=snapshot,
+            combos_override=[{"strategy": "A", **best["exit"]}],
+            capture_portfolio_details=True,
+        )
+        raw_rows = detail_frame.attrs.get("diagnostic_rows", [])
+        portfolio = raw_rows[0].get("_portfolio_details") if raw_rows else None
+        if portfolio is not None:
+            if portfolio["portfolio_equity_sha256"] != best[label].get("portfolio_equity_sha256"):
+                raise RuntimeError("明细重放与原网格权益哈希不同，拒绝交付不一致报告")
+            details[label] = build_details(portfolio, prepared_request["universe"].get("industry_by_code", {}))
     progress("REPORT", 96, "生成探索性研究报告")
     verdict, verdict_label, reasons = _verdict(
         best,
@@ -358,6 +405,7 @@ def execute_professional_run(
         "evaluated_combinations": len(leaderboard),
         "path_analysis": path_analysis,
         "selected": _clean(best),
+        "account_details": details,
         "wf": wf,
         "baselines": baselines,
         "cost_stress": cost_stress,
@@ -424,9 +472,11 @@ def _distinct_dates(db_path: str | Path) -> list[str]:
 
 
 def _rows_by_exit(frame: pd.DataFrame) -> dict[tuple[Any, ...], dict[str, Any]]:
-    if frame is None or frame.empty:
+    if frame is None:
         return {}
     result: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in frame.attrs.get("diagnostic_rows", []):
+        result[_exit_key(row)] = row
     for _, row in frame.iterrows():
         payload = row.to_dict()
         result[_exit_key(payload)] = payload
@@ -451,6 +501,7 @@ _METRICS = (
     "portfolio_max_drawdown", "portfolio_final_equity_fen", "portfolio_rejected_count",
     "portfolio_equity_sha256",
     "entry_mechanism_signal_count", "entry_mechanism_signals_sha256",
+    "sample_diagnostic",
 )
 
 
@@ -461,15 +512,16 @@ def _metric_subset(row: dict[str, Any] | None) -> dict[str, Any]:
         {key: _clean(row.get(key)) for key in _METRICS if key in row}
     )
     result["evidence_complete"] = bool(
-        int(result.get("net_n_trades") or 0) > 0
+        int(result.get("net_n_trades") or 0) >= 30
         and result.get("portfolio_status") == "PASS"
     )
     return result
 
 
-def _is_rank(row: dict[str, Any]) -> tuple[float, float, int]:
+def _is_rank(row: dict[str, Any]) -> tuple[bool, float, float, int]:
     metrics = row["is"]
     return (
+        int(metrics.get("net_n_trades") or 0) >= 30,
         _finite(metrics.get("net_profit_factor"), -1.0),
         _finite(portfolio_total_return(metrics), -1.0),
         int(metrics.get("net_n_trades") or 0),
@@ -521,6 +573,9 @@ def _path_analysis(rows: list[dict[str, Any]]) -> dict[str, Any]:
         }
     identities: list[tuple[str, str]] = []
     for row in rows:
+        if any("net_n_trades" in row.get(scope, {}) and
+               int(row[scope].get("net_n_trades") or 0) < 30 for scope in ("is", "oos")):
+            continue
         is_hash = str((row.get("is") or {}).get("portfolio_equity_sha256") or "")
         oos_hash = str((row.get("oos") or {}).get("portfolio_equity_sha256") or "")
         if not is_hash or not oos_hash:
@@ -563,6 +618,9 @@ def _independent_leaderboard(rows: list[dict[str, Any]]) -> list[dict[str, Any]]
     result: list[dict[str, Any]] = []
     by_identity: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
+        if any("net_n_trades" in row.get(scope, {}) and
+               int(row[scope].get("net_n_trades") or 0) < 30 for scope in ("is", "oos")):
+            continue
         is_hash = str((row.get("is") or {}).get("portfolio_equity_sha256") or "")
         oos_hash = str((row.get("oos") or {}).get("portfolio_equity_sha256") or "")
         if not is_hash or not oos_hash:

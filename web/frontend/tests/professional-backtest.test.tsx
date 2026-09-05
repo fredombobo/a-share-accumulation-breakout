@@ -244,7 +244,7 @@ describe('专业回测工作台', () => {
     expect(screen.getByText('2 组', { exact: true })).toBeVisible()
     expect(screen.getByText('1 组未进入路径比较')).toBeVisible()
     expect(screen.getAllByText('8.00%').length).toBeGreaterThan(0)
-    expect(screen.getByText('0 笔（无验证证据）')).toBeVisible()
+    expect(screen.getByText('旧记录 0（过滤前未记录）')).toBeVisible()
     expect(screen.getByText(/这是抽样研究，不是逐日完整回测/)).toBeVisible()
     expect(screen.getAllByText('15.00%')).toHaveLength(2)
     expect(screen.getByText(/不绘制或推测净值曲线/)).toBeVisible()

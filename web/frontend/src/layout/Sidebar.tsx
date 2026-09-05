@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
-import { fetchPlatformStatus, type PlatformStatus } from '../api/platform'
+import { api, type TodayGuide } from '../api/client'
 import { IcoLayers, IcoOverview, IcoPaper } from '../components/Icons'
 
 const items = [
@@ -10,26 +10,25 @@ const items = [
 
 const helpItem = { path: '/guide', label: '使用说明', hint: '逻辑 · 操作 · 术语', Icon: IcoPaper }
 
-const readinessCopy: Record<string, string> = {
-  BLOCKED: '门禁阻断',
-  ENGINEERING_READY_RESEARCH_BLOCKED: '工程就绪 · 研究阻断',
-  PERSONAL_INSTITUTIONAL_READY: '七门通过',
-}
-
 export default function Sidebar() {
   const nav = useNavigate()
   const loc = useLocation()
-  const [platform, setPlatform] = useState<PlatformStatus | null>(null)
+  const [today, setToday] = useState<TodayGuide | null>(null)
 
   useEffect(() => {
     let active = true
-    fetchPlatformStatus()
+    const refresh = () => api.today()
       .then((status) => {
-        if (active) setPlatform(status)
+        if (active) setToday(status)
       })
       .catch(() => undefined)
+    void refresh()
+    const timer = setInterval(refresh, 30000)
+    window.addEventListener('data-synced', refresh)
     return () => {
       active = false
+      clearInterval(timer)
+      window.removeEventListener('data-synced', refresh)
     }
   }, [])
 
@@ -80,9 +79,9 @@ export default function Sidebar() {
       <div className="spacer" />
       <div className="sidebar-foot">
         <div style={{ marginBottom: 6 }}><span className="live-dot" />本地运行 · 127.0.0.1:8001</div>
-        {platform && (
-          <div style={{ marginBottom: 6 }} title={`build ${platform.build_version}`}>
-            <b>就绪度</b> {readinessCopy[platform.readiness] || platform.readiness}
+        {today && (
+          <div style={{ marginBottom: 6 }} title={today.reason}>
+            <b>今日状态</b> {today.title}
           </div>
         )}
         <b>每日</b> 更新 → 扫描 → 看证据<br />

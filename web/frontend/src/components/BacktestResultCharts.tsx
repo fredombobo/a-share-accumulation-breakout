@@ -254,7 +254,7 @@ export default function BacktestResultCharts({ result }: { result: BacktestResul
         <div>
           <span className="guide-eyebrow">真实结果可视化</span>
           <h2 id="result-visuals-title">结果图谱</h2>
-          <p>全部来自本次持久化回测结果。当前结果不含逐日净值序列，因此不绘制或推测净值曲线。</p>
+          <p>全部来自本次持久化回测结果。{result.account_details ? '入选参数的逐日权益和成交见下方账户复盘。' : '当前历史结果不含逐日净值序列，因此不绘制或推测净值曲线。'}</p>
         </div>
         <span className="pill">评估 {result.evaluated_combinations ?? result.leaderboard.length} 组</span>
       </div>

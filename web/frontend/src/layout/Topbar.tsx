@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { api, SyncStatus } from '../api/client'
 import { useTheme } from '../theme/ThemeContext'
@@ -40,6 +40,7 @@ export default function Topbar() {
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
   const [sync, setSync] = useState<SyncStatus | null>(null)
+  const runningRef = useRef(false)
 
   // 数据同步状态轮询：idle 时慢速、running 时快速；完成后广播事件让页面刷新
   useEffect(() => {
@@ -49,7 +50,8 @@ export default function Topbar() {
       api.syncStatus()
         .then((st) => {
           if (!alive) return
-          const wasRunning = sync?.status === 'running'
+          const wasRunning = runningRef.current
+          runningRef.current = st.status === 'running'
           setSync(st)
           if (wasRunning && st.status !== 'running') {
             window.dispatchEvent(new CustomEvent('data-synced', { detail: st }))
@@ -57,7 +59,7 @@ export default function Topbar() {
         })
         .catch(() => undefined)
         .finally(() => {
-          if (alive) timer = setTimeout(tick, sync?.status === 'running' ? 2000 : 15000)
+          if (alive) timer = setTimeout(tick, runningRef.current ? 2000 : 15000)
         })
     }
     tick()
@@ -68,6 +70,7 @@ export default function Topbar() {
   const onSync = async () => {
     try {
       await api.syncStart()
+      runningRef.current = true
       setSync({ status: 'running', message: '开始同步…', started_at: null, finished_at: null, latest_daily: null, latest_moneyflow: null, failed_dates: [] })
       window.dispatchEvent(new Event(RUN_TASK_EVENT))
     } catch (e) {

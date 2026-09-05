@@ -1,39 +1,7 @@
 ﻿<#
-每日运行 —— 横盘吸筹→启动 选股系统的单一日常入口。
-
-做五件事，按顺序 fail-closed：
-    1) 净化环境（代理 / PYTHONPATH），只从 .env 读取 Token
-    2) 增量同步行情到生产库（失败即停，不允许用过期数据出结果）
-    3) 拉起 8001 单端口后端（绑定生产库，硬门强制 false）
-    4) 触发一次全市场扫描，等待完成
-    5) 生产纸面日清：DAG、风险快照、内部对账、审计外部锚点、整库备份、soak 证据
-    6) 刷新门禁证据：真实数据门禁 D、以及 S/P/L/O/G 五道
-    7) 打印 A/B 池与市场环境
-
-第 5 步是闸门 L / O / P 与 soak 天数唯一的推进路径（2026-09-01 接入）。
-它只写运维表，不产生任何交易指令；LIVE_TRADING 仍然强制 false。
-
-第 6 步（2026-09-02 接入）解决的是「闸门会过期」这件事：
-  · D  门禁报告超过 24 小时即失效
-  · G  传输探针要求**当下**能连通供应商，断一次就红一次
-  · P/L/O  依赖当天日清写下的运维记录
-这几道不是推绿一次就完事的，是每天都要重新出证据的状态量。
-所以放进日常链路，而不是靠人记得手工重跑。
-
-第 5、6 步失败**都不**中断本脚本 —— A 池在第 4 步就已经出来了，
-门禁是研究/发布证据，不是当日可用性的前提。失败会红字打出来，不会静默。
-
-本脚本永不打开 LIVE_TRADING_ENABLED / DAILY_SCHEDULER_ENABLED / V2_PIT_READ_ENABLED，
-永不指向龙虎榜产品副本 lhb_product.db，永不写研究结论。
-输出的 A 池是研究候选，不是荐股，也不是买入指令。
-
-用法：
-    双击  每日运行.bat
-    或    powershell -NoProfile -ExecutionPolicy Bypass -File 每日运行.ps1
-    只开界面不扫描：  -SkipScan
-    行情已同步过：    -SkipSync
-    不跑日清（快）：  -SkipEod
-    不刷新门禁证据：  -SkipGates
+个人研究日用入口：同步 → 验证 8001 身份 → 扫描 → 核对日期。
+默认不执行纸面日清、soak 或七闸门；-InstitutionalMaintenance 才启用旧运维。
+-Backup 显式创建独立可验证备份。研究结果不是荐股。
 #>
 
 param(
@@ -51,6 +19,8 @@ param(
     [int]$ScanTimeoutMinutes = 30,
     [switch]$SkipSync,
     [switch]$SkipScan,
+    [switch]$Backup,
+    [switch]$InstitutionalMaintenance,
     [switch]$SkipEod,
     [switch]$SkipGates,
     [switch]$NoBrowser,
@@ -59,6 +29,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$optionalFailed = $false
+if ($Port -ne 8001 -or $AllowForeignBackend) { Write-Error '仅允许 AB/8001，不能绕过身份检查'; exit 1 }
 
 function Step([int]$n, [string]$t) {
     Write-Host ''
@@ -123,6 +95,13 @@ foreach ($line in (Get-Content -LiteralPath $EnvFile)) {
 }
 if ($loaded -notcontains 'TUSHARE_TOKEN') { Die "$EnvFile 里没有 TUSHARE_TOKEN。" }
 
+# Python 子进程的中文输出编码。
+# 不设这个的话，python 在"输出被重定向到管道"时会按系统代码页(GBK)写 stdout，
+# 而 PowerShell 这一侧按 UTF-8 读，日志里 sync_daily.py 的中文就是整片乱码。
+# 计划任务的日志正是管道模式，2026-09-03 那份日志就踩了这个坑。
+$env:PYTHONIOENCODING = 'utf-8'
+$env:PYTHONUTF8       = '1'
+
 # 硬门：本脚本只关不开
 $env:LIVE_TRADING_ENABLED    = 'false'
 $env:DAILY_SCHEDULER_ENABLED = 'false'
@@ -146,7 +125,7 @@ if ($SkipSync) {
 } else {
     Push-Location $Root
     try {
-        & $Python 'sync_daily.py'
+        & $Python -u 'sync_daily.py'
         $code = $LASTEXITCODE
     } finally { Pop-Location }
     if ($code -ne 0) {
@@ -160,22 +139,7 @@ Step 3 "拉起单端口后端 :$Port"
 
 if (Test-Port $Port) {
     Ok "端口 $Port 已在监听，复用现有后端"
-    $owner = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($owner) {
-        $op = Get-Process -Id $owner.OwningProcess -ErrorAction SilentlyContinue
-        if ($op -and $op.Path -and $op.Path -ne $Python -and -not $AllowForeignBackend) {
-            Write-Host ''
-            Warn "占用 $Port 的进程不是本脚本的解释器："
-            Warn "    $($op.Path)  (PID=$($owner.OwningProcess))"
-            Warn "它多半来自另一个代码副本，扫描结果会写进它自己的 runtime，本脚本读不到，"
-            Warn "继续下去只会拿到过期结果。先结束它再重跑："
-            Write-Host ''
-            Write-Host "    Get-NetTCPConnection -LocalPort $Port -State Listen |" -ForegroundColor White
-            Write-Host "      ForEach-Object { Stop-Process -Id `$_.OwningProcess -Force }" -ForegroundColor White
-            Write-Host ''
-            Die "拒绝在陌生后端上扫描。（确实要将就用它：加 -AllowForeignBackend）"
-        }
-    }
+
 } else {
     $outLog = Join-Path $Root 'runtime\backend.out.log'
     $errLog = Join-Path $Root 'runtime\backend.err.log'
@@ -196,31 +160,13 @@ if (Test-Port $Port) {
     Ok "后端已启动 PID=$($proc.Id)"
 }
 
+Push-Location $Root
 try {
-    $st = Get-JsonUtf8 "http://127.0.0.1:$Port/api/v2/platform/status" 10
-
-    # 只看这三个明确表示"实盘开关"的字段。
-    # 注意 hard_gates.LIVE_TRADING_DISABLED = true 表示"已禁用"，是安全状态，不能当成实盘开启。
-    $liveOn = $false
-    foreach ($v in @($st.live, $st.live_trading_enabled, $st.flags.LIVE_TRADING_ENABLED)) {
-        if ($null -ne $v -and [bool]$v) { $liveOn = $true }
-    }
-    if ($liveOn) { Die '后端报告实盘开关为 true —— 立即停止并人工核查，本脚本不继续。' }
-
-    Ok ("身份 product={0} port={1} build={2}" -f $st.product, $st.default_port, $st.build_version)
-    Ok ("实盘 live=false · 调度={0} · PIT读={1} · 执行写={2}" -f `
-        $st.flags.DAILY_SCHEDULER_ENABLED, $st.flags.V2_PIT_READ_ENABLED, $st.flags.V2_EXECUTION_WRITE_ENABLED)
-
-    if ($st.readiness -and $st.readiness -ne 'READY') {
-        $blocked = (@($st.readiness_detail.blocked_gates) -join ',')
-        $idb     = (@($st.readiness_detail.identity_blockers) -join ',')
-        Warn ("七闸门 readiness={0}  受阻闸门={1}" -f $st.readiness, $blocked)
-        if ($idb) { Warn ("身份阻断={0} —— 闸门证据产生于更早的 build，需在当前构建上重跑证据。" -f $idb) }
-        Warn '这是研究/发布门禁，不阻断日常扫描。'
-    }
-} catch {
-    Warn "身份接口未响应（不阻断扫描）：$($_.Exception.Message)"
-}
+    & $Python -m ab_screener.operations.runtime_identity --root $Root --db $DbPath
+    if ($LASTEXITCODE -ne 0) { Die '身份检查失败。源码更新后请先重启 8001；不会强杀运行中的任务。' }
+} finally { Pop-Location }
+$health = Get-JsonUtf8 "http://127.0.0.1:$Port/api/health"
+if (-not $health.as_of -or $health.as_of -ne $health.freshness.expected_as_of) { Die '行情不是最新已完成交易日，请先完成同步。' }
 
 # ---------------------------------------------------------------- 4 扫描
 Step 4 '全市场扫描'
@@ -243,6 +189,7 @@ if ($SkipScan) {
 
     $deadline = (Get-Date).AddMinutes($ScanTimeoutMinutes)
     $lastStage = ''
+    $s = $null
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 10
         try {
@@ -250,9 +197,10 @@ if ($SkipScan) {
         } catch { continue }
         $stage = "$($s.status) / $($s.stage)"
         if ($stage -ne $lastStage) { Write-Host "  $((Get-Date).ToString('HH:mm:ss'))  $stage"; $lastStage = $stage }
-        if ($s.status -in @('done', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'error')) { break }
+        if ($s.status -in @('done', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'error', 'cancelled', 'interrupted')) { break }
     }
 
+    if (-not $s -or $s.status -notin @('done', 'SUCCEEDED')) { Die '扫描失败、取消或超时；不读取旧结果。' }
     $rf = Join-Path $Root "runtime\scan_$taskId.result.json"
     if (Test-Path $rf) { $result = Read-JsonFile $rf }
     else {
@@ -275,7 +223,9 @@ Step 5 '生产纸面日清（DAG · 风险 · 对账 · 审计锚点 · 备份 �
 # 任何一条不满足它自己会 FAIL 退出，这里只负责如实转述，不绕过。
 $SoakDir = Join-Path $Root 'runtime\v2\soak'
 
-if ($SkipEod) {
+if (-not $InstitutionalMaintenance) {
+    Ok '个人研究模式：不运行纸面日清，不写账本或 soak。'
+} elseif ($SkipEod) {
     Warn '已按 -SkipEod 跳过。闸门 L / O / P 与 soak 天数今天不会推进。'
 } elseif ($SkipScan) {
     Warn '已跳过扫描，而日清要求"当前构建在当日的成功扫描"，因此一并跳过。'
@@ -287,6 +237,7 @@ if ($SkipEod) {
     if (-not (Test-Path -LiteralPath $SigningKeyFile)) {
         # 审计签名密钥是信任根：一旦换掉，此前所有外部锚点都无法再验证。
         # 所以绝不由日常脚本自动生成，必须人工执行一次带 --initialize-signing-key 的命令。
+        $optionalFailed = $true
         Warn "审计签名密钥不存在：$SigningKeyFile"
         Warn '不自动创建（换密钥会让历史锚点全部失效）。需要时手动执行一次：'
         Write-Host ("    {0} scripts\run_eod_v2.py --db `"{1}`" --anchor-dir `"{2}`" ``" -f $Python, $DbPath, $AnchorDir) -ForegroundColor White
@@ -307,6 +258,7 @@ if ($SkipEod) {
         } finally { Pop-Location }
 
         if ($eodCode -ne 0) {
+            $optionalFailed = $true
             Write-Host ''
             Write-Host '  日清未通过 —— A 池仍然可用，但闸门 L / O / P 与 soak 今天不前进。' -ForegroundColor Red
             Write-Host ($eodOut -join [Environment]::NewLine) -ForegroundColor DarkGray
@@ -327,7 +279,8 @@ if ($SkipEod) {
                     $soakDays, $eod.soak.required, ($eod.soak.required - $soakDays))
             }
         } else {
-            Warn "日清退出码 0 但没有报告文件：$eodReport"
+            $optionalFailed = $true
+        Warn "日清退出码 0 但没有报告文件：$eodReport"
         }
     }
 }
@@ -338,9 +291,11 @@ Step 6 '刷新门禁证据（D · S/P/L/O/G）'
 # 为什么每天都要跑：闸门 D 的报告 24 小时过期，G 的传输探针只能证明"此刻"能连通，
 # P/L/O 读的是当天日清写下的运维记录。这三类都是状态量，不是一次性成就。
 # 两个子脚本都自带 fail-closed，这里只负责调用与如实转述，不解释、不掩盖。
-if ($SkipGates) {
+if (-not $InstitutionalMaintenance) {
+    Ok '个人研究模式：不执行机构七闸门。'
+} elseif ($SkipGates) {
     Warn '已按 -SkipGates 跳过。闸门 D 的报告超过 24 小时后会自动失效。'
-} elseif ($SkipEod -or $SkipScan) {
+} elseif ($SkipEod -or $SkipScan -or $optionalFailed) {
     # 没跑日清就刷新，P/L 会拿旧交易日的 manifest 去签当前身份 —— 那是给过期结论
     # 盖新章，比不刷新更糟。宁可留着旧证据，也不产生误导性的新证据。
     Warn '本次未跑扫描/日清，刷新会把旧运维记录签成当前身份的新证据 —— 跳过。'
@@ -351,8 +306,8 @@ if ($SkipGates) {
     if (Test-Path -LiteralPath $gateD) {
         Write-Host '  [6a] 真实数据门禁 D —— 源端抽样核验，通常几分钟…' -ForegroundColor Cyan
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $gateD -Root $Root -DbPath $DbPath
-        if ($LASTEXITCODE -ne 0) { Warn '闸门 D 未通过（上面是报告内容）。' } else { Ok '闸门 D 报告已刷新' }
-    } else { Warn "找不到 $gateD" }
+        if ($LASTEXITCODE -ne 0) { $optionalFailed = $true; Warn '闸门 D 未通过（上面是报告内容）。' } else { Ok '闸门 D 报告已刷新' }
+    } else { $optionalFailed = $true; Warn "找不到 $gateD" }
 
     if (Test-Path -LiteralPath $gateE) {
         Write-Host ''
@@ -360,8 +315,8 @@ if ($SkipGates) {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $gateE `
             -Root $Root -DbPath $DbPath -BackupRoot $BackupRoot `
             -AnchorDir $AnchorDir -SigningKeyFile $SigningKeyFile
-        if ($LASTEXITCODE -ne 0) { Warn '证据重建未完成（多半是工作树不干净）。' }
-    } else { Warn "找不到 $gateE" }
+        if ($LASTEXITCODE -ne 0) { $optionalFailed = $true; Warn '证据重建未完成（多半是工作树不干净）。' }
+    } else { $optionalFailed = $true; Warn "找不到 $gateE" }
 
     Write-Host ''
     Warn '证据刷新只更新"当前是什么状态"，不改变结论。G 断线、S 未成熟、R FAIL 都不会因此变绿。'
@@ -425,4 +380,20 @@ Write-Host ("  界面： http://127.0.0.1:{0}/" -f $Port) -ForegroundColor Cyan
 Write-Host '  停止： 双击 停止.bat'
 Write-Host ''
 
+if (-not $SkipScan) {
+    Push-Location $Root
+    try {
+        & $Python -m ab_screener.operations.personal_daily --db $DbPath --scan-result $rf
+        if ($LASTEXITCODE -ne 0) { Die '日用记录验收失败，不标记完成。' }
+    } finally { Pop-Location }
+}
+if ($Backup) {
+    Push-Location $Root
+    try {
+        & $Python -m ab_screener.operations.personal_daily --db $DbPath --backup-root $BackupRoot
+        if ($LASTEXITCODE -ne 0) { Die '独立备份失败。' }
+    } finally { Pop-Location }
+}
+if ($optionalFailed) { Die '本次请求的机构运维步骤失败。' }
 if (-not $NoBrowser) { Start-Process "http://127.0.0.1:$Port/" }
+exit 0

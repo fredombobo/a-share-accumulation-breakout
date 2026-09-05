@@ -36,6 +36,10 @@ $Stages = @(
             "$Root\ab_screener\research\professional_grid.py" `
             "$Root\ab_screener\research\condition_plugins.py" `
             "$Root\ab_screener\research\professional_runner.py" `
+            "$Root\ab_screener\research\data_scope.py" `
+            "$Root\ab_screener\research\result_details.py" `
+            "$Root\ab_screener\operations\runtime_identity.py" `
+            "$Root\ab_screener\operations\personal_daily.py" `
             "$Root\ab_screener\research\regime_filter.py" `
             "$Root\ab_screener\research\resilient_absorption.py" `
             "$Root\ab_screener\research\post_breakout_supply_dry_up.py" `

@@ -32,6 +32,7 @@ from ab_screener.data.adapters.tushare_pit import (
     get_pro_handle,
 )
 from ab_screener.data.corporate_action_repository import CorporateActionError, CorporateActionRepository
+
 # HISTORY_TABLES 取 pit_writer：它在 aux_history 基础上并入了 LHB_PIT_HISTORY_TABLES，
 # 直接用 aux_history_v2.ALL_HISTORY_TABLES 会让 top_inst 等龙虎榜分区被判为未知数据集。
 from ab_screener.data.pit_writer import HISTORY_TABLES, MAX_ROWS_PER_TX, build_records, write_chunk

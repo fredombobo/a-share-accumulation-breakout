@@ -5,6 +5,15 @@ notes: >
   Exception: V2-P0-BOOTSTRAP (planning commit only, no business code).
   v1.1 nine-point tasks remain historical complete.
 tasks:
+  - id: PERSONAL-RESEARCH-CLOSEOUT-20260905
+    title: 每日选股与专业回测日用收束、真实结果明细与 GitHub 交付
+    status: complete
+    work_package: WP99
+    dependencies:
+      - PROFESSIONAL-BACKTEST-RESULT-CONTRACT-CORRECTION
+    acceptance:
+      - docs/PERSONAL-RESEARCH-CLOSEOUT-2026-09-05.md 的工程验收全部通过
+      - 保留历史研究失败，五个未来交易日不伪造完成
   # ── historical (do not reopen) ──
   - id: NINE_POINT_CLOSED_LOOP
     title: 个人九分闭环：实验生命周期、日证据、候选门禁、唯一下一步与发布证据
