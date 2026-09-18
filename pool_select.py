@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 
+from ab_screener.data.freshness import moneyflow_window_status
 from sector_themes import _dedup_themes_map
 
 PREFERRED_THEMES = ("AI应用", "半导体", "光模块", "机器人", "电力", "芯片")
@@ -63,14 +64,29 @@ def apply_soft_theme_bonus(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def fund_flow_quality_ok(mf_rows: pd.DataFrame | None, min_positive_days: int = 2) -> tuple[bool, int]:
-    """近窗内净流入为正的天数 ≥ min_positive_days。
+def fund_flow_quality_ok(
+    mf_rows: pd.DataFrame | None,
+    min_positive_days: int = 2,
+    *,
+    expected_dates: list[str] | None = None,
+    expected_as_of: str = "",
+    required_days: int = 5,
+) -> tuple[bool, int]:
+    """独立日期窗口完整，且净流入为正的天数 ≥ min_positive_days。
 
     无 net_mf_amount 时尝试用大单差额；仍无数据则 **不通过**（strict 宁缺毋滥）。
     """
     if mf_rows is None or getattr(mf_rows, "empty", True):
         return False, 0
-    df = mf_rows
+    window = moneyflow_window_status(
+        mf_rows, expected_dates=expected_dates, expected_as_of=expected_as_of,
+        required_days=required_days,
+    )
+    if not window["complete"]:
+        return False, 0
+    df = mf_rows.copy()
+    df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "", regex=False)
+    df = df.loc[df["trade_date"].isin(window["expected_dates"])]
     if "net_mf_amount" in df.columns:
         net = pd.to_numeric(df["net_mf_amount"], errors="coerce").fillna(0.0)
     elif all(c in df.columns for c in ("buy_elg_amount", "buy_lg_amount", "sell_elg_amount", "sell_lg_amount")):
@@ -123,57 +139,79 @@ def breakout_freshness_bonus(
     return -5.0
 
 
-def split_pools(
-    df: pd.DataFrame,
-    *,
-    top_a: int = 15,
-    top_b: int = 30,
-    include_relaxed_in_a: bool = False,
-    regime_max_slots: int | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
-    """拆分 A/B 池。
-
-    A: strict（可选 relaxed）
-    B: theme_fill 及其它观察票
-    """
-    empty = pd.DataFrame()
-    report: dict[str, Any] = {
-        "a_count": 0,
-        "b_count": 0,
-        "a_tiers": {},
-        "b_tiers": {},
-        "theme_soft": True,
-    }
+def qualified_pools(
+    df: pd.DataFrame, *, can_publish_a: bool = True, include_relaxed_in_a: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Complete eligibility before any presentation limit; never changes the tier."""
     if df is None or df.empty:
-        return empty, empty, report
-
+        empty = pd.DataFrame(columns=["ts_code", "筛选层级", "池", "qualified_pool"])
+        return empty.copy(), empty.copy()
     work = apply_soft_theme_bonus(df)
     tier_c = _tier_col(work)
     if not tier_c:
-        work["筛选层级"] = "strict"
         tier_c = "筛选层级"
+        work[tier_c] = "unknown"
+    work[tier_c] = work[tier_c].fillna("unknown").astype(str).str.strip().replace("", "unknown")
+    sort_c = "排序分" if "排序分" in work else _score_col(work)
+    sort_columns = [sort_c] if sort_c else []
+    ascending = [False] if sort_c else []
+    if "ts_code" in work:
+        sort_columns.append("ts_code")
+        ascending.append(True)
+    if sort_columns:
+        work = work.sort_values(sort_columns, ascending=ascending, kind="stable")
+    if "ts_code" in work and work["ts_code"].duplicated().any():
+        raise ValueError("duplicate candidate before qualification")
+    eligible = work[tier_c].isin(["strict"] + (["relaxed"] if include_relaxed_in_a else [])) & bool(can_publish_a)
+    work["qualified_pool"] = "B"
+    work.loc[eligible, "qualified_pool"] = "A"
+    a, b = work.loc[eligible].copy(), work.loc[~eligible].copy()
+    if not b.empty:
+        b["_strict_priority"] = b[tier_c].eq("strict").astype(int)
+        b = b.sort_values("_strict_priority", ascending=False, kind="stable").drop(columns="_strict_priority")
+    a["池"], b["池"] = "A", "B"
+    return a.reset_index(drop=True), b.reset_index(drop=True)
 
-    a_mask = work[tier_c].astype(str).isin(["strict"] + (["relaxed"] if include_relaxed_in_a else []))
-    b_mask = ~a_mask
 
-    a = work.loc[a_mask].copy()
-    b = work.loc[b_mask].copy()
-
-    sort_c = "排序分" if "排序分" in a.columns else _score_col(a)
-    if sort_c and not a.empty:
-        a = a.sort_values(sort_c, ascending=False)
-    if sort_c and not b.empty and sort_c in b.columns:
-        b = b.sort_values(sort_c, ascending=False)
-
-    slots = top_a if regime_max_slots is None else min(top_a, max(0, regime_max_slots))
-    a = a.head(slots).reset_index(drop=True)
-    b = b.head(top_b).reset_index(drop=True)
-
-    a["池"] = "A"
-    b["池"] = "B"
-    report["a_count"] = len(a)
-    report["b_count"] = len(b)
-    if tier_c in work.columns:
-        report["a_tiers"] = a[tier_c].value_counts().to_dict() if not a.empty else {}
-        report["b_tiers"] = b[tier_c].value_counts().to_dict() if not b.empty else {}
+def split_pools(
+    df: pd.DataFrame, *, top_a: int = 15, top_b: int = 30,
+    include_relaxed_in_a: bool = False, regime_max_slots: int | None = None,
+    can_publish_a: bool | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    """Project complete eligibility into Top display; preserve overflow as B observations."""
+    top_a, top_b = max(0, int(top_a)), max(0, int(top_b))
+    slots = top_a if regime_max_slots is None else min(top_a, max(0, int(regime_max_slots)))
+    permitted = regime_max_slots != 0 if can_publish_a is None else can_publish_a
+    full_a, full_b = qualified_pools(df, can_publish_a=permitted, include_relaxed_in_a=include_relaxed_in_a)
+    tier_c = _tier_col(full_a) or _tier_col(full_b)
+    strict_count = int(full_a[tier_c].eq("strict").sum() + full_b[tier_c].eq("strict").sum())
+    a = full_a.head(slots).copy()
+    withheld = full_a.iloc[slots:].copy()
+    b = pd.concat([withheld, full_b], ignore_index=True)
+    if not b.empty:
+        b["_strict_priority"] = b[tier_c].eq("strict").astype(int)
+        sort_c = "排序分" if "排序分" in b else _score_col(b)
+        columns, ascending = ["_strict_priority"], [False]
+        if sort_c:
+            columns.append(sort_c); ascending.append(False)
+        if "ts_code" in b:
+            columns.append("ts_code"); ascending.append(True)
+        b = b.sort_values(columns, ascending=ascending, kind="stable").drop(columns="_strict_priority")
+        b.loc[b[tier_c].eq("strict"), "观察原因"] = "通过技术筛选但未获本次 A 池发布名额；仅作观察"
+    b_available = len(b)
+    a, b = a.reset_index(drop=True), b.head(top_b).reset_index(drop=True)
+    a["池"], b["池"] = "A", "B"
+    withheld_count = strict_count - int(a[tier_c].eq("strict").sum())
+    displayed_strict = int(b[tier_c].eq("strict").sum())
+    report = {
+        "a_count": len(a), "b_count": len(b), "theme_soft": True,
+        "a_tiers": a[tier_c].value_counts().to_dict(), "b_tiers": b[tier_c].value_counts().to_dict(),
+        "qualified_strict": strict_count, "withheld_strict": withheld_count,
+        "withheld_strict_displayed": displayed_strict,
+        "withheld_strict_not_displayed": withheld_count - displayed_strict,
+        "a_top_limit": top_a, "b_top_limit": top_b, "a_slots": slots,
+        "a_eligible_count": len(full_a), "b_available_count": b_available,
+        "total_candidates": len(full_a) + len(full_b),
+        "qualified_counts": {"A": len(full_a), "B": len(full_b)},
+    }
     return a, b, report

@@ -1,7 +1,7 @@
 """
 数据获取层
 ==========
-统一通过 tushare_init 初始化（curl_cffi + 证书校验直连 https://a.sszhixia.cn/）。
+统一通过 tushare_init 初始化（curl_cffi；地址与调用规范见 docs/TUSHARE-CALLING-METHOD.md）。
 
 数据优先从本地 SQLite 读取（local_store），缺失时增量拉取：
   - stock_basic: 全市场股票列表

@@ -5,6 +5,7 @@ const DEFAULT_TIMEOUT_MS = 30_000
 
 /** 可传外部 AbortSignal 与自定义超时。 */
 export type ReqOpts = { signal?: AbortSignal; timeoutMs?: number }
+export type StockSearchMatch = { ts_code: string; name: string; industry: string | null; list_date?: string }
 
 export class ApiError extends Error {
   code: string
@@ -133,6 +134,58 @@ export interface OverviewItem {
   box_low?: number | null
   ma5?: number | null
   ma20?: number | null
+  run_id?: string
+  candidate_status?: 'CURRENT_CANDIDATE' | 'HISTORICAL_CANDIDATE'
+  fund_window?: FundingWindow | null
+  data_missing_fields?: string[]
+  quote_as_of?: string | null
+  price_as_of?: string | null
+}
+
+export interface FundingWindow {
+  complete?: boolean
+  status?: string
+  expected_dates?: string[]
+  observed_dates?: string[]
+  observed_days?: number
+  required_days?: number
+  missing_dates?: string[]
+  invalid_dates?: string[]
+  basis?: string
+  denominator_basis?: string
+  basis_note?: string
+  reason?: string
+}
+
+export interface ScanPublication {
+  run_id: string
+  task_id?: string
+  as_of?: string
+  completed_at?: string
+  config_hash?: string
+  entry_hash?: string
+  verified?: boolean
+  state?: 'READY' | 'HISTORICAL' | 'DATA_BLOCKED' | 'LEGACY_UNVERIFIED'
+  counts?: { A: number; B: number }
+  qualified_available?: boolean
+  qualified_verified?: boolean
+  qualification_integrity_error?: string | null
+  qualification?: {
+    version: number
+    counts?: { A: number; B: number; total?: number }
+    total?: number
+    hash?: string
+    scope?: string
+  } | null
+  pool_report?: { qualified_strict?: number; withheld_strict?: number; [key: string]: unknown }
+}
+
+export interface ScanHistoryItem {
+  run_id: string
+  as_of: string
+  created_at: string
+  status: string
+  config_hash: string
 }
 
 export interface Freshness {
@@ -144,6 +197,12 @@ export interface Freshness {
   unit?: string
   expected_as_of?: string
   stale_label?: string
+  can_publish_a?: boolean
+  calendar_verified?: boolean
+  calendar_reason?: string
+  blocking_reasons?: string[]
+  required_moneyflow_dates?: string[]
+  dataset_freshness?: Record<string, { latest_date?: string; expected_as_of?: string; status?: string; is_current?: boolean }>
 }
 
 export interface Regime {
@@ -163,6 +222,10 @@ export interface OverviewResp {
   regime?: Regime
   pool_totals?: { A: number; B: number }
   empty_reason?: string | null
+  is_current?: boolean
+  view_state?: 'CURRENT' | 'HISTORICAL' | 'NO_PUBLICATION'
+  publication?: ScanPublication | null
+  chart_basis?: 'THROUGH_SCAN_DATE' | 'LATEST_AVAILABLE'
 }
 
 export interface HealthResp {
@@ -240,14 +303,28 @@ export interface StockDetail {
     close: number | null
   }
   fund_flow: {
-    net_wan: number
-    score: number
-    ratio_pct: number
+    net_wan: number | null
+    score: number | null
+    ratio_pct: number | null
     days: number
+    source?: string
+    as_of?: string
+    window?: FundingWindow
+    complete?: boolean
   }
   fina?: FinaRow[]
   as_of: string
   trade?: TradeCard
+  candidate_status?: 'CURRENT_CANDIDATE' | 'HISTORICAL_CANDIDATE' | 'QUERY_ONLY'
+  pool?: string
+  tier?: string
+  publication?: ScanPublication | null
+  run_id?: string | null
+  scan_as_of?: string | null
+  quote_as_of?: string | null
+  fundamentals_as_of?: string | null
+  chart_basis?: string
+  data_missing_fields?: string[]
 }
 
 export interface SectorFlowResp {
@@ -256,8 +333,10 @@ export interface SectorFlowResp {
   group_label: string
   dates: string[]
   days: number
-  groups: Record<string, number[]>
-  industries: Record<string, number[]>
+  groups: Record<string, (number | null)[]>
+  industries: Record<string, (number | null)[]>
+  aggregation_basis?: string
+  note?: string
   top_in: { group: string; industry: string; net_wan: number }[]
   top_out: { group: string; industry: string; net_wan: number }[]
 }
@@ -269,13 +348,18 @@ export interface StockFlowResp {
   days: number
   stock_flow: {
     trade_date: string
-    net_wan: number
-    buy_main_wan: number
-    sell_main_wan: number
-    buy_elg_wan: number
-    buy_lg_wan: number
+    net_wan: number | null
+    buy_main_wan: number | null
+    sell_main_wan: number | null
+    buy_elg_wan: number | null
+    buy_lg_wan: number | null
+    status?: string
   }[]
-  sector_flow: { dates: string[]; net_wan: number[] }
+  sector_flow: { dates: string[]; net_wan: (number | null)[] }
+  calendar_verified?: boolean
+  calendar_status?: string
+  missing_dates?: string[]
+  basis?: string
   as_of: string
 }
 
@@ -297,11 +381,13 @@ export interface ScanStatus {
 }
 
 export const api = {
+  searchStocks: (query: string, opts?: ReqOpts) => request<StockSearchMatch[]>(`/stock-search?q=${encodeURIComponent(query)}`, opts),
   today: (opts?: ReqOpts) => request<TodayGuide>('/today', opts),
   health: (opts?: ReqOpts) => request<HealthResp>('/health', opts),
   setupStatus: (opts?: ReqOpts) => request<SetupStatus>('/setup-status', opts),
-  overview: (pool = 'A', opts?: ReqOpts) => request<OverviewResp>(`/overview?pool=${pool}`, opts),
-  stock: (tsCode: string, opts?: ReqOpts) => request<StockDetail>(`/stock/${encodeURIComponent(tsCode)}`, opts),
+  overview: (pool = 'A', opts?: ReqOpts, runId?: string) => request<OverviewResp>(`/overview?pool=${pool}${runId ? `&run_id=${encodeURIComponent(runId)}` : ''}`, opts),
+  scanRuns: (opts?: ReqOpts) => request<{ runs: ScanHistoryItem[] }>('/scan/runs?limit=50', opts),
+  stock: (tsCode: string, opts?: ReqOpts, runId?: string) => request<StockDetail>(`/stock/${encodeURIComponent(tsCode)}${runId ? `?run_id=${encodeURIComponent(runId)}` : ''}`, opts),
   stockFlow: (tsCode: string, days = 20, opts?: ReqOpts) =>
     request<StockFlowResp>(`/stock/${encodeURIComponent(tsCode)}/flow?days=${days}`, opts),
   classifications: (opts?: ReqOpts) => request<ClassificationCatalogResp>('/classifications', opts),
@@ -333,7 +419,7 @@ export const api = {
     request<BacktestPreview>('/backtest/preview', { timeoutMs: 180_000, ...opts, method: 'POST', body: JSON.stringify(body) }),
   backtestRun: (body: BacktestRequest, opts?: ReqOpts) =>
     request<{ task_id: string; status: string; cached: boolean }>('/backtest/run', { timeoutMs: 180_000, ...opts, method: 'POST', body: JSON.stringify(body) }),
-  backtestLatest: (opts?: ReqOpts) => request<{ task: BacktestTask | null; profile_activation: ProfileActivation }>('/backtest/latest', opts),
+  backtestLatest: (opts?: ReqOpts) => request<{ task: BacktestTask | null; profile_activation: ProfileActivation; entry_copy?: EntryCopyStatus }>('/backtest/latest', opts),
   backtestStatus: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/status/${encodeURIComponent(taskId)}`, opts),
   backtestCancel: (taskId: string, opts?: ReqOpts) => request<BacktestTask>(`/backtest/${encodeURIComponent(taskId)}/cancel`, { ...opts, method: 'POST' }),
   backtestProfile: (opts?: ReqOpts) => request<StrategyProfileState>('/backtest/profile', opts),
@@ -355,12 +441,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ parameters, acknowledge_research_only: true }),
     }),
+  saveEntryProfile: (entry: EntryParameters, expectedConfigHash: string, opts?: ReqOpts) =>
+    request<StrategyProfileState>('/backtest/profile/entry', {
+      ...opts, method: 'POST', body: JSON.stringify({ entry, expected_config_hash: expectedConfigHash, acknowledge_research_only: true }),
+    }),
+  copyBacktestEntry: (taskId: string, expectedConfigHash: string, opts?: ReqOpts) =>
+    request<StrategyProfileState>('/backtest/profile/copy-entry', {
+      ...opts, method: 'POST', body: JSON.stringify({ task_id: taskId, expected_config_hash: expectedConfigHash, acknowledge_research_only: true }),
+    }),
 
   // ── 个股 AI 证据评测 ──
   aiReview: (tsCode: string, opts?: ReqOpts) => request<AIReview>(`/ai-review/${encodeURIComponent(tsCode)}`, opts),
-  aiReviewGenerate: (tsCode: string, provider = 'deepseek', opts?: ReqOpts) =>
+  aiReviewGenerate: (tsCode: string, provider?: string, opts?: ReqOpts) =>
     request<{ review: AIReview; generated: ExternalAIInsight }>(`/ai-review/${encodeURIComponent(tsCode)}/generate`, {
-      ...opts, method: 'POST', body: JSON.stringify({ provider }),
+      ...opts, method: 'POST', body: JSON.stringify(provider ? { provider } : {}),
     }),
 
   // 最新交易日资金热力图；top 表示流入、流出每个方向各取多少项。
@@ -388,7 +482,9 @@ export interface MoneyHeatmapResp {
   classification_title: string
   group_label: string
   trade_date: string
-  total_wan: number
+  total_wan: number | null
+  aggregation_basis?: string
+  note?: string
   items: { name: string; value: number; net_wan: number }[]
 }
 
@@ -609,6 +705,7 @@ export interface BacktestWalkForwardWindow {
 }
 
 export interface BacktestResult {
+  market_comparison?: BacktestMarketComparison
   account_details?: { is?: BacktestAccountDetails; oos?: BacktestAccountDetails }
   verdict: string
   verdict_label: string
@@ -646,6 +743,25 @@ export interface BacktestResult {
   report_markdown?: string
 }
 
+export type EntryParameters = Pick<ManualStrategyParameters,
+  'box_min_days' | 'box_max_days' | 'box_max_amp' | 'breakout_vol_ratio' |
+  'breakout_chg_min' | 'breakout_chg_max' | 'breakout_vs_recent_vol_ratio' |
+  'breakout_window_days' | 'require_structure'>
+
+export interface BacktestMarketWindow {
+  start: string; end: string; anchor_date: string; sessions: number
+  strategy_return: number; benchmark_return: number; excess_return: number
+  strategy_max_drawdown: number; benchmark_max_drawdown: number; stress_excess_return: number | null
+  curve: { trade_date: string; strategy_nav: number; benchmark_nav: number; excess_return: number; strategy_drawdown: number; benchmark_drawdown: number }[]
+}
+
+export interface BacktestMarketComparison {
+  version: string; benchmark_code: string; benchmark_name: string; notice: string
+  status: 'COMPLETE' | 'INSUFFICIENT'; reason?: string; sha256: string
+  is?: BacktestMarketWindow; oos?: BacktestMarketWindow
+  wf?: { window: string; benchmark_return: number; strategy_return: number | null; excess_return: number | null; test_n: number | null }[]
+}
+
 export interface BacktestSampleDiagnostic {
   code: string; message: string; minimum_trades: number; replay_trades: number
   completed_trades: number; entries?: number; open_positions?: number
@@ -681,6 +797,13 @@ export interface BacktestTask {
   dataset_version: string
   input_hash: string
   profile_activation?: ProfileActivation
+  entry_copy?: EntryCopyStatus
+}
+
+export interface EntryCopyStatus {
+  can_copy: boolean
+  reasons?: { code: string; message: string; label?: string }[]
+  research_only?: boolean
 }
 
 export interface StrategyProfileSnapshot {
@@ -717,6 +840,7 @@ export interface StrategyProfileView {
   status: string
   storage_status: string
   config_hash: string
+  entry_hash?: string
   activated_at?: string | null
   entry: Record<string, number | boolean>
   exit_reference: Record<string, number>
@@ -777,9 +901,27 @@ export interface ExternalAIInsight {
   ts_code: string
   signal_date: string
   provider: string
+  model?: string
   ai_text: string
   created_at?: string
   cached?: boolean
+}
+
+export interface AIReviewProvider {
+  id: string
+  label: string
+  configured: boolean
+  model: string
+}
+
+export interface AIReviewGeneration {
+  available: boolean
+  provider: string
+  message: string
+  // Optional for older saved responses; configuration never proves call success.
+  status?: 'configured' | 'not_configured' | 'unsupported'
+  model?: string
+  providers?: AIReviewProvider[]
 }
 
 export interface AIReview {
@@ -802,11 +944,7 @@ export interface AIReview {
     breakout_vol_ratio: number | null
   }
   external_ai: ExternalAIInsight | null
-  generation: {
-    available: boolean
-    provider: 'deepseek'
-    message: string
-  }
+  generation: AIReviewGeneration
   boundary: {
     read_only: true
     changes_scan_or_signal: false

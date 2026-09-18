@@ -36,7 +36,7 @@ export default function SectorFlowPanel({ data }: { data: SectorFlowResp }) {
       legend: { data: top, textStyle: { color: c.text, fontSize: 10 }, type: 'scroll', top: 0 },
       tooltip: {
         trigger: 'axis',
-        valueFormatter: (v: any) => fmt(Number(v)),
+        valueFormatter: (v: any) => v == null ? '缺少数据' : fmt(Number(v)),
       },
       grid: { left: 70, right: 20, top: 30, bottom: 44 },
       xAxis: {
@@ -59,7 +59,7 @@ export default function SectorFlowPanel({ data }: { data: SectorFlowResp }) {
   }, [data, c])
 
   return (
-    <div className="two-col">
+    <><p className="note">{data.note || '仅汇总已取得的资金记录；缺失值留空，累计值不代表数据覆盖完整。'}</p><div className="two-col">
       <div>
         <h3 style={{ margin: '8px 0 6px', fontSize: 13, color: 'var(--muted)' }}>Top 流入{groupLabel}（{data.days}日累计）</h3>
         {data.top_in.slice(0, 6).map((x, i) => (
@@ -77,9 +77,9 @@ export default function SectorFlowPanel({ data }: { data: SectorFlowResp }) {
         ))}
       </div>
       <div>
-        <h3 style={{ margin: '8px 0 6px', fontSize: 13, color: 'var(--muted)' }}>Top 流入{groupLabel}每日资金流趋势（堆叠，观察建仓节奏）</h3>
+        <h3 style={{ margin: '8px 0 6px', fontSize: 13, color: 'var(--muted)' }}>Top 流入{groupLabel}每日资金变化</h3>
         <EChart option={trendOption} height={260} />
       </div>
-    </div>
+    </div></>
   )
 }

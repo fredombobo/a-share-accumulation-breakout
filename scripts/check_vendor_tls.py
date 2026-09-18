@@ -1,4 +1,7 @@
-"""供应商 HTTPS/TLS 独立探针；报告不包含 Token。"""
+"""可选 HTTPS/TLS 独立探针；不作为用户指定 HTTP 接口的业务连通性判定。
+
+报告不包含 Token；HTTP 没有 TLS 证书，不能生成 TLS 验证通过结论。
+"""
 from __future__ import annotations
 
 import argparse

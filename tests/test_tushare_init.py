@@ -31,6 +31,48 @@ def test_plaintext_gateway_is_rejected_without_network_access() -> None:
         tushare_init.init_pro(token="test-token", http_url="http://example.test/")
 
 
+def test_user_specified_http_gateway_and_shared_client(monkeypatch) -> None:
+    calls = []
+
+    class Response:
+        status_code = 200
+        text = '{"code":0,"data":{"fields":["cal_date"],"items":[["20260911"]]}}'
+
+    def fake_post(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(tushare_init.crequests, "post", fake_post)
+    client = tushare_init.init_pro(token="offline-test-token", http_url="http://a.sszhixia.cn/")
+    result = client.trade_cal(exchange="SSE", start_date="20260911", end_date="20260911")
+    assert calls[0][0] == "http://a.sszhixia.cn/trade_cal"
+    assert calls[0][1]["json"]["token"] == "offline-test-token"
+    assert calls[0][1]["allow_redirects"] is False
+    assert result.to_dict("records") == [{"cal_date": "20260911"}]
+    assert tushare_init.get_pro() is tushare_init.pro
+
+
+@pytest.mark.parametrize("url", [
+    "http://a.sszhixia.cn.evil.test/", "http://a.sszhixia.cn:8080/",
+    "http://a.sszhixia.cn/other/", "http://a.sszhixia.cn/?token=secret",
+    "http://a.sszhixia.cn/#fragment", "http://user:secret@a.sszhixia.cn/",
+])
+def test_http_exception_is_limited_to_the_user_specified_root(url) -> None:
+    with pytest.raises(tushare_init.DataTransportSecurityError):
+        tushare_init.init_pro(token="offline-test-token", http_url=url)
+
+
+def test_mutated_client_endpoint_is_checked_before_query(monkeypatch) -> None:
+    def forbidden_post(*_args, **_kwargs):
+        pytest.fail("invalid endpoint must be rejected before network access")
+
+    monkeypatch.setattr(tushare_init.crequests, "post", forbidden_post)
+    client = tushare_init.init_pro(token="offline-test-token", http_url="http://a.sszhixia.cn/")
+    client._DataApi__http_url = "http://other.test/"
+    with pytest.raises(tushare_init.DataTransportSecurityError):
+        client.trade_cal()
+
+
 def test_gateway_url_must_not_embed_credentials() -> None:
     with pytest.raises(tushare_init.DataTransportSecurityError, match="内嵌凭据"):
         tushare_init.init_pro(

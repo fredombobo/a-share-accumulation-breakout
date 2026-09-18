@@ -312,10 +312,15 @@ def test_incremental_sync_reconciles_recent_source_without_duplicate_revisions(
     import tushare_init
 
     dates = ["20260824", "20260825", "20260826"]
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    future_date = (datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(days=1)).strftime("%Y%m%d")
 
     class FakePro:
         def trade_cal(self, **_kwargs: object) -> pd.DataFrame:
-            return pd.DataFrame({"cal_date": dates, "is_open": [1, 1, 1]})
+            assert str(_kwargs["end_date"]) > future_date
+            return pd.DataFrame({"cal_date": [*dates, future_date], "is_open": [1, 1, 1, 1]})
 
         def stock_basic(self, *, list_status: str, **_kwargs: object) -> pd.DataFrame:
             if list_status == "D":
@@ -390,6 +395,8 @@ def test_incremental_sync_reconciles_recent_source_without_duplicate_revisions(
         "moneyflow": 0,
     }
     with sqlite3.connect(market_db) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM daily WHERE trade_date=?", (future_date,)).fetchone()[0] == 0
+        assert conn.execute("SELECT is_open FROM trade_cal WHERE cal_date=?", (future_date,)).fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM daily_history").fetchone()[0] == 6
         assert conn.execute("SELECT COUNT(*) FROM daily_basic_history").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM moneyflow_history").fetchone()[0] == 3

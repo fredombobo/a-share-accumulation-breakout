@@ -366,6 +366,47 @@ class ScanJobsStateMachineTest(unittest.TestCase):
             finally:
                 conn.close()
 
+
+    def test_scan_audit_rejects_dataset_manifest_change_during_scan(self):
+        """守卫不放宽：扫描开始后发生的真实数据写入仍必须被拒绝。"""
+        from ab_screener.application.scan_audit import complete_scan_run
+
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "j.db"
+            _init_job_db(db)
+            store = ScanJobStore(db)
+            tid = store.create(top_n=10, days=60)
+            store.claim_next("w1")
+
+            with self.assertRaisesRegex(ValueError, "data manifest changed during scan"):
+                complete_scan_run(
+                    db,
+                    run_id=tid,
+                    task_id=tid,
+                    as_of="20260807",
+                    days=60,
+                    result={
+                        "total_candidates": 0,
+                        "hits": 0,
+                        "input_dataset_version": "version-from-before-the-write",
+                    },
+                    count_a=0,
+                    count_b=0,
+                    strategy_snapshot={"profile_id": "test"},
+                    config_hash="c" * 64,
+                    code_version="test-build",
+                    research_mode="full",
+                )
+
+            self.assertNotEqual(store.get(tid)["status"], SUCCEEDED)
+            import sqlite3
+
+            conn = sqlite3.connect(db)
+            try:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM scan_runs").fetchone()[0], 0)
+            finally:
+                conn.close()
+
     def test_cancelled_job_cannot_gain_a_success_audit(self):
         from ab_screener.application.scan_audit import complete_scan_run
 

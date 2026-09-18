@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +12,11 @@ from ab_screener.data.strategy_profile_repository import (
     StrategyProfileRepository,
     StrategyProfileRepositoryError,
 )
-from ab_screener.domain.profile import StrategyProfile
+from ab_screener.domain.profile import StrategyProfile, default_profile
 from ab_screener.research.pit_reader import ResearchPitError, latest_research_cutoff
 from ab_screener.research.portfolio_metric_contract import portfolio_total_return
 from ab_screener.research.professional_grid import (
+    SIGNAL_KEYS,
     ProfessionalGridError,
     validate_fixed_parameters,
 )
@@ -27,7 +30,7 @@ PROFILE_BOUNDARY = {
     "manual_activation_required": True,
     "automatic_promotion": False,
     "b_pool_uses_profile": False,
-    "allowed_sources": ["BUILT_IN", "MANUAL_RESEARCH", "PROFESSIONAL_BACKTEST"],
+    "allowed_sources": ["BUILT_IN", "MANUAL_RESEARCH", "PROFESSIONAL_BACKTEST", "BACKTEST_ENTRY_COPY"],
     "daily_extra_gates": [
         "数据新鲜度",
         "市场环境",
@@ -67,6 +70,7 @@ def _profile_public(record: dict[str, Any]) -> dict[str, Any]:
         "config_hash": record["config_hash"],
         "activated_at": record.get("created_at"),
         "entry": profile.signal_kwargs(),
+        "entry_hash": profile.entry_hash(),
         "exit_reference": profile.exit_params(),
         "required_scan_days": profile.required_scan_days(),
         "source": {
@@ -97,7 +101,8 @@ def profile_state(db_path: str | Path, *, history_limit: int = 10) -> dict[str, 
 def _already_active(repo: StrategyProfileRepository, task_id: str) -> bool:
     record = repo.effective()
     profile: StrategyProfile = record["profile"]
-    return not profile.is_default and profile.source_task_id == task_id
+    return (not profile.is_default and profile.source_kind == "PROFESSIONAL_BACKTEST"
+            and profile.source_task_id == task_id)
 
 
 def activation_status(db_path: str | Path, task: dict[str, Any] | None) -> dict[str, Any]:
@@ -352,6 +357,104 @@ def activate_manual_profile(
     except StrategyProfileRepositoryError as exc:
         raise ProfileActivationError(exc.code, str(exc), exc.details) from exc
     return {**profile_state(db_path), "idempotent": False}
+
+
+def _validated_daily_entry(raw: Any) -> dict[str, Any]:
+    """Strict request boundary using research entry ranges, independent of retained exits."""
+    if not isinstance(raw, dict):
+        raise ProfileActivationError("INVALID_ENTRY_PARAMETERS", "入场条件必须是对象")
+    missing, unknown = sorted(set(SIGNAL_KEYS) - set(raw)), sorted(set(raw) - set(SIGNAL_KEYS))
+    if missing or unknown:
+        raise ProfileActivationError("INVALID_ENTRY_PARAMETERS", "每日仅接受完整九项技术入场条件", {"missing": missing, "unknown": unknown})
+    for key, value in raw.items():
+        valid = type(value) is bool if key == "require_structure" else type(value) in (int, float) and math.isfinite(value)
+        if not valid:
+            raise ProfileActivationError("INVALID_ENTRY_PARAMETERS", "入场条件类型无效", {"key": key})
+    try:
+        return validate_fixed_parameters({**default_profile().exit_params(), **raw})["signal"]
+    except ProfessionalGridError as exc:
+        raise ProfileActivationError(exc.code, str(exc), exc.details) from exc
+
+
+def entry_copy_status(task: dict[str, Any] | None) -> dict[str, Any]:
+    payload = task or {}
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    selected = result.get("selected") if isinstance(result.get("selected"), dict) else {}
+    request = result.get("request") if isinstance(result.get("request"), dict) else {}
+    mechanism = request.get("entry_mechanism") if isinstance(request.get("entry_mechanism"), dict) else {}
+    parameter_error = ""
+    entry = None
+    try:
+        entry = _validated_daily_entry(selected.get("signal"))
+    except ProfileActivationError as exc:
+        parameter_error = str(exc)
+    # Daily StrategyProfile can express only the base detector's nine fields.
+    mechanism_id = str(mechanism.get("id") or "")
+    mechanism_ok = not mechanism.get("research_only") and mechanism_id in ("", "BASE_STRICT_BREAKOUT_V1")
+    checks = [
+        _check("TASK_DONE", "来源任务完整结束", bool(payload) and payload.get("status") == "done", "只复制已冻结的完整结果"),
+        _check("PROFESSIONAL_GRID", "专业研究来源", payload.get("research_mode") == "professional_grid", "来源必须为专业研究任务"),
+        _check("ENTRY_COMPLETE", "九项技术参数完整", entry is not None, parameter_error or "九项技术参数有效"),
+        _check("SUPPORTED_DAILY_ENTRY_MECHANISM", "每日支持的入场机制", mechanism_ok, "研究专用机制不能通过仅复制数字复用到每日检测器"),
+    ]
+    reasons = [check for check in checks if not check["passed"]]
+    return {"task_id": payload.get("task_id"), "can_copy": bool(payload.get("task_id")) and not reasons,
+            "checks": checks, "reasons": reasons, "research_only": True, "backtest_validated": False}
+
+
+def save_daily_entry(
+    db_path: str | Path, entry: dict[str, Any], *, acknowledge_research_only: bool,
+    expected_config_hash: str | None = None, source_task: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge only technical fields into the current effective exits, with CAS."""
+    if not acknowledge_research_only:
+        raise ProfileActivationError("MANUAL_PROFILE_ACKNOWLEDGEMENT_REQUIRED", "这是未经验证的研究参数，仅用于后续扫描观察")
+    repo = StrategyProfileRepository(db_path)
+    record = repo.effective()
+    effective: StrategyProfile = record["profile"]
+    current_hash = record["config_hash"]
+    if expected_config_hash is not None and current_hash != expected_config_hash:
+        raise ProfileActivationError("PROFILE_CHANGED", "参数已变化，请重新载入后保存", {"current_config_hash": current_hash})
+    signal = _validated_daily_entry(entry)
+    kind = "BACKTEST_ENTRY_COPY" if source_task is not None else "MANUAL_RESEARCH"
+    task_id = str(source_task["task_id"]) if source_task is not None else None
+    operation = "COPY_ENTRY" if source_task is not None else "SAVE_ENTRY"
+    if effective.signal_kwargs() == signal and effective.source_kind == kind and effective.source_task_id == task_id:
+        # Check the same CAS even for a no-op, without manufacturing another version.
+        repo.activate(effective, expected_config_hash=current_hash)
+        return {**profile_state(db_path), "operation": operation, "backtest_validated": False, "idempotent": True}
+    task = source_task or {}
+    selected = (task.get("result") or {}).get("selected") or {}
+    source = {"entry": signal, "exit": effective.exit_params(), "source_kind": kind,
+              "source_task_id": task_id, "source_input_hash": task.get("input_hash"), "previous_config_hash": current_hash}
+    source_hash = hashlib.sha256(json.dumps(source, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    code = str(build_version())
+    profile = replace(
+        effective, **signal, profile_id="daily-entry-copy" if source_task is not None else MANUAL_PROFILE_ID,
+        name="研究结果入场条件副本" if source_task is not None else "用户手工研究参数",
+        schema_version=PROFILE_SCHEMA_VERSION, version=f"entry-{source_hash[:16]}-{code[:12]}", status="active",
+        source_kind=kind, source_task_id=task_id, source_param_id=selected.get("param_id"),
+        source_code_version=str(task.get("code_version") or code), source_dataset_version=task.get("dataset_version"),
+        source_input_hash=str(task.get("input_hash") or source_hash),
+        source_evidence={"operation": operation, "backtest_validated": False, "research_only": True,
+                         "source_verdict": (task.get("result") or {}).get("verdict"),
+                         "preserved_exit_from_config_hash": current_hash},
+        notes=["只修改九项技术入场条件；退出参数由服务端保留。", "未将来源回测证据晋升为当前混合参数的验证，需后续真实扫描观察。"],
+    )
+    repo.activate(profile, expected_config_hash=current_hash)
+    return {**profile_state(db_path), "operation": operation, "backtest_validated": False, "idempotent": False}
+
+
+def copy_entry_from_task(
+    db_path: str | Path, task: dict[str, Any], *, acknowledge_research_only: bool,
+    expected_config_hash: str | None = None,
+) -> dict[str, Any]:
+    eligibility = entry_copy_status(task)
+    if not eligibility["can_copy"]:
+        raise ProfileActivationError("BACKTEST_ENTRY_NOT_COPYABLE", "该研究结果的入场条件暂不可复制", {"checks": eligibility["checks"]})
+    return {**save_daily_entry(db_path, task["result"]["selected"]["signal"],
+                              acknowledge_research_only=acknowledge_research_only,
+                              expected_config_hash=expected_config_hash, source_task=task), "entry_copy": eligibility}
 
 
 def reset_profile(db_path: str | Path, *, confirm: bool) -> dict[str, Any]:

@@ -1,6 +1,7 @@
 [tool.ruff]
 target-version = "py311"
 line-length = 110
+extend-exclude = [".pytest_tmp"]
 
 [tool.ruff.lint]
 # 选择性忽略（项目既有代码风格约定）：

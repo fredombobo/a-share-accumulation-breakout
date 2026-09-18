@@ -15,9 +15,8 @@ class ScanRunSchemaMissing(RuntimeError):
 
 
 def _connect(db_path: str | Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn = sqlite3.connect(Path(db_path).resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 

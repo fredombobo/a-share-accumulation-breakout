@@ -8,6 +8,7 @@ frozen market fixture：小型合成市场（3 只严格命中 + 1 只主题观�
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import numpy as np
 import pandas as pd
@@ -144,6 +145,15 @@ def frozen_market_store(tmp_path_factory) -> LocalStore:
     db_path = tmp_path_factory.mktemp("frozen") / "market.db"
     store = LocalStore(db_path)
     dates = trade_dates()
+    # This synthetic market has its own explicit trusted calendar fixture.
+    # Include closed days too; production may never infer these from quote rows.
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS trade_cal (cal_date TEXT PRIMARY KEY, is_open INTEGER NOT NULL, source TEXT NOT NULL, updated_at TEXT)")
+        conn.executemany(
+            "INSERT INTO trade_cal(cal_date,is_open,source,updated_at) VALUES(?,?,?,?) ON CONFLICT(cal_date) DO UPDATE SET is_open=excluded.is_open,source=excluded.source,updated_at=excluded.updated_at",
+            [(day.strftime("%Y%m%d"), int(day.weekday() < 5), "tushare", "2026-08-07T16:00:00+08:00")
+             for day in pd.date_range(dates[0], dates[-1])],
+        )
     daily_rows: list[dict] = []
     dbbasic_rows: list[dict] = []
     mf_rows: list[dict] = []
@@ -289,3 +299,58 @@ def test_scanner_freezes_custom_profile_into_result_and_pool_report(frozen_marke
             "market_regime", "fund_flow", "fundamentals", "liquidity", "score"
         ],
     }
+
+
+def test_scan_dataset_version_snapshots_after_cache_partition_write(
+    tmp_path, frozen_market_store, monkeypatch
+):
+    """回归 2026-09-14：缓存预热补写的 dataset_partitions 不得被判成扫描中数据变化。
+
+    load_market_data → load_daily_cached 会为缺失交易日补登记分区指纹。快照必须
+    发生在这类写入之后，否则 complete_scan_run 复核时 input_dataset_version 与
+    落库后的 dataset_version 不同，整次扫描被误杀（生产错误：
+    data manifest changed during scan）。
+    """
+    import sqlite3 as _sqlite3
+
+    import ab_screener.screener.orchestrator as orch
+    from ab_screener.application import scan_audit
+
+    db_copy = tmp_path / "market_copy.db"
+    # SQLite 在线备份：fixture 走 WAL，直接 copyfile 会丢掉尚未 checkpoint 的写入。
+    _src = _sqlite3.connect(frozen_market_store.db_path)
+    try:
+        _dst = _sqlite3.connect(db_copy)
+        try:
+            _src.backup(_dst)
+        finally:
+            _dst.close()
+    finally:
+        _src.close()
+    store = LocalStore(db_copy)
+
+    real_load = orch.load_market_data
+    marker = "late-committed-partition"
+
+    def load_and_commit(*args, **kwargs):
+        out = real_load(*args, **kwargs)
+        with sqlite3.connect(db_copy) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO dataset_partitions"
+                "(dataset,trade_date,row_count,content_sha256,revision,ingested_at) "
+                "VALUES('daily',?,?,?,?,?)",
+                (AS_OF, 1234, marker, 1, "2026-09-14T18:32:57+08:00"),
+            )
+        return out
+
+    monkeypatch.setattr(orch, "load_market_data", load_and_commit)
+    result = run_scan(store=store, as_of=AS_OF, workers=1, days=160, force=True)
+
+    with sqlite3.connect(db_copy) as conn:
+        committed = conn.execute(
+            "SELECT content_sha256 FROM dataset_partitions "
+            "WHERE dataset='daily' AND trade_date=?",
+            (AS_OF,),
+        ).fetchall()
+    assert committed and committed[0][0] == marker
+    assert result["input_dataset_version"] == scan_audit.read_dataset_version(db_copy, AS_OF)

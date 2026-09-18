@@ -98,14 +98,14 @@ def _completed_open_dates(
     *,
     now: datetime | None = None,
 ) -> list[str]:
-    """Exclude an in-progress Shanghai trading day from close-data sync."""
+    """Exclude future sessions and an in-progress day from close-data sync."""
     current = now or datetime.now(_SHANGHAI_TZ)
     if current.tzinfo is None:
         current = current.replace(tzinfo=_SHANGHAI_TZ)
     else:
         current = current.astimezone(_SHANGHAI_TZ)
-    dates = sorted({str(value)[:8] for value in open_dates if value})
     today = current.strftime("%Y%m%d")
+    dates = sorted({str(value)[:8] for value in open_dates if value and str(value)[:8] <= today})
     if dates and dates[-1] == today and (current.hour, current.minute) < (16, 15):
         return dates[:-1]
     return dates
@@ -553,6 +553,10 @@ class LocalStore:
     def load_scan_result(self, trade_date: str | None = None) -> pd.DataFrame:
         """读取最近一次扫描结果（可指定交易日；默认取最新）"""
         if trade_date is None:
+            from ab_screener.application.scan_publication import read_scan_publication
+            publication = read_scan_publication(self.db_path)
+            if publication is not None:
+                return pd.DataFrame(publication['candidates'])
             with self._connect() as conn:
                 row = conn.execute("SELECT MAX(trade_date) FROM scan_result").fetchone()
                 trade_date = row[0] if row and row[0] else None
@@ -742,9 +746,10 @@ def sync_from_tushare(
     store = LocalStore()
     now = datetime.now(_SHANGHAI_TZ)
 
-    # ── 交易日历（覆盖到今天的开市日） ──
+    # Keep future authoritative sessions for prospective observation horizons.
+    # _completed_open_dates below still excludes every uncompleted price day.
     cal_start = (now - timedelta(days=days_back * 2)).strftime("%Y%m%d")
-    cal_end = now.strftime("%Y%m%d")
+    cal_end = (now + timedelta(days=90)).strftime("%Y%m%d")
     cal = pro.trade_cal(exchange="", start_date=cal_start, end_date=cal_end, fields="cal_date,is_open")
     open_dates = sorted(cal.loc[cal["is_open"] == 1, "cal_date"].astype(str).tolist())
 

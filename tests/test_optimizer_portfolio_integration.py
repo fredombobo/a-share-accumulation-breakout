@@ -109,7 +109,7 @@ def test_grid_promotes_portfolio_metrics_and_keeps_trade_diagnostics(monkeypatch
 
     row = result.iloc[0]
     assert row["portfolio_status"] == "PASS"
-    assert row["portfolio_model_version"] == "research-portfolio-v2.1.0"
+    assert row["portfolio_model_version"] == "research-portfolio-v2.2.0"
     assert row["trade_net_max_drawdown"] == 0.5
     assert row["net_max_drawdown"] < row["trade_net_max_drawdown"]
     assert row["net_avg_return"] == row["net_total_return"]

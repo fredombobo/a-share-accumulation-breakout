@@ -1,0 +1,81 @@
+{
+  "schema": "ab-corrective-replay-v1",
+  "completed_at": "2026-09-14T00:15:33+08:00",
+  "original_parameters_unchanged": true,
+  "original_rows_unchanged": true,
+  "models": {
+    "execution": "v2.1.3",
+    "portfolio": "research-portfolio-v2.2.0",
+    "code": "c3a798b31cc7"
+  },
+  "arms": [
+    {
+      "label": "双创 · 严格突破对照",
+      "original_run_id": "probt-dual-v1-control",
+      "run_id": "probt-rel20260913-v1-dual-v1-control",
+      "before": {
+        "return": -0.06171539,
+        "drawdown": 0.08431314,
+        "trades": 20
+      },
+      "after": {
+        "return": -0.06171539,
+        "drawdown": 0.08431314,
+        "trades": 20
+      },
+      "accounting_passed": true,
+      "verdict": "探索结果未达到预登记候选条件"
+    },
+    {
+      "label": "双创 · 中期动量机制",
+      "original_run_id": "probt-dual-v1-momentum",
+      "run_id": "probt-rel20260913-v1-dual-v1-momentum",
+      "before": {
+        "return": -0.02730647,
+        "drawdown": 0.03085697,
+        "trades": 4
+      },
+      "after": {
+        "return": -0.02730647,
+        "drawdown": 0.03085697,
+        "trades": 4
+      },
+      "accounting_passed": true,
+      "verdict": "预登记机制未形成候选"
+    },
+    {
+      "label": "mom6m 股票域 · 严格突破对照",
+      "original_run_id": "probt-mom6m-v1-control",
+      "run_id": "probt-rel20260913-v1-mom6m-v1-control",
+      "before": {
+        "return": -0.04991728,
+        "drawdown": 0.07447947,
+        "trades": 28
+      },
+      "after": {
+        "return": -0.05025578,
+        "drawdown": 0.07490995,
+        "trades": 28
+      },
+      "accounting_passed": true,
+      "verdict": "探索结果未达到预登记候选条件"
+    },
+    {
+      "label": "mom6m 股票域 · 中期动量机制",
+      "original_run_id": "probt-mom6m-v1-momentum",
+      "run_id": "probt-rel20260913-v1-mom6m-v1-momentum",
+      "before": {
+        "return": 0.00026674,
+        "drawdown": 0.02569473,
+        "trades": 7
+      },
+      "after": {
+        "return": 0.00026674,
+        "drawdown": 0.02569473,
+        "trades": 7
+      },
+      "accounting_passed": true,
+      "verdict": "预登记机制未形成候选"
+    }
+  ]
+}

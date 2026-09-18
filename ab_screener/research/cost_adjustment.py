@@ -46,12 +46,16 @@ def cost_adjusted_trade(bars: pd.DataFrame, simulation: dict[str, Any]) -> dict[
     stop_price = reference_exit if exit_type == "stop" else None
     target_price = reference_exit if exit_type == "target" else None
     fill = simulate_round_trip(
+        ts_code=str(entry.get("ts_code") or ""),
+        entry_date=str(entry.get("trade_date") or ""),
+        exit_date=str(exit_row.get("trade_date") or ""),
         entry_open=_number(entry, "open"),
         entry_high=_number(entry, "high"),
         entry_low=_number(entry, "low"),
         entry_vol=_number(entry, "vol"),
         entry_pre_close=_pre_close(bars, entry_index),
-        exit_open=reference_exit,
+        exit_open=_number(exit_row, "open"),
+        exit_reference_price=reference_exit,
         exit_high=_number(exit_row, "high", reference_exit),
         exit_low=_number(exit_row, "low", reference_exit),
         exit_vol=_number(exit_row, "vol"),
@@ -62,10 +66,14 @@ def cost_adjusted_trade(bars: pd.DataFrame, simulation: dict[str, Any]) -> dict[
         exit_day_high=_number(exit_row, "high", reference_exit),
     )
     result = fill.to_dict()
+    # A blocked planned exit does not erase a buy that actually happened.
+    # The account simulator must retain the lot and retry the exit later.
+    result["entry_filled"] = fill.qty > 0
     result["gross_return"] = float(simulation.get("ret") or 0.0)
     result["net_return"] = round(fill.net_pnl / NOTIONAL, 8) if fill.filled else None
     result["entry_index"] = entry_index
     result["exit_index"] = exit_index
+    result["exit_phase"] = simulation.get("exit_phase")
     return result
 
 

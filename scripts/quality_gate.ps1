@@ -15,6 +15,10 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
+# Keep Python's subprocess text decoder and child stdout on the same encoding on Windows.
+$env:PYTHONUTF8 = "1"
+$env:PYTHONIOENCODING = "utf-8"
+
 # 权威运行时：允许 worktree 显式复用主仓库的 Python 3.12；否则优先本地 .venv312。
 $Py = $env:AB_PYTHON
 if ([string]::IsNullOrWhiteSpace($Py)) {
@@ -30,6 +34,9 @@ $Stages = @(
             "$Root\signals.py" "$Root\optimizer.py" "$Root\walkforward.py" `
             "$Root\local_store.py" "$Root\config.py" `
             "$Root\ab_screener\domain\costs.py" `
+            "$Root\ab_screener\domain\stock_board_rules.py" `
+            "$Root\ab_screener\research\portfolio_accounting.py" `
+            "$Root\scripts\run_dual_board_pair.py" `
             "$Root\ab_screener\domain\entry_definition.py" `
             "$Root\ab_screener\domain\entry_definition_v2.py" `
             "$Root\ab_screener\research\backtest_engine.py" `
@@ -37,6 +44,12 @@ $Stages = @(
             "$Root\ab_screener\research\professional_grid.py" `
             "$Root\ab_screener\research\condition_plugins.py" `
             "$Root\ab_screener\research\professional_runner.py" `
+            "$Root\ab_screener\research\market_benchmark.py" `
+            "$Root\ab_screener\research\intermediate_momentum.py" `
+            "$Root\ab_screener\research\fundamental_factors.py" `
+            "$Root\ab_screener\research\fundamental_audit.py" `
+            "$Root\ab_screener\data\adapters\fundamental_statements.py" `
+            "$Root\scripts\audit_fundamental_factors.py" `
             "$Root\ab_screener\research\data_scope.py" `
             "$Root\ab_screener\research\result_details.py" `
             "$Root\ab_screener\operations\runtime_identity.py" `

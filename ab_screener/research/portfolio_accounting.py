@@ -30,9 +30,14 @@ from ab_screener.domain.execution.models import (
     Quote,
 )
 from ab_screener.domain.instrument import is_a_share_stock
+from ab_screener.domain.stock_board_rules import (
+    BOARD_RULE_VERSION,
+    cap_research_buy,
+    research_quantity_step,
+)
 from paper_trading.rules import InstrumentRule, default_rule
 
-PORTFOLIO_MODEL_VERSION = "research-portfolio-v2.1.0"
+PORTFOLIO_MODEL_VERSION = "research-portfolio-v2.2.0"
 _MICRO_PER_YUAN = Decimal(1000000)
 _FEN_PER_AMOUNT_K_YUAN = Decimal(100000)
 
@@ -86,6 +91,7 @@ class PortfolioPolicy:
         payload = {key: getattr(self, key) for key in self.__dataclass_fields__}
         payload["execution_model_version"] = EXECUTION_MODEL_VERSION
         payload["fee_version"] = FEE_VERSION
+        payload["board_rule_version"] = BOARD_RULE_VERSION
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()[:16]
@@ -109,6 +115,7 @@ class _Position:
     planned_exit_date: str
     planned_exit_price_micro: int
     exit_type: str
+    exit_phase: str
     last_close_micro: int
     realized_pnl_fen: int = 0
 
@@ -138,7 +145,7 @@ def resolved_stock_rules(
             sell_tax_bps=base.sell_tax_bps,
             other_fee_bps=base.other_fee_bps,
             slippage_bps=base.slippage_bps,
-            lot_size=policy.stock_lot_size,
+            lot_size=research_quantity_step(code, policy.stock_lot_size),
         )
     return result
 
@@ -217,6 +224,7 @@ def simulate_portfolio(
         ):
             progress_callback(calendar_index, calendar_count)
         day_start_equity = _equity_at_price(cash_fen, positions, bars, trade_date, price_field="open_micro")
+        attempted_exits: set[tuple[str, str]] = set()
         cash_fen = _process_exits(
             trade_date,
             cash_fen,
@@ -228,6 +236,8 @@ def simulate_portfolio(
             realized_pnls,
             fee_totals,
             rejection_counts,
+            phase="OPEN",
+            attempted=attempted_exits,
         )
         day_spend_fen = 0
         daily_entries: list[dict[str, Any]] = []
@@ -280,11 +290,23 @@ def simulate_portfolio(
                 planned_exit_date=row["exit_date"],
                 planned_exit_price_micro=row["exit_price_micro"],
                 exit_type=row["exit_type"],
+                exit_phase=row["exit_phase"],
                 last_close_micro=bar.close_micro,
             )
             _add_fees(fee_totals, fill)
-            events.append(_event_payload(fill, "ENTRY_FILLED"))
+            events.append({**_event_payload(fill, "ENTRY_FILLED"), "execution_phase": "OPEN"})
 
+        # Closing and intraday proceeds cannot finance orders at this day's open.
+        min_cash_fen = min(min_cash_fen, cash_fen)
+        gross_open = _market_value(positions, bars, trade_date, price_field="open_micro")
+        equity_open = cash_fen + gross_open
+        max_gross_bps = max(max_gross_bps, gross_open * 10_000 // equity_open if equity_open > 0 else 10_000)
+        for phase in ("INTRADAY", "CLOSE"):
+            cash_fen = _process_exits(
+                trade_date, cash_fen, positions, bars, rule_map, policy,
+                events, realized_pnls, fee_totals, rejection_counts,
+                phase=phase, attempted=attempted_exits,
+            )
         market_value_fen = _mark_positions(positions, bars, trade_date, events)
         equity_fen = cash_fen + market_value_fen
         if equity_fen < 0 or cash_fen < 0:
@@ -382,7 +404,8 @@ def _normalize_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
     for row in trades:
-        if not row.get("cost", {}).get("filled"):
+        cost = row.get("cost", {})
+        if not cost.get("entry_filled", cost.get("filled")):
             continue
         code = str(row.get("ts_code") or "").strip().upper()
         signal_date = _date(row.get("date") or row.get("signal_date"))
@@ -399,6 +422,13 @@ def _normalize_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
         exit_price_micro = _price_micro(row.get("exit_price"))
         if exit_price_micro <= 0:
             raise PortfolioAccountingError(f"退出参考价非法: {code} {exit_date}")
+        exit_type = str(row.get("exit") or "time")
+        # Legacy strategy records have no phase. Baselines explicitly retain
+        # their OPEN time exits; ordinary strategy time exits are CLOSE.
+        default_phase = "OPEN" if exit_type == "bench" else "INTRADAY" if exit_type in {"stop", "target"} else "CLOSE"
+        exit_phase = str(row.get("exit_phase") or default_phase).upper()
+        if exit_phase not in {"OPEN", "INTRADAY", "CLOSE"}:
+            raise PortfolioAccountingError(f"退出执行阶段非法: {exit_phase}")
         result.append(
             {
                 "ts_code": code,
@@ -406,7 +436,8 @@ def _normalize_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "entry_date": entry_date,
                 "exit_date": exit_date,
                 "exit_price_micro": exit_price_micro,
-                "exit_type": str(row.get("exit") or "time"),
+                "exit_type": exit_type,
+                "exit_phase": exit_phase,
             }
         )
     return sorted(result, key=lambda item: (item["entry_date"], item["ts_code"]))
@@ -461,13 +492,24 @@ def _process_exits(
     realized_pnls: list[int],
     fee_totals: Counter,
     rejection_counts: Counter[str],
+    *,
+    phase: str,
+    attempted: set[tuple[str, str]],
 ) -> int:
     due = sorted(
-        (position for position in positions.values() if position.planned_exit_date <= trade_date),
+        (position for position in positions.values()
+         if position.planned_exit_date <= trade_date
+         and ("OPEN" if position.planned_exit_date < trade_date else position.exit_phase) == phase
+         and (position.ts_code, position.entry_date) not in attempted),
         key=lambda position: position.ts_code,
     )
     for position in due:
+        attempted.add((position.ts_code, position.entry_date))
         actual = bars.get((position.ts_code, trade_date))
+        event_context = {"execution_phase": phase, "entry_date": position.entry_date,
+                         "exit_type": position.exit_type, "planned_exit_phase": position.exit_phase,
+                         "planned_exit_price_micro": position.planned_exit_price_micro,
+                         "actual_open_micro": actual.open_micro if actual is not None else None}
         if actual is None:
             rejection_counts["EXIT_NO_QUOTE"] += 1
             events.append(
@@ -478,41 +520,37 @@ def _process_exits(
                     "filled": False,
                     "qty": 0,
                     "reason": "NO_QUOTE",
+                    **event_context,
                 }
             )
             continue
-        quote = actual
-        if trade_date == position.planned_exit_date:
-            quote = Quote(
-                ts_code=actual.ts_code,
-                trade_date=actual.trade_date,
-                open_micro=position.planned_exit_price_micro,
-                high_micro=actual.high_micro,
-                low_micro=actual.low_micro,
-                close_micro=actual.close_micro,
-                vol=actual.vol,
-                amount_fen=actual.amount_fen,
-                pre_close_micro=actual.pre_close_micro,
-                available_at=actual.available_at,
-            )
+        reference_price = actual.open_micro
+        if trade_date == position.planned_exit_date and phase != "OPEN":
+            reference_price = position.planned_exit_price_micro
+            if position.exit_type == "stop":
+                reference_price = min(actual.open_micro, reference_price)
+        # On suspension, let the real-quote guard return NO_QUOTE before pricing.
+        reference_price = reference_price if reference_price > 0 else None
+        event_context["reference_price_micro"] = reference_price
         rule = rules[position.ts_code]
         fill = compute_fill(
-            quote,
+            actual,
             FillRequest(
                 ts_code=position.ts_code,
                 side="SELL",
                 trade_date=trade_date,
-                input_hash=f"portfolio:{position.ts_code}:{position.entry_date}:{trade_date}:sell",
+                input_hash=f"portfolio:{position.ts_code}:{position.entry_date}:{trade_date}:{phase}:sell",
                 participation_bps=policy.participation_bps,
                 lot_size=rule.lot_size,
                 position_qty=position.qty,
                 requested_qty=position.qty,
                 fees=portfolio_fee_params(rule, policy),
+                reference_price_micro=reference_price,
             ),
         )
         if not fill.filled:
             rejection_counts[f"EXIT_{fill.reason}"] += 1
-            events.append(_event_payload(fill, "EXIT_RETRY"))
+            events.append({**_event_payload(fill, "EXIT_RETRY"), **event_context})
             continue
         old_qty = position.qty
         sold_cost = (
@@ -525,6 +563,7 @@ def _process_exits(
         _add_fees(fee_totals, fill)
         events.append({
             **_event_payload(fill, "EXIT_FILLED"),
+            **event_context,
             "entry_date": position.entry_date,
             "exit_type": position.exit_type,
             "allocated_cost_fen": sold_cost,
@@ -569,6 +608,7 @@ def _buy_fill(
             _scaled_cost(rule.slippage_bps, policy.cost_multiplier_bps),
         )
         rough_qty = floor_to_lot(budget_fen * 10_000 // buy_price, rule.lot_size)
+    rough_qty = cap_research_buy(code, rough_qty, rule.lot_size)
     return compute_fill(
         quote,
         FillRequest(
@@ -619,7 +659,9 @@ def _market_value(
     total = 0
     for code, position in positions.items():
         quote = bars.get((code, trade_date))
-        price_micro = int(getattr(quote, price_field)) if quote is not None else position.last_close_micro
+        price_micro = int(getattr(quote, price_field)) if quote is not None else 0
+        if price_micro <= 0:
+            price_micro = position.last_close_micro
         total += price_micro * position.qty // 10_000
     return total
 
@@ -644,7 +686,7 @@ def _mark_positions(
     total = 0
     for code, position in positions.items():
         quote = bars.get((code, trade_date))
-        if quote is not None:
+        if quote is not None and quote.close_micro > 0:
             position.last_close_micro = quote.close_micro
         else:
             events.append(
@@ -653,7 +695,7 @@ def _mark_positions(
                     "ts_code": code,
                     "trade_date": trade_date,
                     "price_micro": position.last_close_micro,
-                    "reason": "NO_QUOTE",
+                    "reason": "NO_QUOTE" if quote is None else "INVALID_CLOSE",
                 }
             )
         total += position.last_close_micro * position.qty // 10_000
