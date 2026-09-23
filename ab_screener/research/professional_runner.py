@@ -147,6 +147,7 @@ def execute_professional_run(
     *,
     progress: ProgressCallback,
     cancel_check: CancelCheck,
+    trial_checkpoint: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> dict[str, Any]:
     """Run IS selection, OOS, WF, baselines and 2x cost stress."""
     from ab_screener.research.backtest_engine import run_single_backtest
@@ -268,6 +269,10 @@ def execute_professional_run(
                     "oos": _metric_subset(oos_map.get(key)),
                 }
             )
+        if trial_checkpoint is not None:
+            # Persist every completed trial before later WF/baseline work can
+            # fail; the UI leaderboard is intentionally capped at 100 rows.
+            trial_checkpoint([_clean(row) for row in composites[-len(exit_groups):]])
         progress("GRID", next_pct, f"参数组 {index + 1}/{len(signal_groups)} 完成")
 
     leaderboard = sorted(composites, key=_is_rank, reverse=True)
@@ -299,6 +304,7 @@ def execute_professional_run(
             "entry_mechanism": entry_mechanism,
             "leaderboard": leaderboard[:100],
             "independent_leaderboard": independent_leaderboard[:100],
+            "evaluated_combinations": len(leaderboard),
             "path_analysis": path_analysis,
             "selected": None,
             "wf": None,

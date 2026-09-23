@@ -125,7 +125,7 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     assert payload["parameters"]["target_pct"]["values"] == [0.1, 0.12, 0.15]
     assert payload["parameters"]["max_hold_days"] == {"mode": "fixed", "value": 30}
     assert payload["contract_version"] == "professional-backtest-v1.8.0"
-    assert payload["portfolio_model"]["version"] == "research-portfolio-v2.2.0"
+    assert payload["portfolio_model"]["version"] == "research-portfolio-v2.2.1"
     assert payload["portfolio_model"]["execution_model_version"] == "v2.1.3"
     assert payload["portfolio_model"]["fee_version"] == "v2-fixed-2026-08-18"
     assert preview.json()["can_run"] is False  # Fixture intentionally has no PIT metadata.

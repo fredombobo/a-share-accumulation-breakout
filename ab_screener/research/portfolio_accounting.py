@@ -37,7 +37,7 @@ from ab_screener.domain.stock_board_rules import (
 )
 from paper_trading.rules import InstrumentRule, default_rule
 
-PORTFOLIO_MODEL_VERSION = "research-portfolio-v2.2.0"
+PORTFOLIO_MODEL_VERSION = "research-portfolio-v2.2.1"
 _MICRO_PER_YUAN = Decimal(1000000)
 _FEN_PER_AMOUNT_K_YUAN = Decimal(100000)
 
@@ -419,9 +419,6 @@ def _normalize_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if key in seen:
             raise PortfolioAccountingError(f"重复成交候选: {key}")
         seen.add(key)
-        exit_price_micro = _price_micro(row.get("exit_price"))
-        if exit_price_micro <= 0:
-            raise PortfolioAccountingError(f"退出参考价非法: {code} {exit_date}")
         exit_type = str(row.get("exit") or "time")
         # Legacy strategy records have no phase. Baselines explicitly retain
         # their OPEN time exits; ordinary strategy time exits are CLOSE.
@@ -429,6 +426,12 @@ def _normalize_trades(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
         exit_phase = str(row.get("exit_phase") or default_phase).upper()
         if exit_phase not in {"OPEN", "INTRADAY", "CLOSE"}:
             raise PortfolioAccountingError(f"退出执行阶段非法: {exit_phase}")
+        exit_price_micro = _price_micro(row.get("exit_price"))
+        # OPEN exits use the actual quote, including its tradability guards.
+        # A suspended planned exit can have no opening price: retain the bought
+        # position and let _process_exits retry on a later tradable session.
+        if exit_price_micro < 0 or (exit_price_micro == 0 and exit_phase != "OPEN"):
+            raise PortfolioAccountingError(f"退出参考价非法: {code} {exit_date}")
         result.append(
             {
                 "ts_code": code,

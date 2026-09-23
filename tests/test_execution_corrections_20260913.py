@@ -192,10 +192,12 @@ def test_zero_open_and_zero_close_carry_last_known_value_without_freeing_risk_bu
 
 def test_new_identity_rejects_old_policy_and_prepared_market():
     assert EXECUTION_MODEL_VERSION == "v2.1.3"
-    assert PORTFOLIO_MODEL_VERSION == "research-portfolio-v2.2.0"
+    assert PORTFOLIO_MODEL_VERSION == "research-portfolio-v2.2.1"
     assert FEE_VERSION == "v2-fixed-2026-08-18"
     with pytest.raises(PortfolioAccountingError, match="未知组合模型"):
         PortfolioPolicy(version="research-portfolio-v2.1.0")
+    with pytest.raises(PortfolioAccountingError, match="未知组合模型"):
+        PortfolioPolicy(version="research-portfolio-v2.2.0")
     bars = pd.DataFrame([bar("000001.SZ", day) for day in ("20260901", "20260902", "20260903")])
     prepared = prepare_portfolio_market(bars, full_policy())
     with pytest.raises(PortfolioAccountingError, match="组合配置版本不一致"):
