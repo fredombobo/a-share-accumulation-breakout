@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import json
+import math
+import os
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -15,6 +17,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
+
+import psutil
 
 from ab_screener.security import redact_sensitive_text
 
@@ -30,6 +34,12 @@ FAILED = "FAILED"
 TERMINAL = {CANCELLED, SUCCEEDED, FAILED}
 
 
+class ActiveScanError(RuntimeError):
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(f'已有扫描正在进行（task_id={task_id}）')
+
+
 def _now() -> str:
     return datetime.now(_TZ).isoformat(timespec="seconds")
 
@@ -43,6 +53,32 @@ def _parse_iso(ts: str | None) -> datetime | None:
         return datetime.fromisoformat(s)
     except Exception:  # noqa: BLE001
         return None
+
+
+def scan_process_identity(pid: int | None = None) -> str:
+    """PID plus OS creation time; a recycled PID is never the same owner."""
+    process = psutil.Process(os.getpid() if pid is None else pid)
+    return json.dumps({"version": 1, "pid": process.pid, "create_time": process.create_time()},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def scan_owner_state(identity: str | None) -> str:
+    """Return ALIVE/DEAD/UNKNOWN without killing or inferring from heartbeat age."""
+    try:
+        owner = json.loads(identity or "{}")
+        if (owner.get("version") != 1 or type(owner.get("pid")) is not int
+                or owner["pid"] <= 0 or not isinstance(owner.get("create_time"), (int, float))
+                or not math.isfinite(owner["create_time"]) or owner["create_time"] <= 0):
+            return "UNKNOWN"
+    except (ValueError, TypeError, AttributeError):
+        return "UNKNOWN"
+    try:
+        process = psutil.Process(owner["pid"])
+        return "ALIVE" if (process.create_time() == owner["create_time"] and process.is_running()) else "DEAD"
+    except psutil.NoSuchProcess:
+        return "DEAD"
+    except (psutil.AccessDenied, OSError):
+        return "UNKNOWN"
 
 
 class ScanJobStore:
@@ -82,6 +118,55 @@ class ScanJobStore:
                 (tid, QUEUED, top_n, days, now, now),
             )
         return tid
+
+    def reserve_running(self, task_id: str, *, top_n: int, days: int) -> None:
+        """Cross-process compare-and-create; a failed reservation starts no worker."""
+        now = _now()
+        owner = scan_process_identity()
+        with self._conn() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            active = conn.execute("SELECT task_id FROM scan_jobs WHERE status IN ('QUEUED','RUNNING','CANCELLING') LIMIT 1").fetchone()
+            if active:
+                raise ActiveScanError(str(active[0]))
+            conn.execute('''INSERT INTO scan_jobs(task_id,status,top_n,days,cancel_requested,created_at,updated_at,started_at,heartbeat_at,worker_id)
+                            VALUES (?,?,?,?,0,?,?,?,?,?)''', (task_id, RUNNING, top_n, days, now, now, now, now, owner))
+
+    def recover_dead_owners(self) -> dict[str, dict[str, Any]]:
+        """Audit and terminate proven orphans only; never requeue or kill a PID."""
+        diagnostics = {}
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute("SELECT * FROM scan_jobs WHERE status IN ('QUEUED','RUNNING','CANCELLING')").fetchall()
+            for row in rows:
+                state = scan_owner_state(row["worker_id"])
+                if state == "ALIVE":
+                    continue
+                task_id = str(row["task_id"])
+                if state == "UNKNOWN":
+                    diagnostics[task_id] = {"owner_state": state,
+                        "code": "SCAN_OWNER_UNVERIFIED",
+                        "message": "扫描进程身份无法核对，未自动恢复或终止进程；可明确取消此任务"}
+                    continue
+                status = CANCELLED if row["cancel_requested"] or row["status"] == CANCELLING else FAILED
+                now = _now()
+                try:
+                    checkpoint = json.loads(row["checkpoint_json"] or "{}")
+                except (ValueError, TypeError):
+                    checkpoint = {}
+                if not isinstance(checkpoint, dict):
+                    checkpoint = {}
+                checkpoint["recovery"] = {"policy": "confirmed-owner-dead-v1", "at": now,
+                    "owner": row["worker_id"], "previous_status": row["status"], "status": status,
+                    "previous_stage": checkpoint.get("stage")}
+                checkpoint["stage"] = "已取消" if status == CANCELLED else "扫描中断"
+                message = "扫描所属进程已退出，任务已取消" if status == CANCELLED else "扫描所属进程已退出，本次扫描失败；没有自动重跑"
+                conn.execute("UPDATE scan_jobs SET status=?,error_code='SCAN_OWNER_EXITED',error_message=?,"
+                             "checkpoint_json=?,finished_at=?,updated_at=? WHERE task_id=? "
+                             "AND status IN ('QUEUED','RUNNING','CANCELLING')",
+                             (status, message, json.dumps(checkpoint, ensure_ascii=False), now, now, task_id))
+                diagnostics[task_id] = {"owner_state": state, "status": status,
+                                        "code": "SCAN_OWNER_EXITED", "message": message}
+        return diagnostics
 
     def upsert_running(self, task_id: str, *, top_n: int, days: int) -> None:
         """API 线程路径：仅当不存在时插入 RUNNING；已存在终态则拒绝。"""

@@ -19,6 +19,7 @@ param(
     [int]$ScanTimeoutMinutes = 30,
     [switch]$SkipSync,
     [switch]$SkipScan,
+    [switch]$SkipChipCapture,
     [switch]$Backup,
     [switch]$InstitutionalMaintenance,
     [switch]$SkipEod,
@@ -132,6 +133,21 @@ if ($SkipSync) {
         Die '同步未完整完成（存在失败交易日）。请检查 Token / 网络后重跑；不要用不完整的数据出结论。'
     }
     Ok '行情同步完成'
+}
+
+# 筹码前向 PIT：收盘后抓当日 cyq_perf，以真实抓取时刻为 available_at。
+# 历史筹码是批量入库，按预登记口径不可用；只能从现在起逐日积累。失败只警告，不影响选股。
+if ($SkipChipCapture) {
+    Warn '已按 -SkipChipCapture 跳过筹码快照；当日筹码将永久缺少开盘前可用版本。'
+} else {
+    Push-Location $Root
+    try {
+        & $Python -u 'scripts\capture_chip_pit.py' --db $DbPath --apply
+        $chipCode = $LASTEXITCODE
+    } finally { Pop-Location }
+    if ($chipCode -eq 0) { Ok '筹码快照已记录（或当日已存在同内容快照）' }
+    elseif ($chipCode -eq 3) { Warn '筹码快照覆盖不足或供应商尚未发布；稍后重跑本脚本只会补缺失行。' }
+    else { Warn '筹码快照未写入（见上方 REFUSED 原因）；选股不受影响。' }
 }
 
 # ---------------------------------------------------------------- 3 后端

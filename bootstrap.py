@@ -113,6 +113,9 @@ def write_env(token: str) -> None:
         if line.strip().startswith("TUSHARE_TOKEN="):
             out.append(f"TUSHARE_TOKEN={token}")
             replaced = True
+        elif line.strip().rstrip("/") == "TUSHARE_HTTP_URL=http://a.sszhixia.cn":
+            # 2026-09-14 ~ 09-25 的明文旧配置：升级为同主机 HTTPS
+            out.append("TUSHARE_HTTP_URL=https://a.sszhixia.cn/")
         else:
             out.append(line)
     if not replaced:

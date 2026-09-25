@@ -1,0 +1,22 @@
+{
+  "version": "cost-v1",
+  "commission_rate": 0.00025,
+  "min_commission_yuan": 5.0,
+  "stamp_tax_sell": [
+    {
+      "from": "19000101",
+      "to": "20230827",
+      "rate": 0.001
+    },
+    {
+      "from": "20230828",
+      "to": "99991231",
+      "rate": 0.0005
+    }
+  ],
+  "slippage_bp_per_side": 10,
+  "calibration_source": "assumed",
+  "statement_sha256": null,
+  "note": "把券商对账单或费率确认文件放到证据根（runtime/research/scorecard/）下，填 statement_path（相对证据根）与 statement_sha256，并把 calibration_source 改为 broker_statement，G0 成本校准项才会通过；滑点在有前瞻成交后按 G6 偏差校正。",
+  "statement_path": null
+}

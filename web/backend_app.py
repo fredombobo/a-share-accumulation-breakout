@@ -121,8 +121,11 @@ async def local_only_guard(request: Request, call_next):
             return ""
 
     local_hostnames = {"127.0.0.1", "localhost", "::1"}
-    # starlette TestClient 默认 Host=testserver：仅测试放行（攻击者无法注册该域名做 rebinding）
-    local_hostnames.add("testserver")
+    # starlette TestClient 默认 Host=testserver。只对进程内 TestClient（client.host 恒为
+    # "testclient"，真实套接字对端只能是 IP）放行；否则局域网名称解析投毒可把
+    # testserver 指向本机，绕过 DNS rebinding 防护。
+    if request.client is not None and request.client.host == "testclient":
+        local_hostnames.add("testserver")
 
     host = request.headers.get("host") or ""
     if host and _hostname_of(host) not in local_hostnames:

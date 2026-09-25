@@ -10,6 +10,7 @@ V2R-S 生产接线：扫描完成后把六形态不可变观察落库（`persist
 """
 from __future__ import annotations
 
+import re
 import threading
 import uuid
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import psutil
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -222,8 +224,9 @@ def _new_task(
     requested_days: int,
     profile_snapshot: dict,
     config_hash: str,
+    task_id: str | None = None,
 ) -> str:
-    task_id = uuid.uuid4().hex[:12]
+    task_id = task_id or uuid.uuid4().hex[:12]
     created_at = datetime.now().astimezone().isoformat(timespec="seconds")
     with _SCAN_LOCK:
         _SCAN_TASKS[task_id] = {
@@ -296,6 +299,45 @@ def _finish_persisted_scan_failure(
     )
 
 
+def _recover_persisted_scans() -> dict[str, dict[str, Any]]:
+    from ab_screener.application.scan_jobs import ScanJobStore
+
+    try:
+        diagnostics = ScanJobStore(_store.db_path).recover_dead_owners()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "SCAN_RECOVERY_UNAVAILABLE", "message": "扫描任务状态暂时无法核对，请稍后重试",
+        }) from exc
+    for task_id, diagnostic in diagnostics.items():
+        if diagnostic.get("owner_state") != "DEAD":
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", task_id):
+            diagnostic["cancel_signal"] = "UNSAFE_TASK_ID"
+            continue
+        runtime = (_PARENT / "runtime").resolve()
+        cancel_file = (runtime / f"scan_{task_id}.cancel").resolve()
+        if cancel_file.parent != runtime:
+            diagnostic["cancel_signal"] = "UNSAFE_CANCEL_PATH"
+            continue
+        try:
+            runtime.mkdir(parents=True, exist_ok=True)
+            cancel_file.write_text("1", encoding="utf-8")
+            diagnostic["cancel_signal"] = "SENT"
+        except OSError:
+            diagnostic["cancel_signal"] = "FAILED"
+            diagnostic["message"] += "；取消标志写入失败，请检查运行目录权限"
+    with _SCAN_LOCK:
+        for task_id, diagnostic in diagnostics.items():
+            if diagnostic.get("owner_state") == "DEAD" and task_id in _SCAN_TASKS:
+                _SCAN_TASKS[task_id].update(
+                    status="cancelled" if diagnostic["status"] == "CANCELLED" else "error",
+                    stage=diagnostic["message"], error=diagnostic["message"],
+                    finished_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                    worker_pid=None,
+                )
+    return diagnostics
+
+
 def _run_scan_worker(
     task_id: str,
     top: int,
@@ -329,6 +371,24 @@ def _run_scan_worker(
         cancel_ev = threading.Event()
         with _SCAN_LOCK:
             _SCAN_CANCEL_EVENTS[task_id] = cancel_ev
+
+    last_persisted = float("-inf")
+
+    def persist_heartbeat(*, force: bool = False) -> None:
+        nonlocal last_persisted
+        from ab_screener.application.scan_jobs import ScanJobStore
+
+        clock = _time.monotonic()
+        if not force and clock - last_persisted < 5:
+            return
+        with _SCAN_LOCK:
+            current = _SCAN_TASKS.get(task_id)
+            if not current or is_terminal(current.get("status")):
+                return
+            checkpoint = {key: current.get(key) for key in
+                          ("stage", "progress", "worker_pid", "worker_identity")}
+        ScanJobStore(_store.db_path).heartbeat(task_id, checkpoint)
+        last_persisted = clock
 
     runtime_dir = _PARENT / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -390,6 +450,7 @@ def _run_scan_worker(
             t["heartbeat_at"] = now
             if msg:
                 _log(t, msg)
+        persist_heartbeat()
 
     def _kill_job(proc: ScanChild | None) -> None:
         try:
@@ -442,14 +503,25 @@ def _run_scan_worker(
             profile=profile_path,
             cwd=_PARENT,
         )
+        from ab_screener.application.scan_jobs import scan_process_identity
+
+        child_identity = None
+        if proc.pid > 0:
+            try:
+                child_identity = scan_process_identity(proc.pid)
+            except (psutil.Error, OSError):
+                child_identity = None
         with _SCAN_LOCK:
             t = _SCAN_TASKS.get(task_id)
             if t:
                 t["worker_pid"] = proc.pid
+                t["worker_identity"] = child_identity
                 _log(t, f"scan subprocess pid={proc.pid}")
+        persist_heartbeat(force=True)
 
         # 轮询：进度文件 + 取消 + 子进程退出
         while True:
+            persist_heartbeat()
             if cancel_requested():
                 pct = 0
                 try:
@@ -517,6 +589,8 @@ def _run_scan_worker(
             or result.get("strategy_profile") != profile_snapshot
         ):
             raise RuntimeError("scan child returned a different strategy profile snapshot")
+        if not isinstance(result.get("scan_candidates"), list):
+            raise TypeError("scan child did not return its own scan_candidates publication")
 
         count_a = int(result.get("count_a") or result.get("count") or 0)
         count_b = int(result.get("count_b") or 0)
@@ -667,6 +741,7 @@ def _run_scan_worker(
 @router.get("/api/scan/status")
 def scan_status(task_id: str | None = None):
     """查询扫描进度。默认返回最新任务；指定 task_id 返回该任务。"""
+    diagnostics = _recover_persisted_scans()
     with _SCAN_LOCK:
         if task_id:
             task = _SCAN_TASKS.get(task_id)
@@ -696,7 +771,12 @@ def scan_status(task_id: str | None = None):
     job = store.get(task_id) if task_id else store.latest()
     if task_id and not job:
         raise HTTPException(status_code=404, detail=f"任务 {task_id} 不存在")
-    return to_api_status(job)
+    status = to_api_status(job)
+    diagnostic = diagnostics.get(str(job["task_id"])) if job else None
+    if diagnostic:
+        status["recovery"] = diagnostic
+        status["error"] = diagnostic["message"]
+    return status
 
 
 @router.post("/api/scan/{task_id}/cancel")
@@ -735,6 +815,7 @@ def cancel_scan(task_id: str):
             CANCELLED,
             QUEUED,
             ScanJobStore,
+            scan_owner_state,
             to_api_status,
         )
 
@@ -748,8 +829,13 @@ def cancel_scan(task_id: str):
         cancel_file = _PARENT / "runtime" / f"scan_{task_id}.cancel"
         cancel_file.parent.mkdir(parents=True, exist_ok=True)
         cancel_file.write_text("1", encoding="utf-8")
-        if persisted.get("status") == QUEUED:
-            store.finish(task_id, status=CANCELLED, error_code="CANCELLED")
+        if persisted.get("status") == QUEUED or scan_owner_state(persisted.get("worker_id")) == "UNKNOWN":
+            # Explicit user cancellation revokes publication even for a legacy
+            # owner we cannot identify; it never guesses which process to kill.
+            store.finish(task_id, status=CANCELLED, error_code="CANCELLED_OWNER_UNVERIFIED",
+                         error_message="取消已落库；未尝试终止身份不明的进程")
+        else:
+            store.recover_dead_owners()
         return to_api_status(store.get(task_id))
 
     # 立刻写 cancel 文件 + 杀进程树（不等 worker 线程醒来）
@@ -823,15 +909,8 @@ def start_scan(req: ScanRequest):
 
     并发互斥：已有排队/运行中的扫描时返回 409，避免多线程×多进程把 CPU/内存打爆。
     """
+    diagnostics = _recover_persisted_scans()
     running = _running_task_id()
-    if not running:
-        try:
-            from ab_screener.application.scan_jobs import ScanJobStore
-
-            active = ScanJobStore(_store.db_path).latest_active()
-            running = str(active["task_id"]) if active else None
-        except Exception:  # noqa: BLE001
-            running = None
     if running:
         raise HTTPException(
             status_code=409,
@@ -856,31 +935,52 @@ def start_scan(req: ScanRequest):
                 "retryable": False,
             },
         ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "SCAN_STORAGE_UNAVAILABLE", "message": "无法读取扫描参数，扫描未启动",
+        }) from exc
     profile = profile_record["profile"]
     profile_snapshot = profile.to_canonical_dict()
     cfg_hash = str(profile_record["config_hash"])
     days = max(requested_days, profile.required_scan_days())
-    task_id = _new_task(
-        top,
-        days,
-        requested_days=requested_days,
-        profile_snapshot=profile_snapshot,
-        config_hash=cfg_hash,
-    )
-    # upgrade system：持久任务用 upsert_running（禁止 INSERT OR REPLACE 覆盖终态）
-    try:
-        from ab_screener.application.scan_jobs import ScanJobStore
+    task_id = uuid.uuid4().hex[:12]
+    from ab_screener.application.scan_jobs import ActiveScanError, ScanJobStore
 
-        ScanJobStore(_store.db_path).upsert_running(task_id, top_n=top, days=days)
-    except Exception:  # noqa: BLE001
-        pass
-    t = threading.Thread(
-        target=_run_scan_worker,
-        args=(task_id, top, days, profile_snapshot, cfg_hash),
-        daemon=True,
-    )
-    t.start()
-    as_of = _store.max_trade_date("daily")
+    # Reserve before memory state or thread creation; the DB lock also covers
+    # other Web processes and standalone scanner callers.
+    try:
+        as_of = _store.max_trade_date("daily")
+        ScanJobStore(_store.db_path).reserve_running(task_id, top_n=top, days=days)
+    except ActiveScanError as exc:
+        diagnostic = diagnostics.get(exc.task_id)
+        detail = f"{exc}；{diagnostic['message']}" if diagnostic else str(exc)
+        raise HTTPException(status_code=409, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "SCAN_RESERVATION_FAILED", "message": "扫描任务无法持久保存，扫描未启动",
+        }) from exc
+    try:
+        _new_task(top, days, requested_days=requested_days, profile_snapshot=profile_snapshot,
+                  config_hash=cfg_hash, task_id=task_id)
+        t = threading.Thread(
+            target=_run_scan_worker,
+            args=(task_id, top, days, profile_snapshot, cfg_hash),
+            daemon=True,
+        )
+        t.start()
+    except Exception as exc:
+        try:
+            _finish_persisted_scan_failure(task_id, "扫描工作线程未能启动", db_path=_store.db_path)
+        except Exception:  # noqa: BLE001
+            # A failed database stays reserved rather than permitting an
+            # untracked retry; the caller still receives a failed start.
+            pass
+        with _SCAN_LOCK:
+            _SCAN_TASKS.pop(task_id, None)
+            _SCAN_CANCEL_EVENTS.pop(task_id, None)
+        raise HTTPException(status_code=503, detail={
+            "code": "SCAN_WORKER_START_FAILED", "message": "扫描工作线程未能启动",
+        }) from exc
     return {
         "status": "started",
         "task_id": task_id,

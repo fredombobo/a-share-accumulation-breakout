@@ -2,7 +2,7 @@
 Tushare 唯一标准初始化入口（全项目只引用本文件）
 ================================================
 
-用户指定并冻结的标准调用方式（2026-08-29 再确认，后续所有模块一律引用本文件初始化，
+用户指定的标准调用方式（2026-09-25 起改回 HTTPS，后续所有模块一律引用本文件初始化，
 不得在其它文件重复 `ts.pro_api` / 第二套 URL）：
 
 ```python
@@ -30,6 +30,9 @@ pro = get_pro()
     用 curl_cffi 接管 query（抗 TLS 指纹拦截），调用方式不变。
   - Token 必须通过项目 `.env` 或环境变量的 `TUSHARE_TOKEN` 提供；项目
     `.env` 是本项目权威配置，避免父进程残留旧 Token。
+  - 传输必须 HTTPS + 证书验证 + 禁止重定向。2026-09-14 ~ 09-25 期间使用过的
+    `http://a.sszhixia.cn/` 若仍留在 `.env`，读取配置时自动升级为同主机 HTTPS
+    并给出警告；显式传入或运行中改写为明文地址一律拒绝。
 """
 from __future__ import annotations
 
@@ -69,6 +72,8 @@ from tushare.pro.client import DataApi
 DEFAULT_TOKEN = ""
 # pro._DataApi__http_url = 'https://a.sszhixia.cn/'
 DEFAULT_HTTP_URL = "https://a.sszhixia.cn/"
+# 2026-09-14 ~ 09-25 的明文配置；仅用于把旧 .env 升级为同主机 HTTPS，绝不用于连接。
+LEGACY_PLAINTEXT_URL = "http://a.sszhixia.cn/"
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
@@ -98,23 +103,33 @@ class DataTransportSecurityError(RuntimeError):
 
 
 def validate_http_url(raw: str) -> str:
-    """规范化数据网关地址，并拒绝明文、带凭据或无主机的 URL。"""
+    """规范化数据网关地址，并拒绝明文、带凭据、带查询/片段或无主机的 URL。"""
     value = raw.strip().rstrip("/") + "/"
     parsed = urlsplit(value)
-    if parsed.scheme.lower() != "https":
-        raise DataTransportSecurityError(
-            "TUSHARE_HTTP_URL 必须使用 https://；不允许明文 HTTP 回退"
-        )
     if not parsed.hostname:
         raise DataTransportSecurityError("TUSHARE_HTTP_URL 缺少有效主机名")
     if parsed.username or parsed.password:
         raise DataTransportSecurityError("TUSHARE_HTTP_URL 不得内嵌凭据")
+    if parsed.query or parsed.fragment:
+        raise DataTransportSecurityError("TUSHARE_HTTP_URL 不得包含查询参数或片段")
+    if parsed.scheme.lower() != "https":
+        raise DataTransportSecurityError(
+            "TUSHARE_HTTP_URL 必须使用 https://（Token 不得明文传输）；"
+            f"请把 .env 改为 TUSHARE_HTTP_URL={DEFAULT_HTTP_URL}"
+        )
     return value
 
 
 def _resolve_http_url() -> str:
     _load_dotenv()
     raw = (os.environ.get("TUSHARE_HTTP_URL") or DEFAULT_HTTP_URL).strip()
+    if raw.rstrip("/") + "/" == LEGACY_PLAINTEXT_URL:
+        warnings.warn(
+            f"TUSHARE_HTTP_URL={LEGACY_PLAINTEXT_URL} 是明文旧配置，已按同主机升级为 "
+            f"{DEFAULT_HTTP_URL}；请同步修改 .env",
+            stacklevel=2,
+        )
+        raw = DEFAULT_HTTP_URL
     return validate_http_url(raw)
 
 
@@ -131,7 +146,7 @@ def _patch_dataapi_query_with_curl_cffi() -> None:
 
     def query(self: DataApi, api_name: str, fields: str = "", **kwargs: Any) -> pd.DataFrame:
         token = object.__getattribute__(self, "_DataApi__token")
-        http_url = object.__getattribute__(self, "_DataApi__http_url")
+        http_url = validate_http_url(object.__getattribute__(self, "_DataApi__http_url"))
         timeout = object.__getattribute__(self, "_DataApi__timeout")
         req_params = {
             "api_name": api_name,
@@ -155,7 +170,7 @@ def _patch_dataapi_query_with_curl_cffi() -> None:
                 status_code = int(getattr(res, "status_code", 0) or 0)
                 if 300 <= status_code < 400:
                     raise DataTransportSecurityError(
-                        f"数据网关拒绝重定向（HTTP {status_code}），防止 TLS 降级"
+                        f"数据网关拒绝重定向（HTTP {status_code}），保持指定请求地址"
                     )
                 if status_code >= 400:
                     raise RuntimeError(f"数据网关 HTTP {status_code}")
@@ -220,7 +235,7 @@ def __getattr__(name: str):
 
 
 # 模块加载时初始化（标准入口）
-pro = init_pro()
+pro = get_pro()
 TUSHARE_HTTP_URL = getattr(pro, "_DataApi__http_url", DEFAULT_HTTP_URL)
 
 # 对外别名

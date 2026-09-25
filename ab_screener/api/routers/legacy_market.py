@@ -2,14 +2,17 @@
 
 迁自 web/backend_app.py 的市场数据域：overview / portfolio / stock / sector-flow /
 money-heatmap / stock-flow，及依赖的 K线/信号/财务/板块资金流辅助函数。
-共享状态从 ab_screener.api.legacy_state import；build_trade_card 来自 trade_plan、
-data_freshness/detect_regime 来自 market_regime（函数内延迟 import）。
+共享状态从 ab_screener.api.legacy_state import；候选与信号只读不可变扫描发布记录。
 """
 from __future__ import annotations
 
-import pandas as pd
-from fastapi import APIRouter, HTTPException
+import json
+import math
 
+import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException, Query
+
+from ab_screener.api.deps import get_db_path
 from ab_screener.api.legacy_state import (
     _OVERVIEW_CACHE,
     _SECTOR_FLOW_CACHE,
@@ -33,13 +36,28 @@ router = APIRouter(tags=["legacy"])
 # /api/stock/{ts_code}.
 _OVERVIEW_KLINE_DAYS = 10
 
-def _kline_series_for(code: str, limit: int | None = None, start: str | None = None) -> list[dict]:
+
+@router.get("/api/stock-search")
+def stock_search(
+    q: str = Query(default="", max_length=80),
+    db_path: str = Depends(get_db_path),
+) -> list[dict]:
+    """Search the full local stock catalog without loading the research universe."""
+    query = q.strip()
+    if not query:
+        return []
+    from ab_screener.intelligence.catalog import search_stocks
+
+    return search_stocks(db_path, query)
+
+
+def _kline_series_for(code: str, limit: int | None = None, start: str | None = None, end: str | None = None) -> list[dict]:
     # SQL 层直接取最近 limit 个交易日，避免全量 K 线拖慢总览。
     # start 由调用方预计算（distinct_dates 全表扫描较贵，不应在循环内重复调用）。
     if limit and limit > 0:
-        df = _store.load_daily(ts_codes=[code], start=start) if start else _store.load_daily(ts_codes=[code])
+        df = _store.load_daily(ts_codes=[code], start=start, end=end)
     else:
-        df = _store.load_daily(ts_codes=[code])
+        df = _store.load_daily(ts_codes=[code], end=end)
     if df.empty:
         return []
     df = df.sort_values("trade_date")
@@ -123,10 +141,12 @@ def _sig_for_many(codes: list[str]) -> dict[str, dict]:
         while len(_SIG_CACHE) > 400:
             _SIG_CACHE.pop(next(iter(_SIG_CACHE)))
     return out
-def _fina_for(code: str, limit: int = 4) -> list[dict]:
+def _fina_for(code: str, limit: int = 4, as_of: str | None = None) -> list[dict]:
     df = _store.load_fina_indicator(ts_codes=[code])
     if df.empty:
         return []
+    if as_of:
+        df = df.loc[df["ann_date"].astype(str) <= as_of]
     df = df.sort_values("ann_date", ascending=False).head(limit)
     out = []
     for _, r in df.iterrows():
@@ -209,9 +229,13 @@ def _load_sector_flow(
     )
     merged = mf.merge(grouping, on="ts_code", how="left")
     merged["classification_group"] = merged["classification_group"].fillna("未分类")
-    merged["net"] = pd.to_numeric(merged["net_mf_amount"], errors="coerce").fillna(0)
-    grp = merged.groupby(["trade_date", "classification_group"])["net"].sum().reset_index()
-    pivot = grp.pivot(index="trade_date", columns="classification_group", values="net").fillna(0)
+    merged["net"] = pd.to_numeric(merged["net_mf_amount"], errors="coerce").replace(
+        [float("inf"), float("-inf")], float("nan"),
+    )
+    # Aggregate only observed amounts: an all-missing group and an absent
+    # group/date remain unknown, while observed zero and offsetting flows stay 0.
+    grp = merged.groupby(["trade_date", "classification_group"])["net"].sum(min_count=1).reset_index()
+    pivot = grp.pivot(index="trade_date", columns="classification_group", values="net")
     dates = [str(x) for x in pivot.index.tolist()]
     _SECTOR_FLOW_CACHE[cache_key] = (dates, pivot)
     # 缓存上限：只保留最新 N 条，防止按日期无限增长
@@ -229,210 +253,169 @@ def _parse_pool_tier(reasons: str) -> tuple[str, str]:
         return "B", "theme_fill"
     if "relaxed" in s or "放宽" in s:
         return "B", "relaxed"
-    if "[池" in s:
-        return "A", "strict"
     # 旧 scan_result 无池前缀：不默认当可交易 A
     return "B", "unknown"
+
+def _publication_context(run_id: str | None) -> tuple[dict | None, dict, bool]:
+    from ab_screener.application.scan_publication import read_scan_publication
+    from ab_screener.market_regime import data_freshness
+
+    publication = read_scan_publication(_store.db_path, run_id=run_id)
+    if run_id and publication is None:
+        raise HTTPException(status_code=404, detail="未找到已成功发布的扫描记录")
+    scan_as_of = str(publication.get("as_of") or "") if publication else ""
+    try:
+        # Recheck against the independent current calendar, never observed daily
+        # dates or the historical publication's own clock.
+        fresh = data_freshness(scan_as_of, store=_store)
+    except Exception:  # noqa: BLE001
+        fresh = {"as_of": scan_as_of, "label": "待核对", "is_stale": True,
+                 "can_publish_a": False, "blocking_reasons": ["FRESHNESS_UNAVAILABLE"]}
+    current = bool(
+        publication and not run_id and publication.get("verified") is True
+        and publication.get("publication_version") == 2 and publication.get("state") == "READY"
+        and fresh.get("can_publish_a") is True and not fresh.get("historical")
+    )
+    return publication, fresh, current
+
+
+def _publication_metadata(publication: dict | None) -> dict | None:
+    if publication is None:
+        return None
+    # Do not duplicate candidate payloads or the full strategy audit in a lean API.
+    return {key: value for key, value in publication.items()
+            if key not in {"candidates", "strategy_snapshot"}}
+
+
+def _number(value) -> float | None:
+    try:
+        number = float(value)
+    except (ValueError, TypeError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _stored_signal(candidate: dict | None) -> dict:
+    """Missing historical fields stay unknown; no current-parameter recalculation."""
+    row = candidate or {}
+    keys = ("box_high", "box_low", "box_days", "box_amp", "breakout_pct_chg",
+            "vol_shrink_ratio", "ma5", "ma10", "ma20")
+    return {
+        **{key: _number(row.get(key)) for key in keys},
+        # scan projection stores box_amp in percent; the signal contract uses
+        # a fraction (the detail page formats it as a percentage).
+        "box_amp": _number(row.get("box_amp")) / 100 if _number(row.get("box_amp")) is not None else None,
+        "breakout_date": row.get("breakout_date") or None,
+        "breakout_vol_ratio": _number(row.get("breakout_vol_ratio", row.get("vol_ratio"))),
+        "reasons": [str(row["reasons"])] if row.get("reasons") else [],
+        "source": "SCAN_PUBLICATION" if candidate is not None else "UNAVAILABLE",
+        "as_of": row.get("trade_date") if candidate is not None else None,
+    }
+
+
 @router.get("/api/overview")
-def overview(pool: str = "A"):
-    """最新扫描结果。pool=A|B|ALL。
-
-    无结果时返回 200 + 空列表（不再 404），便于前端保留缓存/提示扫一次。
-    """
-    from market_regime import data_freshness, detect_regime
-    from trade_plan import build_trade_card
-
+def overview(pool: str = "A", run_id: str | None = None):
+    """Current published candidates, or an explicitly selected historical run."""
     pool = pool.upper()
-    as_of_key = _store.max_trade_date("daily") or ""
-    # 轻量列表缓存：数据日期 + 池 不变则直接返回（本机热请求 <1s）
-    cache_key = (as_of_key, pool)
+    if pool not in {"A", "B", "ALL"}:
+        raise HTTPException(status_code=422, detail="pool 必须为 A、B 或 ALL")
+    publication, fresh, current = _publication_context(run_id)
+    quote_as_of = _store.max_trade_date("daily") or ""
+    scan_as_of = str(publication.get("as_of") or "") if publication else ""
+    # A same-date empty run, midnight and the 16:00 cutoff must invalidate cache.
+    cache_key = (
+        str(_store.db_path), pool, run_id, publication.get("run_id") if publication else None,
+        publication.get("result_hash") if publication else None, quote_as_of,
+        current, publication.get("verified") if publication else None,
+        publication.get("qualified_verified") if publication else None,
+        publication.get("qualification_integrity_error") if publication else None,
+        json.dumps({key: value for key, value in fresh.items() if key != "reference_now"},
+                   sort_keys=True, ensure_ascii=False),
+    )
     if _OVERVIEW_CACHE["key"] == cache_key and _OVERVIEW_CACHE["payload"] is not None:
-        return _OVERVIEW_CACHE["payload"]
-
-    df = _store.load_scan_result()
-    if df is None or getattr(df, "empty", True):
-        as_of = _store.max_trade_date("daily") or ""
-        try:
-            fresh = data_freshness(as_of, store=_store)
-        except Exception:  # noqa: BLE001
-            fresh = {"label": "未知", "is_stale": True}
-        try:
-            regime = detect_regime(store=_store).to_dict()
-        except Exception:  # noqa: BLE001
-            regime = {"regime": "neutral", "label": "中性"}
-        payload: dict[str, object] = {
-            "as_of": as_of,
-            "count": 0,
-            "pool": pool.upper(),
-            "items": [],
-            "freshness": fresh,
-            "regime": regime,
-            "empty_reason": "暂无扫描结果，请先运行扫描",
-        }
-        _OVERVIEW_CACHE["key"] = cache_key
-        _OVERVIEW_CACHE["payload"] = payload
-        return payload
-
-    latest = str(df["trade_date"].iloc[0]) if "trade_date" in df.columns else ""
-    # 交易日滞后（排除周末/节假日）
-    fresh = data_freshness(latest, store=_store)
-    try:
-        regime = detect_regime(store=_store).to_dict()
-    except Exception:  # noqa: BLE001
-        regime = {"regime": "neutral", "label": "中性"}
-
-    items = []
-    n_a = n_b = 0
-    # 第一遍：筛选池 + 统计，收集候选代码
-    pool_codes: list[str] = []
-    for _, row in df.iterrows():
-        code = row["ts_code"]
-        reasons = str(row.get("reasons") or "")
-        pool_tag, tier = _parse_pool_tier(reasons)
-        if pool_tag == "A":
-            n_a += 1
-        elif pool_tag == "B":
-            n_b += 1
-        if pool.upper() == "A" and pool_tag != "A":
-            continue
-        if pool.upper() == "B" and pool_tag != "B":
-            continue
-        pool_codes.append(code)
-
-    # 信号字段：优先读 scan_result 持久化的 box_high/box_low/ma5/ma20（零计算），
-    # 缺失（老数据）才批量并行重算
-    sig_map: dict[str, dict] = {}
-    need_recalc: list[str] = []
-    for _, row in df.iterrows():
-        code = row["ts_code"]
-        reasons = str(row.get("reasons") or "")
-        pool_tag, _tier = _parse_pool_tier(reasons)
-        if pool.upper() == "A" and pool_tag != "A":
-            continue
-        if pool.upper() == "B" and pool_tag != "B":
-            continue
-        bh = row.get("box_high")
-        calculated = row.get("sig_calculated")
-        if (bh is not None and pd.notna(bh)) or calculated == 1:
-            # 已计算过：直接用持久化字段（box_high 为 NULL 但 sig_calculated=1 是无箱体，合法）
-            sig_map[code] = {
-                "box_high": float(bh) if bh is not None and pd.notna(bh) else None,
-                "box_low": float(row["box_low"]) if pd.notna(row.get("box_low")) else None,
-                "ma5": float(row["ma5"]) if pd.notna(row.get("ma5")) else None,
-                "ma20": float(row["ma20"]) if pd.notna(row.get("ma20")) else None,
-            }
-        else:
-            need_recalc.append(code)
-    if need_recalc:
-        sig_map.update(_sig_for_many(need_recalc))
-
-    # 日期窗口只算一次（distinct_dates 全表扫描较贵，避免在循环内重复）。
-    # 总览只传迷你图窗口；详情页负责完整 K 线。
-    kline_start = None
-    try:
-        kline_start = _store.distinct_dates("daily", limit=_OVERVIEW_KLINE_DAYS)[0]
-    except Exception:  # noqa: BLE001
-        kline_start = None
-
-    # 批量加载 K 线一次（30 只 × 60 天），按 code 分组复用，避免循环内 30 次串行查库
+        # Re-evaluate the calendar/data gate on every request while keeping
+        # the clock alone from forcing expensive chart reconstruction.
+        return {**_OVERVIEW_CACHE["payload"], "freshness": fresh}
+    rows = publication.get("candidates", []) if publication and (current or run_id) else []
+    totals = {"A": 0, "B": 0}
+    selected = []
+    for row in rows:
+        pool_tag, tier = _parse_pool_tier(row.get("reasons"))
+        totals[pool_tag] += 1
+        if pool == "ALL" or pool == pool_tag:
+            selected.append((row, pool_tag, tier))
+    codes = [str(row["ts_code"]) for row, _, _ in selected]
     kline_by_code: dict[str, list[dict]] = {}
-    if pool_codes:  # 空列表时跳过，避免 IN () 退化为全表扫描
+    if codes:
+        chart_end = scan_as_of if run_id else None
         try:
-            _kd = _store.load_daily(ts_codes=pool_codes, start=kline_start)
-            if not _kd.empty:
-                _kd = _kd.sort_values(["ts_code", "trade_date"])
-                for _c, _g in _kd.groupby("ts_code", sort=False):
-                    _rows = []
-                    for _, _r in _g.iterrows():
-                        _rows.append({
-                            "trade_date": str(_r["trade_date"]),
-                            "open": float(_r["open"]),
-                            "high": float(_r["high"]),
-                            "low": float(_r["low"]),
-                            "close": float(_r["close"]),
-                            "vol": float(_r["vol"]),
-                            "amount": float(_r["amount"]) if pd.notna(_r.get("amount")) else None,
-                        })
-                    kline_by_code[str(_c)] = _rows
+            dates = _store.distinct_dates("daily", limit=None if chart_end else _OVERVIEW_KLINE_DAYS)
+            if chart_end:
+                dates = [day for day in dates if day <= chart_end][-_OVERVIEW_KLINE_DAYS:]
+            start = dates[0] if dates else None
         except Exception:  # noqa: BLE001
+            start = None
+        try:
+            daily = _store.load_daily(ts_codes=codes, start=start, end=chart_end)
+            if not daily.empty:
+                daily = daily.sort_values(["ts_code", "trade_date"])
+                for code, group in daily.groupby("ts_code", sort=False):
+                    kline_by_code[str(code)] = [
+                        {"trade_date": str(row["trade_date"]),
+                         **{key: _number(row.get(key)) for key in ("open", "high", "low", "close", "vol", "amount")}}
+                        for _, row in group.tail(_OVERVIEW_KLINE_DAYS).iterrows()
+                    ]
+        except Exception:  # noqa: BLE001
+            # A missing chart is not permission to alter persisted signal evidence.
             kline_by_code = {}
-
-    # 第二遍：组装轻量条目（不再逐只串行重算信号/加载全量 K 线）
-    for _, row in df.iterrows():
-        code = row["ts_code"]
-        reasons = str(row.get("reasons") or "")
-        pool_tag, _tier = _parse_pool_tier(reasons)
-        if pool.upper() == "A" and pool_tag != "A":
-            continue
-        if pool.upper() == "B" and pool_tag != "B":
-            continue
-        tier = _tier
-        sig = sig_map.get(code) or {}
-        price = None if pd.isna(row["price"]) else float(row["price"])
-        card = build_trade_card(
-            price=price,
-            box_high=sig.get("box_high"),
-            box_low=sig.get("box_low"),
-            breakout_date=str(row.get("breakout_date") or ""),
-            tier=tier,
-            regime=regime.get("regime", "neutral"),
-            score=float(row["total_score"]) if pd.notna(row["total_score"]) else None,
-        )
-        item = {
-            "ts_code": code,
-            "code": str(code).split(".")[0].zfill(6),
-            "name": str(row["name"]),
-            "price": price,
-            "industry": str(row["industry"]),
-            "mv_yi": None if pd.isna(row["mv_yi"]) else float(row["mv_yi"]),
-            "pe": None if pd.isna(row["pe"]) else float(row["pe"]),
-            "pb": None if pd.isna(row["pb"]) else float(row["pb"]),
-            "turnover": None if pd.isna(row["turnover"]) else float(row["turnover"]),
-            "score": float(row["total_score"]) if pd.notna(row["total_score"]) else 0,
-            "box_days": int(row["box_days"]) if pd.notna(row["box_days"]) else None,
-            "box_amp": float(row["box_amp"]) if pd.notna(row["box_amp"]) else None,
-            "vol_ratio": float(row["vol_ratio"]) if pd.notna(row["vol_ratio"]) else None,
-            "fund_net_wan": float(row["fund_net_wan"]) if pd.notna(row["fund_net_wan"]) else None,
-            "fund_ratio": float(row["fund_ratio"]) if pd.notna(row["fund_ratio"]) else None,
-            "breakout_date": str(row["breakout_date"]),
-            "reasons": reasons,
-            "pool": pool_tag,
-            "tier": tier,
-            "tradeable": card["tradeable"],
-            "trade": card,
-            # 总览为轻量列表：不返回 fina（财务详情走 /api/stock/{ts_code}），
-            # kline 只返回最近 10 条供迷你图，避免 100 个候选突破 300 KiB。
-            "kline": kline_by_code.get(code) or _kline_series_for(
-                code, limit=_OVERVIEW_KLINE_DAYS, start=kline_start
-            ),
-            "box_high": sig.get("box_high"),
-            "box_low": sig.get("box_low"),
-            "ma5": sig.get("ma5"),
-            "ma20": sig.get("ma20"),
-        }
-        items.append(item)
-
-    # A 池按分数排序
-    items.sort(key=lambda x: x.get("score") or 0, reverse=True)
+    items = []
+    for row, pool_tag, tier in selected:
+        code = str(row["ts_code"])
+        sig = _stored_signal(row)
+        kline = kline_by_code.get(code, [])
+        items.append({
+            "ts_code": code, "code": code.split(".")[0].zfill(6),
+            "name": str(row.get("name") or ""), "industry": str(row.get("industry") or ""),
+            **{key: _number(row.get(key)) for key in (
+                "price", "mv_yi", "pe", "pb", "turnover", "box_days", "box_amp",
+                "vol_ratio", "fund_net_wan", "fund_ratio",
+            )},
+            "score": _number(row.get("total_score")) or 0,
+            "breakout_date": row.get("breakout_date") or "", "reasons": str(row.get("reasons") or ""),
+            "pool": pool_tag, "tier": tier, "tradeable": False, "trade": None,
+            "candidate_status": "CURRENT_CANDIDATE" if current else "HISTORICAL_CANDIDATE",
+            "is_current_candidate": current, "scan_as_of": scan_as_of,
+            "signal_as_of": sig["as_of"], "price_as_of": row.get("trade_date") or scan_as_of,
+            "quote_as_of": kline[-1]["trade_date"] if kline else None,
+            "fund_window": row.get("fund_window"),
+            "data_missing_fields": row.get("data_missing_fields") or [],
+            "qualified_pool": row.get("qualified_pool"),
+            "run_id": publication["run_id"], "kline": kline,
+            **{key: sig.get(key) for key in ("box_high", "box_low", "ma5", "ma20")},
+        })
+    items.sort(key=lambda row: row.get("score") or 0, reverse=True)
     empty_reason = None
-    if not items and (n_a + n_b) > 0:
-        if pool.upper() == "A" and n_b > 0:
-            empty_reason = f"当前 A 池为空（库内 B 池 {n_b} 只，可切换到 B 或全部）"
-        elif pool.upper() == "B" and n_a > 0:
-            empty_reason = f"当前 B 池为空（库内 A 池 {n_a} 只，可切换到 A 或全部）"
+    if not publication:
+        empty_reason = "暂无成功发布的扫描记录，请先运行扫描"
+    elif not current and not run_id:
+        empty_reason = "最新扫描仅可作历史参考；发布状态或当前数据未通过核对，请更新数据后重新扫描"
+    elif not items:
+        empty_reason = f"本次扫描 {pool} 池为零只" if pool != "ALL" else "本次扫描为零只"
+    regime = publication.get("regime") if publication else None
     payload = {
-        "as_of": latest,
-        "count": len(items),
-        "pool": pool.upper(),
-        "freshness": fresh,
-        "regime": regime,
-        "pool_totals": {"A": n_a, "B": n_b},
-        "empty_reason": empty_reason,
-        "items": items,
+        "as_of": scan_as_of, "scan_as_of": scan_as_of or None, "quote_as_of": quote_as_of or None,
+        "view_state": "CURRENT" if current else "HISTORICAL" if publication else "NO_PUBLICATION",
+        "is_current": current, "publication": _publication_metadata(publication),
+        "chart_basis": "THROUGH_SCAN_DATE" if run_id else "LATEST_AVAILABLE",
+        "count": len(items), "pool": pool, "freshness": fresh,
+        "regime": regime or {"regime": "unknown", "label": "未记录"},
+        "pool_totals": totals, "empty_reason": empty_reason, "items": items,
     }
     _OVERVIEW_CACHE["key"] = cache_key
     _OVERVIEW_CACHE["payload"] = payload
     return payload
+
+
 @router.get("/api/portfolio")
 def get_portfolio():
     from portfolio import check_stops, load_portfolio
@@ -458,52 +441,67 @@ def post_portfolio(body: dict):
                 "details": {}, "retryable": False},
     )
 @router.get("/api/stock/{ts_code}")
-def stock_detail(ts_code: str):
-    """个股详情：K线/信号/资金流/基本面/财报"""
+def stock_detail(ts_code: str, run_id: str | None = None):
+    """行情可自由查询；候选身份和信号仅来自当前或明确选择的发布记录。"""
     code = ts_code.upper()
+    publication, fresh, current = _publication_context(run_id)
+    candidate = next((row for row in publication.get("candidates", [])
+                      if str(row.get("ts_code", "")).upper() == code), None) \
+        if publication and (current or run_id) else None
+    is_current_candidate = bool(current and candidate is not None)
+    pool, tier = _parse_pool_tier(candidate.get("reasons")) if candidate is not None else ("QUERY_ONLY", "unknown")
+    candidate_status = ("CURRENT_CANDIDATE" if is_current_candidate else "HISTORICAL_CANDIDATE") \
+        if candidate is not None else "QUERY_ONLY"
     basic = _store.load_stock_basic()
     row_meta = basic[basic["ts_code"] == code]
-    if row_meta.empty:
+    if row_meta.empty and candidate is None:
         raise HTTPException(status_code=404, detail=f"未找到 {code}")
 
-    kline = _kline_series_for(code)
-    sig = _sig_for(code)
-    fina = _fina_for(code, limit=4)
+    historical_end = str(publication["as_of"]) if run_id and publication else None
+    kline = _kline_series_for(code, end=historical_end)
+    quote_as_of = kline[-1]["trade_date"] if kline else None
+    sig = _stored_signal(candidate)
+    fina = _fina_for(code, limit=4, as_of=historical_end)
 
-    # 基本面（最新交易日）
-    latest_date = _store.max_trade_date("daily_basic") or ""
-    db = _store.load_daily_basic(ts_codes=[code])
-    fund_row = db[db["trade_date"] == latest_date] if latest_date and not db.empty else db
-    fund_row = fund_row.iloc[0] if not fund_row.empty else None
+    # Quote/fundamental dates describe this stock, not another stock's table MAX.
+    db = _store.load_daily_basic(ts_codes=[code], end=historical_end)
+    fund_row = db.sort_values("trade_date").iloc[-1] if not db.empty else None
+    latest_date = str(fund_row["trade_date"]) if fund_row is not None else None
 
     # 资金流（近5日）：只取最近 5 个交易日，修复原来累计全部历史的 bug
-    mf = _store.load_moneyflow(ts_codes=[code])
-    mf_rows = mf if not mf.empty else pd.DataFrame()
-    fund_net, fund_score, fund_ratio = calc_fund_flow_strength(mf_rows, days=5)
+    from ab_screener.data.freshness import moneyflow_rows_for_window, moneyflow_window_status
 
-    meta = row_meta.iloc[0]
-    from market_regime import detect_regime
-    from trade_plan import build_trade_card
-    try:
-        reg = detect_regime(store=_store).regime
-    except Exception:  # noqa: BLE001
-        reg = "neutral"
+    mf = _store.load_moneyflow(ts_codes=[code], end=historical_end)
+    if candidate is not None:
+        fund_window = candidate.get("fund_window") or {}
+        fund_flow = {
+            "as_of": candidate.get("trade_date"), "source": "SCAN_PUBLICATION",
+            "observed_dates": fund_window.get("observed_dates", []),
+            "net_wan": _number(candidate.get("fund_net_wan")),
+            "score": _number(candidate.get("fund_score")),
+            "ratio_pct": _number(candidate.get("fund_ratio")), "days": 5,
+            "window": fund_window, "complete": fund_window.get("complete") is True,
+        }
+    else:
+        # A freely queried stock may have a missing day even when table MAX is
+        # current. Missing observations must not be reported as zero flow.
+        fund_window = moneyflow_window_status(
+            mf, expected_dates=fresh.get("required_moneyflow_dates"),
+            expected_as_of=str(fresh.get("expected_as_of") or ""),
+        )
+        fund_net, fund_score, fund_ratio = calc_fund_flow_strength(
+            moneyflow_rows_for_window(mf, fund_window), days=5,
+        ) if fund_window["complete"] else (None, None, None)
+        fund_flow = {
+            "as_of": fund_window.get("expected_as_of"), "source": "CURRENT_WINDOW",
+            "observed_dates": fund_window["observed_dates"],
+            "net_wan": round(fund_net, 0) if fund_net is not None else None,
+            "score": fund_score, "ratio_pct": round(fund_ratio * 100, 3) if fund_ratio is not None else None,
+            "days": 5, "window": fund_window, "complete": fund_window["complete"],
+        }
+
+    meta = row_meta.iloc[0] if not row_meta.empty else candidate
     close_px = float(fund_row["close"]) if fund_row is not None and pd.notna(fund_row.get("close")) else None
-    # 从 scan_result 推断层级
-    scan = _store.load_scan_result()
-    tier = "strict"
-    if not scan.empty:
-        hit = scan[scan["ts_code"] == code]
-        if not hit.empty:
-            _, tier = _parse_pool_tier(str(hit.iloc[0].get("reasons") or ""))
-    trade = build_trade_card(
-        price=close_px,
-        box_high=sig.get("box_high"),
-        box_low=sig.get("box_low"),
-        breakout_date=sig.get("breakout_date"),
-        tier=tier,
-        regime=reg,
-    )
     return {
         "ts_code": code,
         "name": str(meta.get("name", "")),
@@ -511,21 +509,9 @@ def stock_detail(ts_code: str):
         "area": str(meta.get("area", "")),
         "list_date": str(meta.get("list_date", "")),
         "kline": kline,
-        "signal": {
-            "box_high": sig.get("box_high"),
-            "box_low": sig.get("box_low"),
-            "box_days": sig.get("box_days"),
-            "box_amp": sig.get("box_amp"),
-            "breakout_date": sig.get("breakout_date"),
-            "breakout_vol_ratio": sig.get("breakout_vol_ratio"),
-            "breakout_pct_chg": sig.get("breakout_pct_chg"),
-            "vol_shrink_ratio": sig.get("vol_shrink_ratio"),
-            "ma5": sig.get("ma5"),
-            "ma10": sig.get("ma10"),
-            "ma20": sig.get("ma20"),
-            "reasons": sig.get("reasons", []),
-        },
+        "signal": sig,
         "fundamentals": {
+            "as_of": latest_date,
             "pe": float(fund_row["pe"]) if fund_row is not None and pd.notna(fund_row.get("pe")) else None,
             "pb": float(fund_row["pb"]) if fund_row is not None and pd.notna(fund_row.get("pb")) else None,
             "total_mv_wan": float(fund_row["total_mv"]) if fund_row is not None and pd.notna(fund_row.get("total_mv")) else None,
@@ -534,16 +520,26 @@ def stock_detail(ts_code: str):
             "volume_ratio": float(fund_row["volume_ratio"]) if fund_row is not None and pd.notna(fund_row.get("volume_ratio")) else None,
             "close": close_px,
         },
-        "fund_flow": {
-            "net_wan": round(fund_net, 0),
-            "score": fund_score,
-            "ratio_pct": round(fund_ratio * 100, 3),
-            "days": 5,
-        },
+        "fund_flow": fund_flow,
+        "data_missing_fields": (candidate or {}).get("data_missing_fields") or [],
+        "chart_basis": "THROUGH_SCAN_DATE" if historical_end else "LATEST_AVAILABLE",
+        "classification_basis": "CURRENT_STOCK_BASIC",
         "fina": fina,
-        "trade": trade,
+        "tradeable": False,
+        "trade": None,
+        "pool": pool,
         "tier": tier,
-        "as_of": latest_date or _store.max_trade_date("daily") or "",
+        "candidate_status": candidate_status,
+        "is_current_candidate": is_current_candidate,
+        "view_state": "CURRENT" if is_current_candidate else "HISTORICAL" if candidate is not None else "QUERY_ONLY",
+        "publication": _publication_metadata(publication),
+        "freshness": fresh,
+        "run_id": publication["run_id"] if candidate is not None else None,
+        "scan_as_of": publication["as_of"] if candidate is not None else None,
+        "signal_as_of": sig["as_of"],
+        "quote_as_of": quote_as_of,
+        "fundamentals_as_of": latest_date,
+        "as_of": quote_as_of or latest_date or "",
     }
 @router.get("/api/classifications")
 def classifications():
@@ -580,13 +576,15 @@ def classifications():
 
 @router.get("/api/sector-flow")
 def sector_flow(days: int = 10, classification: str = "industry"):
-    """按选定分类统计近 N 日每日主力净流入和双向排行。"""
+    """按选定分类汇总已取得的每日资金净额和区间排行。"""
     days = max(5, min(days, 20))
     definition = _classification_or_http(classification)
     dates, pivot = _load_sector_flow(days, classification=definition.key)
-    industries = {str(c): [round(float(v), 0) for v in pivot[c].tolist()] for c in pivot.columns}
+    industries = {str(c): [round(n, 0) if (n := _number(v)) is not None else None
+                          for v in pivot[c].tolist()] for c in pivot.columns}
 
-    cumsum = pivot.sum(axis=0).sort_values(ascending=False)
+    cumsum = (pivot.replace([float("inf"), float("-inf")], float("nan"))
+              .sum(axis=0, min_count=1).map(_number).dropna().sort_values(ascending=False))
     top_in = [
         {"group": str(k), "industry": str(k), "net_wan": round(float(v), 0)}
         for k, v in cumsum.head(8).items()
@@ -606,6 +604,8 @@ def sector_flow(days: int = 10, classification: str = "industry"):
         "industries": industries,
         "top_in": top_in,
         "top_out": top_out,
+        "aggregation_basis": "AVAILABLE_RECORDS_ONLY",
+        "note": "按已取得的有效资金净额汇总，不代表完整行业资金流；缺失日期保留为空。",
     }
 @router.get("/api/money-heatmap")
 def money_heatmap(top: int = 0, classification: str = "industry"):
@@ -629,7 +629,9 @@ def money_heatmap(top: int = 0, classification: str = "industry"):
     if not dates:
         raise HTTPException(status_code=404, detail="无资金流数据")
     trade_date = dates[-1]
-    row = pd.to_numeric(pd.Series(pivot.iloc[-1]), errors="coerce").dropna()
+    row = pd.to_numeric(pd.Series(pivot.iloc[-1]), errors="coerce").replace(
+        [float("inf"), float("-inf")], float("nan"),
+    ).dropna()
     nonzero = row[row != 0]
     if top <= 0:
         selected = nonzero.reindex(nonzero.abs().sort_values(ascending=False).index)
@@ -646,7 +648,8 @@ def money_heatmap(top: int = 0, classification: str = "industry"):
         }
         for k, v in selected.items()
     ]
-    total_wan = int(round(float(row.sum())))
+    total = _number(row.sum(min_count=1))
+    total_wan = int(round(total)) if total is not None else None
     return {
         "classification": definition.key,
         "classification_title": definition.title,
@@ -654,10 +657,12 @@ def money_heatmap(top: int = 0, classification: str = "industry"):
         "trade_date": trade_date,
         "total_wan": total_wan,
         "items": items,
+        "aggregation_basis": "AVAILABLE_RECORDS_ONLY",
+        "note": "按已取得的有效资金净额汇总，不代表完整市场资金流；全部缺失时合计为空。",
     }
 @router.get("/api/stock/{ts_code}/flow")
 def stock_flow(ts_code: str, days: int = 20):
-    """个股资金流趋势 + 所在板块资金流趋势（近 N 日，可观察建仓/出逃时段）"""
+    """个股资金净额趋势，以及所在板块已取得记录的净额汇总。"""
     code = ts_code.upper()
     days = max(5, min(days, 20))
     basic = _store.load_stock_basic()
@@ -678,47 +683,57 @@ def stock_flow(ts_code: str, days: int = 20):
     # 板块资金流（复用/触发聚合缓存）
     try:
         s_dates, s_pivot = _load_sector_flow(min(days, 20))
-        sector_net = [round(float(s_pivot.loc[d, industry]), 0) if industry in s_pivot.columns else 0.0
-                      for d in s_dates if d in s_pivot.index]
     except Exception:  # noqa: BLE001
-        s_dates, sector_net = [], []
+        s_dates, s_pivot = [], pd.DataFrame()
 
-    # 个股资金流：按交易日补齐停牌日（net=0），保证与板块轴长度一致
-    flow_rows = []
+    # An absent moneyflow row does not prove suspension or zero flow. Use the
+    # independent completed-session calendar, and preserve missing values.
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from ab_screener.data.trading_calendar import calendar_window
+
+    clock = datetime.now(ZoneInfo("Asia/Shanghai"))
+    calendar = calendar_window(getattr(store, "db_path", None), today=clock.strftime("%Y%m%d"),
+                               before_today=clock.hour < 16, required_days=days)
+    if calendar["verified"]:
+        s_dates = calendar["required_dates"]
+    sector_series = s_pivot[industry] if industry in s_pivot.columns else pd.Series(dtype=float)
+    sector_net = [_number(value) for value in sector_series.reindex(s_dates).tolist()]
+    by_date = {}
+    duplicates = set()
     if not mf_code.empty:
-        mf_code = mf_code.sort_values("trade_date")
-        by_date = {str(r["trade_date"]): r for _, r in mf_code.iterrows()}
-        axis_dates = s_dates if s_dates else [str(x) for x in mf_code["trade_date"]][-days:]
-        for d in axis_dates:
-            r = by_date.get(d)
-            if r is not None:
-                net = float(r.get("net_mf_amount") or 0)
-                buy_main = float(r.get("buy_elg_amount") or 0) + float(r.get("buy_lg_amount") or 0)
-                sell_main = float(r.get("sell_elg_amount") or 0) + float(r.get("sell_lg_amount") or 0)
-                flow_rows.append({
-                    "trade_date": str(r["trade_date"]),
-                    "net_wan": round(net, 0),
-                    "buy_main_wan": round(buy_main, 0),
-                    "sell_main_wan": round(sell_main, 0),
-                    "buy_elg_wan": round(float(r.get("buy_elg_amount") or 0), 0),
-                    "buy_lg_wan": round(float(r.get("buy_lg_amount") or 0), 0),
-                })
-            else:
-                flow_rows.append({
-                    "trade_date": d,
-                    "net_wan": 0,
-                    "buy_main_wan": 0,
-                    "sell_main_wan": 0,
-                    "buy_elg_wan": 0,
-                    "buy_lg_wan": 0,
-                })
+        for _, row in mf_code.sort_values("trade_date").iterrows():
+            day = str(row["trade_date"])
+            if day in by_date:
+                duplicates.add(day)
+            by_date[day] = row
+    axis_dates = calendar["required_dates"] if calendar["verified"] else sorted(by_date)[-days:]
+    flow_rows = []
+    for d in axis_dates:
+        raw = by_date.get(d) if d not in duplicates else None
+        row = raw if raw is not None else {}
+        net, belg, blg, selg, slg = (_number(row.get(key)) for key in
+                                    ("net_mf_amount", "buy_elg_amount", "buy_lg_amount", "sell_elg_amount", "sell_lg_amount"))
+        buy = belg + blg if belg is not None and blg is not None else None
+        sell = selg + slg if selg is not None and slg is not None else None
+        flow_rows.append({"trade_date": d, "net_wan": net, "buy_main_wan": buy, "sell_main_wan": sell,
+                          "buy_elg_wan": belg, "buy_lg_wan": blg,
+                          "status": "DUPLICATE_DATE" if d in duplicates else "MISSING" if raw is None
+                          else "INCOMPLETE" if any(value is None for value in (net, buy, sell)) else "OBSERVED"})
 
     return {
         "ts_code": code,
         "name": str(row_meta.iloc[0].get("name", "")),
         "industry": industry,
         "days": days,
+        "calendar_verified": calendar["verified"],
+        "calendar_status": calendar["status"],
+        "missing_dates": [row["trade_date"] for row in flow_rows if row["status"] != "OBSERVED"],
+        "basis": "net_mf_amount",
         "stock_flow": flow_rows,
-        "sector_flow": {"dates": s_dates, "net_wan": sector_net},
+        "sector_flow": {"dates": s_dates, "net_wan": sector_net,
+                        "aggregation_basis": "AVAILABLE_RECORDS_ONLY",
+                        "note": "按已取得的有效资金净额汇总，不代表完整行业资金流；缺失日期保留为空。"},
         "as_of": _store.max_trade_date("moneyflow") or "",
     }

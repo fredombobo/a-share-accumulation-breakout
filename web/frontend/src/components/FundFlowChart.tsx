@@ -19,11 +19,11 @@ export default function FundFlowChart({
   height = 300,
 }: {
   dates: string[]
-  stockNet: number[]
-  stockBuy: number[]
-  stockSell: number[]
+  stockNet: (number | null)[]
+  stockBuy: (number | null)[]
+  stockSell: (number | null)[]
   sectorDates: string[]
-  sectorNet: number[]
+  sectorNet: (number | null)[]
   height?: number
 }) {
   const c = useChartColors()
@@ -42,14 +42,16 @@ export default function FundFlowChart({
     if (stockNet.length < MIN_RUN) return segs
     let i = 0
     while (i < stockNet.length) {
+      const initial = stockNet[i]
+      if (initial == null || initial === 0) { i++; continue }
       let j = i
-      while (j + 1 < stockNet.length && Math.sign(stockNet[j + 1]) === Math.sign(stockNet[i])) j++
+      while (j + 1 < stockNet.length && stockNet[j + 1] != null && Math.sign(stockNet[j + 1]!) === Math.sign(initial)) j++
       const runLen = j - i + 1
-      if (runLen >= MIN_RUN && stockNet[i] !== 0) {
+      if (runLen >= MIN_RUN) {
         segs.push({
           start: i,
           end: j,
-          type: stockNet[i] > 0 ? 'accumulate' : 'distribute',
+          type: initial > 0 ? 'accumulate' : 'distribute',
         })
       }
       i = j + 1
@@ -63,23 +65,23 @@ export default function FundFlowChart({
   const markAreaData: any[] = []
   accumulateSegs.forEach((s) => {
     markAreaData.push([
-      { name: '主力建仓', xAxis: dates[s.start], itemStyle: { color: 'rgba(59,130,246,0.08)' } },
+      { name: '连续净流入', xAxis: dates[s.start], itemStyle: { color: 'rgba(59,130,246,0.08)' } },
       { xAxis: dates[s.end] },
     ])
   })
   distributeSegs.forEach((s) => {
     markAreaData.push([
-      { name: '主力出逃', xAxis: dates[s.start], itemStyle: { color: 'rgba(244,63,94,0.08)' } },
+      { name: '连续净流出', xAxis: dates[s.start], itemStyle: { color: 'rgba(244,63,94,0.08)' } },
       { xAxis: dates[s.end] },
     ])
   })
 
   const option: EChartsOption = {
     backgroundColor: 'transparent',
-    legend: { data: ['个股主力净流入', '主力买入(超大+大单)', '板块净流入', '主力建仓', '主力出逃'], textStyle: { color: c.text }, top: 0 },
+    legend: { data: ['个股资金净流入', '大单及特大单买入', '板块净流入'], textStyle: { color: c.text }, top: 0 },
     tooltip: {
       trigger: 'axis',
-      valueFormatter: (v: any) => fmt(Number(v)),
+      valueFormatter: (v: any) => v == null ? '缺少数据' : fmt(Number(v)),
     },
     axisPointer: { link: [{ xAxisIndex: 'all' }] },
     grid: [
@@ -108,7 +110,7 @@ export default function FundFlowChart({
     ],
     series: [
       {
-        name: '个股主力净流入',
+        name: '个股资金净流入',
         type: 'bar',
         data: stockNet,
         barWidth: '55%',
@@ -125,13 +127,13 @@ export default function FundFlowChart({
           : undefined,
       },
       {
-        name: '主力买入(超大+大单)',
+        name: '大单及特大单买入',
         type: 'line',
         data: stockBuy,
         symbol: 'none',
         lineStyle: { width: 1.2, color: c.accent, type: 'dashed' },
         itemStyle: { color: c.accent },
-        connectNulls: true,
+        connectNulls: false,
         z: 3,
       },
       {

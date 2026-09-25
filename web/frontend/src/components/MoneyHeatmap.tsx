@@ -88,7 +88,7 @@ export default function MoneyHeatmap({ data, height = 380 }: { data: MoneyHeatma
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
         <h2 style={{ margin: 0, fontSize: 15 }}>{data.classification_title || '细分行业'}资金热力图 <span className="tag">最新交易日</span></h2>
         <div style={{ fontSize: 11, color: 'var(--muted)' }} className="mono">
-          数据日 {data.trade_date} · 全市场净流入 {data.total_wan >= 0 ? '+' : ''}{fmt(data.total_wan)}
+          数据日 {data.trade_date} · 已取得净额合计 {data.total_wan == null ? '未取得' : `${data.total_wan >= 0 ? '+' : ''}${fmt(data.total_wan)}`}
         </div>
       </div>
       <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--muted)', margin: '6px 0 4px' }}>

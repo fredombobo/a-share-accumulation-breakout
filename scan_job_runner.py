@@ -96,6 +96,7 @@ def main() -> int:
     p.add_argument("--result", type=Path, required=True)
     p.add_argument("--cancel-file", type=Path, required=True)
     p.add_argument("--profile", type=Path, required=True)
+    p.add_argument("--db", type=Path)
     args = p.parse_args()
 
     def cancelled() -> bool:
@@ -123,6 +124,10 @@ def main() -> int:
         from ab_screener.domain.profile import load_profile_json
 
         profile = load_profile_json(args.profile)
+        injected_store = None
+        if args.db:
+            from local_store import LocalStore
+            injected_store = LocalStore(args.db)
 
         result = run_screener.run_scan(
             top=args.top,
@@ -131,6 +136,8 @@ def main() -> int:
             progress_cb=progress_cb,
             cancel_check=cancelled,
             profile=profile,
+            persist=False,
+            store=injected_store,
         )
         if cancelled() or (isinstance(result, dict) and result.get("cancelled")):
             _write_json(args.result, {"cancelled": True, "status": "cancelled"})
@@ -144,6 +151,11 @@ def main() -> int:
         out = {
             "cancelled": False,
             "status": "ok",
+            "task_id": args.task_id,
+            "scan_candidates": result["scan_candidates"],
+            "qualified_candidates": result["qualified_candidates"],
+            "qualification_report": result["qualification_report"],
+            "input_dataset_version": result["input_dataset_version"],
             "latest_date": result.get("latest_date"),
             "total_candidates": result.get("total_candidates", 0),
             "hits": len(result.get("hits") or []),

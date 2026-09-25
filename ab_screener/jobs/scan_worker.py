@@ -20,7 +20,6 @@ if str(_ROOT) not in sys.path:
 from ab_screener.application.scan_jobs import (
     CANCELLED,
     FAILED,
-    SUCCEEDED,
     ScanJobStore,
 )
 from scan_runtime import kill_process_tree
@@ -47,6 +46,10 @@ def run_forever(db_path: Path | None = None) -> None:
         progress = runtime / f"scan_{tid}.progress.json"
         result = runtime / f"scan_{tid}.result.json"
         cancel_f = runtime / f"scan_{tid}.cancel"
+        profile_path = runtime / f"scan_{tid}.profile.json"
+        if not profile_path.is_file():
+            store.finish(tid, status=FAILED, error_code='PROFILE_MISSING', error_message='任务缺少冻结参数文件，请重新提交扫描')
+            continue
         for p in (progress, result, cancel_f):
             try:
                 p.unlink(missing_ok=True)
@@ -61,6 +64,8 @@ def run_forever(db_path: Path | None = None) -> None:
             "--progress", str(progress),
             "--result", str(result),
             "--cancel-file", str(cancel_f),
+            "--profile", str(profile_path),
+            "--db", str(store.db_path),
         ]
         creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
         proc = subprocess.Popen(
@@ -92,7 +97,19 @@ def run_forever(db_path: Path | None = None) -> None:
                             error_message=str(data.get("error") or f"exit={rc}")[:500],
                         )
                     else:
-                        store.finish(tid, status=SUCCEEDED, run_id=data.get("run_id") or tid)
+                        from ab_screener.application.scan_audit import complete_scan_run
+                        from ab_screener.domain.profile import load_profile_json
+                        from build_version import build_version
+                        profile = load_profile_json(profile_path)
+                        if 'scan_candidates' not in data or data.get('strategy_profile_hash') != profile.config_hash():
+                            raise ValueError('scan payload or frozen profile verification failed')
+                        complete_scan_run(
+                            store.db_path, run_id=tid, task_id=tid, as_of=data['latest_date'],
+                            days=int(data.get('effective_days') or days), result=data,
+                            count_a=int(data['count_a']), count_b=int(data['count_b']),
+                            strategy_snapshot=profile.to_canonical_dict(), config_hash=profile.config_hash(),
+                            code_version=build_version(), research_mode='daily_research',
+                        )
                         # 固化进度结果到 checkpoint 供 API 读取
                         store.heartbeat(tid, {**_read_progress(progress), "result": data})
                     print(f"[scan_worker] done {tid} rc={rc}", flush=True)

@@ -20,6 +20,8 @@ from typing import Any
 
 import pandas as pd
 
+from ab_screener.data.freshness import moneyflow_rows_for_window, moneyflow_window_status
+
 if os.path.dirname(os.path.dirname(os.path.abspath(__file__))) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.pop("PYTHONPATH", None)
@@ -48,6 +50,7 @@ BOX_LADDER_DAYS = tuple(getattr(_cfg, "BOX_LADDER_DAYS", (125, 105, 84, 63, 42, 
 TARGET_SELECT_COUNT = int(getattr(_cfg, "TARGET_SELECT_COUNT", 20) or 20)
 
 from config import (
+    FUND_FLOW_DAYS,
     FUND_POSITIVE_DAYS_MIN,
     RELAXED_BOX_MAX_AMP,
     RELAXED_BOX_MAX_MID_DRAWDOWN,
@@ -126,6 +129,7 @@ def _score_codes(
     require_breakout: bool = True,
     require_fund_quality: bool = True,
     trade_dates: list[str] | None = None,
+    expected_fund_dates: list[str] | None = None,
 ) -> list[dict]:
     """对命中信号的代码做基本面+资金流+综合打分，返回行 dict 列表。"""
     from scoring import build_master_score
@@ -169,12 +173,22 @@ def _score_codes(
             continue
 
         mf_rows = mf_by_code.get(code)
+        fund_window = moneyflow_window_status(
+            mf_rows, expected_dates=expected_fund_dates, expected_as_of=latest_date,
+            required_days=FUND_FLOW_DAYS,
+        )
+        row_tier = "data_incomplete" if tier == "strict" and not fund_window["complete"] else tier
+        mf_rows = moneyflow_rows_for_window(mf_rows, fund_window)
         fund_net, fund_score, fund_ratio = calc_fund_flow_strength(mf_rows)
-        if fund_ratio < fund_min_ratio:
+        if fund_window["complete"] and fund_ratio < fund_min_ratio:
             continue
         pos_days = fund_positive_days(mf_rows)
-        if require_fund_quality and tier == "strict":
-            q_ok, _ = fund_flow_quality_ok(mf_rows, min_positive_days=FUND_POSITIVE_DAYS_MIN)
+        if require_fund_quality and row_tier == "strict":
+            q_ok, _ = fund_flow_quality_ok(
+                mf_rows, min_positive_days=FUND_POSITIVE_DAYS_MIN,
+                expected_dates=expected_fund_dates, expected_as_of=latest_date,
+                required_days=FUND_FLOW_DAYS,
+            )
             if not q_ok:
                 continue
 
@@ -188,8 +202,10 @@ def _score_codes(
         name = fund_row["name"]
         themes = match_themes(industry, name)
         reason = "；".join(sig.get("reasons") or [])
-        if tier != "strict":
-            reason = f"[{tier}]" + reason
+        if row_tier != "strict":
+            reason = f"[{row_tier}]" + reason
+        if not fund_window["complete"]:
+            reason += f"；{fund_window['reason']}"
         if fresh:
             reason += f"；新鲜度{fresh:+.0f}"
 
@@ -209,16 +225,24 @@ def _score_codes(
             "箱体振幅%": round(sig["box_amp"] * 100, 1) if sig.get("box_amp") is not None else None,
             "量比": round(sig["breakout_vol_ratio"], 2) if sig.get("breakout_vol_ratio") else None,
             "突破日涨幅%": round(sig["breakout_pct_chg"] * 100, 2) if sig.get("breakout_pct_chg") else None,
-            "主力净流入(万)": round(fund_net, 0),
-            "净流入/成交额%": round(fund_ratio * 100, 3),
+            "主力净流入(万)": round(fund_net, 0) if fund_window["complete"] else None,
+            "净流入/成交额%": round(fund_ratio * 100, 3) if fund_window["complete"] else None,
             "资金正向天数": pos_days,
+            "资金窗口状态": fund_window["status"],
+            "资金有效日数": fund_window["observed_days"],
+            "资金期望日数": fund_window["required_days"],
+            "资金缺失日期": ",".join(fund_window["missing_dates"]),
+            "资金字段口径": fund_window["basis"],
+            "资金口径说明": fund_window["basis_note"],
+            "fund_window": fund_window,
             "信号强度分": detail["信号强度分"],
             "资金流分": detail["资金流分"],
             "基本面分": detail["基本面分"],
             "综合分": total,
             "入选理由": reason,
             "突破日": sig.get("breakout_date"),
-            "筛选层级": tier,
+            "筛选层级": row_tier,
+            "source_tier": tier,
         })
     return rows
 
@@ -231,6 +255,7 @@ def _soft_setup_row(
     theme: str,
     *,
     signal: dict | None = None,
+    expected_fund_dates: list[str] | None = None,
 ) -> dict | None:
     """主题强制补齐：不要求完整突破，按箱体质量+贴近上沿+资金流打软分。"""
     from scoring import score_fundamentals
@@ -268,6 +293,11 @@ def _soft_setup_row(
         if pd.notna(fund_row.get("close")) and fund_row["close"] < 2.0:
             return None
 
+    fund_window = moneyflow_window_status(
+        mf_rows, expected_dates=expected_fund_dates,
+        expected_as_of=(expected_fund_dates or [""])[-1], required_days=FUND_FLOW_DAYS,
+    )
+    mf_rows = moneyflow_rows_for_window(mf_rows, fund_window)
     fund_net, fund_score, fund_ratio = calc_fund_flow_strength(mf_rows)
     # 软分：箱体 + 贴近上沿 + 资金 + 基本面
     soft = 0.0
@@ -319,15 +349,23 @@ def _soft_setup_row(
         "箱体振幅%": round(sig["box_amp"] * 100, 1) if sig.get("box_amp") is not None else None,
         "量比": round(sig["breakout_vol_ratio"], 2) if sig.get("breakout_vol_ratio") else None,
         "突破日涨幅%": round(sig["breakout_pct_chg"] * 100, 2) if sig.get("breakout_pct_chg") else None,
-        "主力净流入(万)": round(fund_net, 0),
-        "净流入/成交额%": round(fund_ratio * 100, 3),
+        "主力净流入(万)": round(fund_net, 0) if fund_window["complete"] else None,
+        "净流入/成交额%": round(fund_ratio * 100, 3) if fund_window["complete"] else None,
+        "资金窗口状态": fund_window["status"],
+        "资金有效日数": fund_window["observed_days"],
+        "资金期望日数": fund_window["required_days"],
+        "资金缺失日期": ",".join(fund_window["missing_dates"]),
+        "资金字段口径": fund_window["basis"],
+        "资金口径说明": fund_window["basis_note"],
+        "fund_window": fund_window,
         "信号强度分": round(soft * 0.6, 1),
         "资金流分": fund_score,
         "基本面分": basic_score,
         "综合分": total,
-        "入选理由": f"[主题强制/{theme}]" + "；".join(reasons[:4]),
+        "入选理由": f"[主题强制/{theme}]" + "；".join(reasons[:4]) + (f"；{fund_window['reason']}" if not fund_window["complete"] else ""),
         "突破日": sig.get("breakout_date"),
         "筛选层级": "theme_fill",
+        "source_tier": "theme_fill",
     }
 
 
@@ -346,7 +384,7 @@ def observed_signal(code: str, sig_by_code: dict[str, dict]) -> dict:
 def _theme_soft_fill(
     *,
     shortfall_themes: list[str],
-    need_total: int,
+    need_total: int | None,
     theme_min: dict[str, int],
     cand: pd.DataFrame,
     daily_sorted: pd.DataFrame,
@@ -355,8 +393,14 @@ def _theme_soft_fill(
     mf_dates: list[str],
     already: set[str],
     sig_by_code: dict[str, dict],
+    expected_fund_dates: list[str] | None = None,
+    full_qualification: bool = False,
 ) -> list[dict]:
-    """对缺口主题做观察池软评分；不得为补配额再次运行交易信号。"""
+    """Score theme observations; full qualification has no count quota or Top cap.
+
+    Daily qualification retains every soft-eligible candidate in the existing
+    required-theme universe. The prior bounded fill remains for legacy callers.
+    """
     from config import REQUIRED_THEMES
 
     rows: list[dict] = []
@@ -364,7 +408,7 @@ def _theme_soft_fill(
     basic_idx = basic_latest.set_index("ts_code", drop=False)
 
     # 确保资金流覆盖主题池（批量已在库中）
-    if not mf_by_code:
+    if not mf_by_code and not full_qualification:
         mf = data_fetch.get_moneyflow_by_dates(mf_dates, sleep=0.15)
         if not mf.empty:
             mf_by_code.update({c: g for c, g in mf.groupby("ts_code")})
@@ -380,6 +424,41 @@ def _theme_soft_fill(
         c for c in cand.loc[theme_universe_mask(cand, list(REQUIRED_THEMES)), "ts_code"].tolist()
         if c not in already
     ]
+
+    if full_qualification:
+        # Preserve the existing shortfall trigger, theme universe and soft-row
+        # rules, but never let presentation limits select the observation cohort.
+        selected_themes = {}
+        for theme in shortfall_themes:
+            for code in theme_pools[theme]:
+                selected_themes.setdefault(code, theme)
+        for code in all_theme_pool:
+            if code not in basic_idx.index:
+                continue
+            meta = basic_idx.loc[code]
+            if isinstance(meta, pd.DataFrame):
+                meta = meta.iloc[0]
+            themes = match_themes(meta.get("industry"), meta.get("name"))
+            selected_themes.setdefault(code, themes[0] if themes else "其他")
+        for code, theme in selected_themes.items():
+            if code not in grp.groups or code not in basic_idx.index:
+                continue
+            meta = basic_idx.loc[code]
+            if isinstance(meta, pd.DataFrame):
+                meta = meta.iloc[0]
+            g2 = grp.get_group(code).copy()
+            g2["date"] = pd.to_datetime(g2["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
+            signal = observed_signal(code, sig_by_code)
+            row = _soft_setup_row(code, g2, meta, mf_by_code.get(code), theme, signal=signal,
+                                  expected_fund_dates=expected_fund_dates)
+            if row:
+                row["主题板块"] = theme
+                row["主题列表"] = ",".join(dict.fromkeys([theme] + match_themes(row["行业"], row["名称"])))
+                rows.append(row)
+                already.add(code)
+                sig_by_code.setdefault(code, signal)
+        rows.sort(key=lambda row: (-row["综合分"], row["ts_code"]))
+        return rows
 
     for theme in shortfall_themes:
         pool = theme_pools[theme]
@@ -400,7 +479,8 @@ def _theme_soft_fill(
             g2["date"] = pd.to_datetime(g2["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
             signal = observed_signal(code, sig_by_code)
             row = _soft_setup_row(
-                code, g2, meta, mf_by_code.get(code), theme, signal=signal
+                code, g2, meta, mf_by_code.get(code), theme, signal=signal,
+                expected_fund_dates=expected_fund_dates,
             )
             if row:
                 # 强制主主题为当前缺口主题（便于配额占坑）
@@ -419,7 +499,7 @@ def _theme_soft_fill(
         print(f"  [theme_fill] {theme}: 池 {len(pool)} → 入选候选 {len(take)}")
 
     # 若总数仍不足，从所有主题池按软分再补
-    if need_total > 0 and len(rows) < need_total:
+    if need_total is not None and need_total > 0 and len(rows) < need_total:
         extra_need = need_total - len(rows)
         pool = [c for c in all_theme_pool if c not in already]
         extras: list[dict] = []
@@ -438,7 +518,8 @@ def _theme_soft_fill(
             g2 = g.copy()
             g2["date"] = pd.to_datetime(g2["trade_date"], format="%Y%m%d").dt.strftime("%Y-%m-%d")
             row = _soft_setup_row(
-                code, g2, meta, mf_by_code.get(code), theme, signal=observed_signal(code, sig_by_code)
+                code, g2, meta, mf_by_code.get(code), theme, signal=observed_signal(code, sig_by_code),
+                expected_fund_dates=expected_fund_dates,
             )
             if row:
                 extras.append(row)

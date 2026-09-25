@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router'
+import { useNavigate, useSearchParams } from 'react-router'
 import {
   api,
   type ClassificationCatalogResp,
   type ClassificationKey,
   HealthResp,
   MoneyHeatmapResp,
-  ManualStrategyParameters,
+  EntryParameters,
   OverviewItem,
   OverviewResp,
   ScanStatus,
@@ -14,12 +14,13 @@ import {
   SetupStatus,
   StrategyProfileState,
   TodayGuide,
+  ScanHistoryItem,
 } from '../api/client'
 import { useChartColors } from '../theme/ThemeContext'
 import EChart from '../components/EChart'
 import SectorFlowPanel from '../components/SectorFlowPanel'
 import MoneyHeatmap from '../components/MoneyHeatmap'
-import { IcoFlame, IcoLayers, IcoScan, IcoShield, IcoStop, IcoTarget, IcoWallet } from '../components/Icons'
+import { IcoScan, IcoStop } from '../components/Icons'
 import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
 import {
   loadOverviewCache,
@@ -29,20 +30,33 @@ import {
   saveParams,
 } from '../scanCache'
 import type { EChartsOption } from 'echarts'
+import './Overview.css'
+
+function displayDate(value?: string) {
+  if (!value) return '—'
+  return /^\d{8}$/.test(value) ? `${value.slice(0, 4)}.${value.slice(4, 6)}.${value.slice(6, 8)}` : value.replaceAll('-', '.')
+}
+
+function displayTimestamp(value?: string) {
+  if (!value || !Number.isFinite(Date.parse(value))) return '未知时间'
+  return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value))
+}
 
 function tierBadge(tier?: string, pool?: string, tradeable?: boolean) {
   if (pool === 'A' && (tradeable || tier === 'strict')) return { text: '严格候选', cls: 'pill ok' }
   if (pool === 'A') return { text: 'A 池', cls: 'pill ok' }
   const t = (tier || '').toLowerCase()
   if (t === 'relaxed') return { text: '放宽观察', cls: 'pill warn' }
+  if (t === 'data_incomplete') return { text: '数据不足', cls: 'pill warn' }
+  if (t === 'strict' && pool === 'B') return { text: '严格形态 · 暂观察', cls: 'pill warn' }
   if (t.includes('theme') || t === 'theme_fill') return { text: '主题观察', cls: 'pill' }
   if (t === 'unknown') return { text: '旧数据', cls: 'pill warn' }
   return { text: pool === 'B' ? '观察' : (tier || '—'), cls: 'pill' }
 }
 
-function manualParametersFromProfile(state: StrategyProfileState): ManualStrategyParameters {
+function manualParametersFromProfile(state: StrategyProfileState): EntryParameters {
   const entry = state.active.entry
-  const exit = state.active.exit_reference
   return {
     box_min_days: Number(entry.box_min_days),
     box_max_days: Number(entry.box_max_days),
@@ -53,19 +67,14 @@ function manualParametersFromProfile(state: StrategyProfileState): ManualStrateg
     breakout_vs_recent_vol_ratio: Number(entry.breakout_vs_recent_vol_ratio),
     breakout_window_days: Number(entry.breakout_window_days),
     require_structure: Boolean(entry.require_structure),
-    vol_ratio_min: Number(exit.vol_ratio_min),
-    stop_pct: Number(exit.stop_pct),
-    target_pct: Number(exit.target_pct ?? 0.12),
-    max_hold_days: Number(exit.max_hold_days ?? 30),
-    exit_window: Number(exit.exit_window),
-    strong_reset: Number(exit.strong_reset),
   }
 }
 
 function profileSourceLabel(state: StrategyProfileState): string {
   if (state.active.is_default) return '系统默认'
   if (state.active.source.kind === 'MANUAL_RESEARCH') return '用户手工输入（未回测验证）'
-  return '回测验证后人工启用'
+  if (state.active.source.kind === 'BACKTEST_ENTRY_COPY') return '复制的入场条件 · 待验证'
+  return '回测结果 · 人工启用'
 }
 
 function percentInputValue(value: number): number {
@@ -74,10 +83,17 @@ function percentInputValue(value: number): number {
 
 export default function Overview() {
   const nav = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const selectedRun = searchParams.get('run_id') || ''
+  const [history, setHistory] = useState<ScanHistoryItem[]>([])
+  const [historyErr, setHistoryErr] = useState('')
   const cached = loadOverviewCache()
   const prefPool = loadPoolPref()
   const prefParams = loadParams()
-  const [data, setData] = useState<OverviewResp | null>(cached?.data ?? null)
+  const initialPool = prefPool || cached?.pool || 'A'
+  const initialCache = cached?.pool === initialPool && cached.data.pool === initialPool ? cached : null
+  const [data, setData] = useState<OverviewResp | null>(initialCache?.data ?? null)
+  const [historicalResult, setHistoricalResult] = useState(!!initialCache)
   const [health, setHealth] = useState<HealthResp | null>(null)
   const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [sector, setSector] = useState<SectorFlowResp | null>(null)
@@ -87,12 +103,12 @@ export default function Overview() {
   const [heatmap, setHeatmap] = useState<MoneyHeatmapResp | null>(null)
   const [heatErr, setHeatErr] = useState('')
   const [todayGuide, setTodayGuide] = useState<TodayGuide | null>(null)
-  const [pool, setPool] = useState<'A' | 'B' | 'ALL'>(prefPool || cached?.pool || 'A')
+  const [pool, setPool] = useState<'A' | 'B' | 'ALL'>(initialPool)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(false)
   const [cacheNote, setCacheNote] = useState(
-    cached?.data?.items?.length
-      ? `已恢复上次扫描（${cached.savedAt?.slice(0, 19).replace('T', ' ') || ''}），再次扫描前会一直保留`
+    initialCache
+      ? `历史缓存 · 保存于 ${displayTimestamp(initialCache.savedAt)}，正在核对服务端结果`
       : '',
   )
   const [scanning, setScanning] = useState(false)
@@ -101,7 +117,9 @@ export default function Overview() {
   const [profileState, setProfileState] = useState<StrategyProfileState | null>(null)
   const [profileErr, setProfileErr] = useState('')
   const [manualProfileOpen, setManualProfileOpen] = useState(false)
-  const [manualProfile, setManualProfile] = useState<ManualStrategyParameters | null>(null)
+  const [manualProfile, setManualProfile] = useState<EntryParameters | null>(null)
+  const [editConfigHash, setEditConfigHash] = useState('')
+  const [syncStarting, setSyncStarting] = useState(false)
   const [manualSaving, setManualSaving] = useState(false)
   const [topN, setTopN] = useState(prefParams?.topN ?? 20)
   const [days, setDays] = useState(prefParams?.days ?? 160)
@@ -125,50 +143,49 @@ export default function Overview() {
     const signal = ac.signal
 
     setLoading(true)
+    setData((current) => current?.pool === pool && (!selectedRun || current.publication?.run_id === selectedRun) ? current : null)
+    setErr('')
     api.health({ signal }).then(setHealth).catch(() => setHealth(null))
     api.setupStatus({ signal }).then(setSetup).catch(() => setSetup(null))
-    api.overview(pool, { signal, timeoutMs: 60_000 })
+    api.overview(pool, { signal, timeoutMs: 60_000 }, selectedRun || undefined)
       .then((resp) => {
-        setLoading(false)
         if (overviewSeq.current !== seq) return
-        // 服务端空列表时：若本地有缓存且非刚扫完，优先保留缓存，避免「进详情返回变空」
-        if ((!resp.items || resp.items.length === 0) && keepOnFail) {
-          const c2 = loadOverviewCache()
-          if (c2?.data?.items?.length) {
-            setData(c2.data)
-            setCacheNote('服务端暂无新列表，已继续显示上次扫描结果')
-            setErr('')
-            return
-          }
-        }
-        setData(resp)
-        if (resp.items?.length) {
-          saveOverviewCache(pool, resp)
-          setCacheNote('')
-        }
-        if (resp.empty_reason && !resp.items?.length) {
-          setErr(resp.empty_reason)
-        } else {
-          setErr('')
-        }
+        if (resp.pool && resp.pool !== pool) throw new Error('结果股票池与请求不一致，请重新读取')
+        const current = { ...resp, pool }
+        setLoading(false)
+        setData(current)
+        // 空集也是一次有效响应，必须覆盖旧缓存。
+        if (!selectedRun) saveOverviewCache(pool, current)
+        setHistoricalResult(false)
+        setCacheNote('')
+        setErr('')
       })
       .catch((e: unknown) => {
-        setLoading(false)
         if (overviewSeq.current !== seq) return // 切池等新请求已接管，忽略旧失败
+        if (signal.aborted) return // 外部取消；内部请求超时仍须显示错误
+        setLoading(false)
         const isAbort = (e as { name?: string })?.name === 'AbortError'
-        if (keepOnFail) {
+        setErr(isAbort ? '读取结果超时，请稍后重试。' : `读取结果失败：${e instanceof Error ? e.message : String(e)}`)
+        if (keepOnFail && !selectedRun) {
           const c2 = loadOverviewCache()
-          if (c2?.data?.items?.length) {
+          if (c2?.pool === pool && c2.data.pool === pool) {
             setData(c2.data)
-            setCacheNote(isAbort ? '请求超时（后端计算较慢），已显示上次扫描缓存' : '网络/接口异常，已显示上次扫描缓存')
-            setErr('')
+            setHistoricalResult(true)
+            setCacheNote(`仅显示 ${pool} 池历史缓存 · 保存于 ${displayTimestamp(c2.savedAt)}，尚未核对最新结果`)
             return
           }
         }
-        if (isAbort) return // 被新请求中止且无可显示缓存
-        setErr(String(e))
+        setData(null)
+        setHistoricalResult(false)
+        setCacheNote('')
       })
-  }, [pool])
+  }, [pool, selectedRun])
+
+  const loadHistory = useCallback(() => {
+    api.scanRuns().then((response) => { setHistory(response.runs.filter((run) => run.status === 'SUCCEEDED')); setHistoryErr('') })
+      .catch(() => setHistoryErr('历史记录暂不可用'))
+  }, [])
+  useEffect(() => { loadHistory() }, [loadHistory])
 
   const loadSector = useCallback(() => {
     sectorReqRef.current?.abort()
@@ -211,6 +228,7 @@ export default function Overview() {
         if (!next?.active?.entry || !next?.boundary) throw new Error('参数档案接口返回不完整')
         setProfileState(next)
         setManualProfile(manualParametersFromProfile(next))
+        setEditConfigHash(next.active.config_hash)
         setProfileErr('')
       })
       .catch((reason: unknown) => setProfileErr(reason instanceof Error ? reason.message : String(reason)))
@@ -240,8 +258,6 @@ export default function Overview() {
               ? '检测到扫描正在取消，已恢复进度显示'
               : '检测到后台扫描进行中，已恢复进度显示',
           )
-        } else if (st && st.status === 'done') {
-          setCacheNote('上次后台扫描已完成，列表已可查看')
         }
       })
       .catch(() => undefined)
@@ -290,14 +306,10 @@ export default function Overview() {
       setScanTask(null)
       pendingCancelRef.current = false
       if (st.status === 'done') {
-        api.overview('ALL')
-          .then((all) => {
-            if (all.items?.length) saveOverviewCache('ALL', all)
-          })
-          .finally(() => {
-            loadOverview({ keepOnFail: false })
-            setCacheNote('扫描完成，列表已更新（进详情返回仍会保留）')
-          })
+        loadHistory()
+        api.today().then(setTodayGuide).catch(() => undefined)
+        setCacheNote('扫描已完成，正在读取本次结果…')
+        loadOverview({ keepOnFail: false })
       } else if (st.status === 'error') {
         setErr(`扫描失败: ${st.error || ''}`)
         setCacheNote('扫描失败，已保留上次列表')
@@ -327,16 +339,11 @@ export default function Overview() {
             lastResend = Date.now()
             api.cancelScan(scanTask).catch(() => undefined)
           }
-          // 15s 客户端兜底：解锁 UI（后端看门狗约 10s）
+          // Only the server can confirm cancellation. A slow cancellation is
+          // still running, so keep its identity and continue polling.
           if (Date.now() - cancelSince > 15000) {
-            finish({
-              id: scanTask,
-              status: 'cancelled',
-              stage: '已取消（前端超时收口）',
-              progress: st.progress ?? 0,
-              cancel_requested: true,
-            })
-            return
+            interval = 2000
+            setCacheNote('取消请求已送达，正在等待服务端确认；任务仍受跟踪。')
           }
         } else {
           cancelSince = 0
@@ -358,9 +365,10 @@ export default function Overview() {
       stopped = true
       if (timer) clearTimeout(timer)
     }
-  }, [scanning, scanTask, loadOverview])
+  }, [scanning, scanTask, loadOverview, loadHistory])
 
   const onScan = async () => {
+    if (selectedRun) setSearchParams({})
     pendingCancelRef.current = false
     setScanning(true)
     setErr('')
@@ -396,35 +404,32 @@ export default function Overview() {
 
   const onResetProfile = async () => {
     if (!profileState || profileState.active.is_default) return
-    if (!window.confirm('恢复系统默认参数？已完成扫描的历史证据不会删除，当前运行中的扫描也不会被改变。')) return
     setProfileErr('')
     try {
       const next = await api.resetBacktestProfile()
       setProfileState(next)
       setManualProfile(manualParametersFromProfile(next))
+      setEditConfigHash(next.active.config_hash)
       setCacheNote('已恢复系统默认参数；下一次扫描生效')
     } catch (reason) {
       setProfileErr(reason instanceof Error ? reason.message : String(reason))
     }
   }
 
-  const updateManualNumber = (key: keyof ManualStrategyParameters, raw: string, percentage = false) => {
+  const updateManualNumber = (key: keyof EntryParameters, raw: string, percentage = false) => {
     const value = Number(raw)
     setManualProfile((current) => current ? { ...current, [key]: percentage ? value / 100 : value } : current)
   }
 
   const onSaveManualProfile = async () => {
-    if (!manualProfile || scanning) return
-    const confirmed = window.confirm(
-      '确认把这些手工参数用于下一次今日研究扫描？\n\n这些参数未经过回测验证，不构成荐股或买入指令；当前正在运行或已经完成的扫描不会被改写。',
-    )
-    if (!confirmed) return
+    if (!manualProfile || scanning || !editConfigHash) return
     setManualSaving(true)
     setProfileErr('')
     try {
-      const next = await api.saveManualResearchProfile(manualProfile)
+      const next = await api.saveEntryProfile(manualProfile, editConfigHash)
       setProfileState(next)
       setManualProfile(manualParametersFromProfile(next))
+      setEditConfigHash(next.active.config_hash)
       setManualProfileOpen(false)
       setCacheNote('已保存手工研究参数；下一次扫描会冻结这组参数')
     } catch (reason) {
@@ -482,7 +487,7 @@ export default function Overview() {
     }
   }
 
-  const onTodayAction = () => {
+  const onTodayAction = async () => {
     if (!todayGuide) return
     if (todayGuide.next_action === 'RUN_SCAN') {
       void onScan()
@@ -492,11 +497,21 @@ export default function Overview() {
       document.getElementById('scan-controls')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
       return
     }
+    if (todayGuide.next_action === 'SYNC_DATA') {
+      setSyncStarting(true)
+      try {
+        await api.syncStart()
+        window.dispatchEvent(new Event(RUN_TASK_EVENT))
+        setCacheNote('数据更新已启动，可在顶部查看进度；完成后再扫描。')
+      } catch (error) { setErr(error instanceof Error ? error.message : String(error)) }
+      finally { setSyncStarting(false) }
+      return
+    }
     if (todayGuide.href) {
       nav(todayGuide.href)
       return
     }
-    window.alert('请双击项目目录里的“一键启动.bat”。系统会自动同步行情，完成后重新打开本页。')
+    nav('/guide')
   }
 
   const miniOption = (it: OverviewItem): EChartsOption | null => {
@@ -506,7 +521,6 @@ export default function Overview() {
     const candle = k.map((d) => [d.open, d.close, d.low, d.high])
     const boxHigh = it.box_high
     const boxLow = it.box_low
-    const lastDate = cat[cat.length - 1]
     return {
       backgroundColor: 'transparent',
       animation: false,
@@ -525,344 +539,189 @@ export default function Overview() {
           ? [
               { type: 'line' as const, data: cat.map(() => boxHigh), symbol: 'none', lineStyle: { color: c.warn, width: 1, type: 'dashed' as const }, z: 5 },
               { type: 'line' as const, data: cat.map(() => boxLow), symbol: 'none', lineStyle: { color: c.accent2, width: 1, type: 'dashed' as const }, z: 5 },
-              {
-                type: 'scatter' as const,
-                data: [[lastDate, it.price ?? boxHigh]],
-                symbol: 'pin',
-                symbolSize: 26,
-                itemStyle: { color: c.warn },
-                label: { show: true, formatter: '突', color: '#fff', fontSize: 10 },
-                z: 10,
-              },
             ]
           : []),
       ],
     }
   }
 
-  if (err && !data) return <div className="err">加载失败：{err}</div>
-  if (!data) return <div className="loading">加载中…（若刚扫过，请稍候或点扫描后的列表缓存）</div>
-
-  const avgScore = data.items.length ? data.items.reduce((s, x) => s + x.score, 0) / data.items.length : 0
-  const totalFlow = data.items.reduce((s, x) => s + (x.fund_net_wan || 0), 0)
-  const fresh = data.freshness || health?.freshness
-  const regime = data.regime || health?.regime
+  const visibleData = data?.pool === pool && (!selectedRun || data.publication?.run_id === selectedRun) ? data : null
+  const items = visibleData?.items || []
+  const avgScore = items.length ? items.reduce((sum, item) => sum + item.score, 0) / items.length : 0
+  const availableFlows = items.map((item) => item.fund_net_wan).filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+  const totalFlow = availableFlows.length ? availableFlows.reduce((sum, value) => sum + value, 0) : null
+  const fresh = visibleData?.freshness || health?.freshness
+  const regime = visibleData?.regime || health?.regime
   const stale = !!fresh?.is_stale
   const defense = regime?.allow_new_entries === false
-  const tradeableCount = data.items.filter((x) => x.tradeable).length
+  const cancelling = scanStatus?.status === 'cancelling' || !!scanStatus?.cancel_requested
+  const publication = visibleData?.publication
+  const isHistory = !!selectedRun || visibleData?.view_state === 'HISTORICAL'
+  const entryChanged = !!(publication?.entry_hash && profileState?.active.entry_hash && publication.entry_hash !== profileState.active.entry_hash)
+  const completeCount = publication?.qualification?.total ?? publication?.qualification?.counts?.total
+    ?? (publication?.qualification?.counts ? publication.qualification.counts.A + publication.qualification.counts.B : null)
+  const stockHref = (code: string) => `/stock/${code}${isHistory && publication ? `?run_id=${encodeURIComponent(publication.run_id)}` : ''}`
 
   return (
-    <div className="fade-up">
-      {/* 服务端只给出一个正确的今日动作 */}
-      <div className="today-card">
-        <div className="step-no">1</div>
-        <div style={{ flex: 1, minWidth: 260 }}>
-          <div style={{ color: 'var(--faint)', fontSize: 11, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 2 }}>
-            今日唯一动作 · Today's Action
+    <div className="overview-workspace fade-up">
+      <header className="overview-heading">
+        <div>
+          <span className="overview-eyebrow">MARKET RESEARCH / DAILY</span>
+          <h1>每日选股</h1>
+          <p>从市场中发现值得进一步研究的突破形态。</p>
+        </div>
+        <div className="overview-heading-actions">
+          <button className="btn" type="button" onClick={() => loadOverview()} disabled={loading}>{loading ? '正在读取…' : '刷新结果'}</button>
+          <button className="btn" type="button" onClick={() => nav('/backtest')}>回测研究 <span aria-hidden="true">↗</span></button>
+        </div>
+      </header>
+
+      <div className="overview-market-status" aria-label="市场与数据状态">
+        <span><i className={`overview-status-dot ${stale ? 'is-stale' : ''}`} />{fresh?.label || '正在核对数据'}</span>
+        <span>行情日期 <b className="num">{displayDate(health?.as_of || fresh?.as_of)}</b></span>
+        <span>市场环境 <b>{regime?.label || '—'}</b></span>
+        {stale && <span className="overview-status-warning">数据待更新 · 结果仅供历史研究</span>}
+        {defense && <span className="overview-status-warning">防守环境</span>}
+      </div>
+      <details className="overview-data-audit">
+        <summary>数据核对明细 <span>应完成交易日 {displayDate(fresh?.expected_as_of)}</span></summary>
+        <div>
+          <span>独立交易日历 <b>{fresh?.calendar_verified ? '已核对' : '未认证'}</b></span>
+          {Object.entries(fresh?.dataset_freshness || {}).map(([key, value]) => <span key={key}>{key === 'moneyflow' ? '资金流' : '每日指标'} <b>{displayDate(value.latest_date)} · {value.is_current ? '已到齐' : '待更新'}</b></span>)}
+          <span>资金观察窗口 <b>{fresh?.required_moneyflow_dates?.map(displayDate).join(' / ') || '待核对'}</b></span>
+        </div>
+        {fresh?.blocking_reasons?.length ? <p>当前受限：{fresh.blocking_reasons.join(' / ')}。全局到齐后，仍会逐股核对缺失数据。</p> : <p>全局日期通过只表示数据表已更新，个股完整性在候选证据中单独核对。</p>}
+      </details>
+
+      <section id="scan-controls" className="overview-config" aria-labelledby="overview-config-title">
+        <div className="overview-section-heading">
+          <div>
+            <span className="overview-eyebrow">NEXT SCAN</span>
+            <h2 id="overview-config-title">下一次扫描设置</h2>
           </div>
-          <div className="t-title">{todayGuide?.title || '正在判断今日状态…'}</div>
-          <div className="t-reason">{todayGuide?.reason || '系统正在核对行情、扫描、订单与对账。'}</div>
-          {cacheNote && <div className="t-note">{cacheNote}</div>}
+          {profileState && <span className="overview-source">{profileSourceLabel(profileState)}</span>}
         </div>
-        {todayGuide && (
-          <button type="button" className="btn btn-primary" style={{ padding: '10px 22px', fontSize: 14 }} onClick={onTodayAction}>
-            {todayGuide.primary_label}
-          </button>
-        )}
-      </div>
-
-      {/* 状态条：数据新鲜度 + 市场环境 */}
-      <div className={`status-bar section-gap ${stale ? 'status-stale' : 'status-ok'}`} style={{ marginTop: 14 }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: 'var(--faint)' }}>数据</span>
-          <b className="num">{data.as_of || fresh?.as_of || '—'}</b>
-          {fresh && (
-            <span className={`badge ${stale ? 'badge-danger' : fresh.stale_days > 0 ? 'badge-warn' : 'badge-ok'}`}>
-              {fresh.label}
-              {fresh.stale_label
-                ? ` · ${fresh.stale_label}`
-                : ` · 滞后 ${fresh.stale_days} 个${fresh.unit === 'trading' ? '交易日' : '日历日'}`}
-            </span>
-          )}
-        </span>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ color: 'var(--faint)' }}>环境</span>
-          <b className={regime?.regime === 'defense' ? 'text-danger' : regime?.regime === 'attack' ? 'text-ok' : ''}>
-            {regime?.label || '—'}
-          </b>
-          {regime?.allow_new_entries === false && <span className="badge badge-danger">禁止新开仓</span>}
-        </span>
-        <span className="muted" style={{ fontSize: 12 }}>A 池 = 严格研究候选 · B 池 = 观察（均非荐股）</span>
-      </div>
-
-      {/* KPI 指标带 */}
-      <div className="metrics">
-        <div className="kpi accent-top">
-          <div className="kpi-label">当前池</div>
-          <div className="kpi-value">{pool}<span className="kpi-sub"> / {data.count} 只</span></div>
-          <div className="kpi-ico"><IcoLayers size={16} /></div>
-        </div>
-        <div className="kpi accent-top">
-          <div className="kpi-label">平均综合分</div>
-          <div className="kpi-value">{avgScore.toFixed(1)}</div>
-          <div className="kpi-ico"><IcoTarget size={16} /></div>
-        </div>
-        <div className="kpi accent-top">
-          <div className="kpi-label">合计主力净流入</div>
-          <div className="kpi-value">{(totalFlow / 10000).toFixed(2)}<span className="kpi-sub"> 亿</span></div>
-          <div className="kpi-ico"><IcoWallet size={16} /></div>
-        </div>
-        <div className="kpi accent-top">
-          <div className="kpi-label">严格候选</div>
-          <div className="kpi-value">{tradeableCount}</div>
-          <div className="kpi-ico"><IcoFlame size={16} /></div>
-        </div>
-      </div>
-
-      {/* 扫描控制台 */}
-      <div id="scan-controls" className="card" style={{ marginBottom: 16 }}>
-        <div className="h-sec" style={{ marginBottom: 12 }}>
-          <h2 style={{ margin: 0, display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <IcoScan size={16} />扫描控制台
-          </h2>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <div className="seg" role="tablist" aria-label="股票池">
-              {(['A', 'B', 'ALL'] as const).map((p) => (
-                <button key={p} className={`seg-item ${pool === p ? 'on' : ''}`} onClick={() => setPool(p)}>
-                  {p === 'A' ? 'A · 严格候选' : p === 'B' ? 'B · 观察' : '全部'}
-                </button>
-              ))}
-            </div>
-            {loading && <span className="muted" style={{ fontSize: 12 }}>加载中…</span>}
+        <div className="overview-config-main">
+          <div className="overview-entry-summary">
+            {profileState ? (
+              <>
+                <span>横盘 <b>{String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日</b></span>
+                <span>箱体振幅 <b>≤ {percentInputValue(Number(profileState.active.entry.box_max_amp))}%</b></span>
+                <span>突破量比 <b>≥ {String(profileState.active.entry.breakout_vol_ratio)}</b></span>
+              </>
+            ) : <span>{profileErr ? '参数档案暂不可用' : '正在读取筛选条件…'}</span>}
+            <button className="overview-text-button" type="button" onClick={() => setManualProfileOpen((value) => !value)} disabled={scanning || !manualProfile} aria-expanded={manualProfileOpen}>
+              {manualProfileOpen ? '收起条件' : '编辑筛选条件'} <span aria-hidden="true">{manualProfileOpen ? '−' : '+'}</span>
+            </button>
+          </div>
+          <div className="overview-scan-actions">
+            <label>A 池展示上限<input aria-label="A 池展示上限" type="number" min={5} max={30} step={1} value={topN} onChange={(event) => setTopN(Number(event.target.value))} /></label>
+            <label>回看天数<input aria-label="回看天数" type="number" min={60} max={400} step={10} value={days} onChange={(event) => setDays(Number(event.target.value))} /></label>
+            <button className="btn btn-primary" type="button" onClick={onScan} disabled={scanning}><IcoScan size={15} />{scanning ? (cancelling ? '取消中…' : '扫描中…') : '开始扫描'}</button>
+            {scanning && <button className="btn btn-danger" type="button" onClick={onCancel} disabled={cancelling}><IcoStop size={14} />取消扫描</button>}
           </div>
         </div>
-        {profileState && (
-          <div className={`scan-profile-strip ${profileState.active.is_default ? 'default' : 'custom'}`}>
-            <div>
-              <span>下一次扫描参数</span>
-              <b>{profileSourceLabel(profileState)}</b>
-              <small>
-                横盘 {String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日 ·
-                突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)} ·
-                止损 {percentInputValue(Number(profileState.active.exit_reference.stop_pct))}% ·
-                止盈 {percentInputValue(Number(profileState.active.exit_reference.target_pct ?? 0.12))}% ·
-                <span className="mono"> {profileState.active.config_hash}</span>
-              </small>
-              <small>{profileState.boundary.notice}</small>
-            </div>
-            <div className="scan-profile-actions">
-              <button className="btn btn-sm primary" type="button" onClick={() => setManualProfileOpen((value) => !value)} disabled={scanning}>
-                {manualProfileOpen ? '收起手工参数' : '手动设置研究参数'}
-              </button>
-              <button className="btn btn-sm" type="button" onClick={() => nav('/backtest')}>用回测研究参数</button>
-              {!profileState.active.is_default && (
-                <button className="btn btn-sm" type="button" onClick={onResetProfile} disabled={scanning}>恢复系统默认</button>
-              )}
-            </div>
-          </div>
-        )}
+        <p className="overview-config-note">条件用于严格形态筛选，观察补量沿用固定规则。展示上限不改变完整资格名单；新设置在下一次扫描生效。{profileState && profileState.active.required_scan_days > days ? ` 本档案需要至少 ${profileState.active.required_scan_days} 日，扫描时自动扩展。` : ''}</p>
+        {entryChanged && <p className="overview-entry-changed">下一次条件已改变。本次结果仍保留扫描时的条件与证据。</p>}
         {manualProfileOpen && manualProfile && (
-          <section className="manual-profile-editor" aria-label="手工今日研究参数">
-            <div className="config-heading">
-              <div>
-                <h3>手工今日研究参数</h3>
-                <p>无需先跑回测。保存后只影响下一次扫描，并永久标注“未回测验证”。</p>
-              </div>
-              <span className="pill warn">研究学习 · 非荐股</span>
+          <section className="overview-entry-editor" aria-label="下一次扫描筛选条件">
+            <div className="overview-editor-heading"><h3>入选条件</h3><span>手工调整会标记为未回测验证</span></div>
+            <div className="overview-fields">
+              <label>横盘最短（交易日）<input type="number" min="20" max="200" value={manualProfile.box_min_days} onChange={(event) => updateManualNumber('box_min_days', event.target.value)} /></label>
+              <label>横盘最长（交易日）<input type="number" min="40" max="240" value={manualProfile.box_max_days} onChange={(event) => updateManualNumber('box_max_days', event.target.value)} /></label>
+              <label>箱体最大振幅（%）<input type="number" min="5" max="60" step="0.5" value={percentInputValue(manualProfile.box_max_amp)} onChange={(event) => updateManualNumber('box_max_amp', event.target.value, true)} /></label>
+              <label>突破量 / 箱体均量<input type="number" min="1" max="5" step="0.1" value={manualProfile.breakout_vol_ratio} onChange={(event) => updateManualNumber('breakout_vol_ratio', event.target.value)} /></label>
+              <label>突破最小涨幅（%）<input type="number" min="0.1" max="15" step="0.1" value={percentInputValue(manualProfile.breakout_chg_min)} onChange={(event) => updateManualNumber('breakout_chg_min', event.target.value, true)} /></label>
+              <label>突破最大涨幅（%）<input type="number" min="1" max="30" step="0.1" value={percentInputValue(manualProfile.breakout_chg_max)} onChange={(event) => updateManualNumber('breakout_chg_max', event.target.value, true)} /></label>
+              <label>突破量 / 前 5 日均量<input type="number" min="0.8" max="5" step="0.1" value={manualProfile.breakout_vs_recent_vol_ratio} onChange={(event) => updateManualNumber('breakout_vs_recent_vol_ratio', event.target.value)} /></label>
+              <label>近期突破观察窗（日）<input type="number" min="1" max="20" value={manualProfile.breakout_window_days} onChange={(event) => updateManualNumber('breakout_window_days', event.target.value)} /></label>
+              <label className="overview-checkbox"><input type="checkbox" checked={manualProfile.require_structure} onChange={(event) => setManualProfile((current) => current ? { ...current, require_structure: event.target.checked } : current)} />要求完整吸筹结构</label>
             </div>
-            <div className="manual-profile-grid">
-              <label><span>横盘最短（交易日）</span><input type="number" min="20" max="200" value={manualProfile.box_min_days} onChange={(event) => updateManualNumber('box_min_days', event.target.value)} /></label>
-              <label><span>横盘最长（交易日）</span><input type="number" min="40" max="240" value={manualProfile.box_max_days} onChange={(event) => updateManualNumber('box_max_days', event.target.value)} /></label>
-              <label><span>箱体最大振幅（%）</span><input type="number" min="5" max="60" step="0.5" value={percentInputValue(manualProfile.box_max_amp)} onChange={(event) => updateManualNumber('box_max_amp', event.target.value, true)} /></label>
-              <label><span>突破量 / 箱体均量</span><input type="number" min="1" max="5" step="0.1" value={manualProfile.breakout_vol_ratio} onChange={(event) => updateManualNumber('breakout_vol_ratio', event.target.value)} /></label>
-              <label><span>突破最小涨幅（%）</span><input type="number" min="0.1" max="15" step="0.1" value={percentInputValue(manualProfile.breakout_chg_min)} onChange={(event) => updateManualNumber('breakout_chg_min', event.target.value, true)} /></label>
-              <label><span>突破最大涨幅（%）</span><input type="number" min="1" max="30" step="0.1" value={percentInputValue(manualProfile.breakout_chg_max)} onChange={(event) => updateManualNumber('breakout_chg_max', event.target.value, true)} /></label>
-              <label><span>突破量 / 前 5 日均量</span><input type="number" min="0.8" max="5" step="0.1" value={manualProfile.breakout_vs_recent_vol_ratio} onChange={(event) => updateManualNumber('breakout_vs_recent_vol_ratio', event.target.value)} /></label>
-              <label><span>近期突破观察窗（日）</span><input type="number" min="1" max="20" value={manualProfile.breakout_window_days} onChange={(event) => updateManualNumber('breakout_window_days', event.target.value)} /></label>
-              <label><span>建仓量 / 前 5 日均量</span><input type="number" min="1" max="4" step="0.1" value={manualProfile.vol_ratio_min} onChange={(event) => updateManualNumber('vol_ratio_min', event.target.value)} /></label>
-              <label className="risk-field"><span>止损（%）</span><input type="number" min="1" max="25" step="0.5" value={percentInputValue(manualProfile.stop_pct)} onChange={(event) => updateManualNumber('stop_pct', event.target.value, true)} /></label>
-              <label className="risk-field"><span>止盈（%）</span><input type="number" min="2" max="100" step="0.5" value={percentInputValue(manualProfile.target_pct)} onChange={(event) => updateManualNumber('target_pct', event.target.value, true)} /></label>
-              <label><span>最长持有（交易日）</span><input type="number" min="2" max="120" value={manualProfile.max_hold_days} onChange={(event) => updateManualNumber('max_hold_days', event.target.value)} /></label>
-              <label><span>二次出货观察窗（日）</span><input type="number" min="3" max="40" value={manualProfile.exit_window} onChange={(event) => updateManualNumber('exit_window', event.target.value)} /></label>
-              <label><span>强势日清零根数</span><input type="number" min="1" max="10" value={manualProfile.strong_reset} onChange={(event) => updateManualNumber('strong_reset', event.target.value)} /></label>
-              <label className="manual-checkbox"><input type="checkbox" checked={manualProfile.require_structure} onChange={(event) => setManualProfile((current) => current ? { ...current, require_structure: event.target.checked } : current)} /><span>要求完整吸筹结构</span></label>
+            <div className="overview-editor-footer">
+              <span>只保存九项筛选条件；止盈、止损与持有期由回测研究管理。</span>
+              <div><button className="btn" type="button" onClick={() => { setManualProfileOpen(false); if (profileState) setManualProfile(manualParametersFromProfile(profileState)) }}>取消</button><button className="btn btn-primary" type="button" onClick={onSaveManualProfile} disabled={manualSaving || scanning}>{manualSaving ? '保存中…' : '保存筛选条件'}</button></div>
             </div>
-            <p className="config-note">止损和止盈不决定是否入选，只用于候选风险参考；回测页面中的同名参数会真实参与 T+1 退出模拟。</p>
-            <div className="scan-profile-actions">
-              <button className="btn primary" type="button" disabled={manualSaving || scanning} onClick={onSaveManualProfile}>{manualSaving ? '保存中...' : '确认保存手工参数'}</button>
-              <button className="btn" type="button" onClick={() => setManualProfileOpen(false)}>取消</button>
-            </div>
+            {profileState && !profileState.active.is_default && <button className="overview-text-button" type="button" onClick={onResetProfile} disabled={scanning}>恢复系统默认档案</button>}
           </section>
         )}
-        {profileErr && <div className="err" style={{ marginBottom: 10 }}>参数档案读取失败：{profileErr}</div>}
-        <div className="row" style={{ flexWrap: 'wrap', gap: 12 }}>
-          <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <label style={{ whiteSpace: 'nowrap' }}>A 池 Top</label>
-            <input type="number" value={topN} min={5} max={30} step={1}
-              onChange={(e) => setTopN(Number(e.target.value))}
-              style={{ width: 72 }} />
-          </div>
-          <div className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <label style={{ whiteSpace: 'nowrap' }}>回看天数</label>
-            <input type="number" value={days} min={60} max={400} step={10}
-              onChange={(e) => setDays(Number(e.target.value))}
-              style={{ width: 84 }} />
-          </div>
-          <button className="btn btn-primary" onClick={onScan} disabled={scanning}>
-            <IcoScan size={15} />
-            {scanning
-              ? (scanStatus?.status === 'cancelling' || scanStatus?.cancel_requested
-                ? '取消中…'
-                : '扫描中…')
-              : '开始扫描（A 池优先）'}
-          </button>
-          {scanning && (
-            <button
-              className="btn btn-danger"
-              onClick={onCancel}
-              disabled={scanStatus?.status === 'cancelling' || !!scanStatus?.cancel_requested}
-              title={scanTask ? `取消任务 ${scanTask}` : '取消当前扫描'}
-            >
-              <IcoStop size={14} />
-              {scanStatus?.status === 'cancelling' || scanStatus?.cancel_requested ? '取消中…' : '取消'}
-            </button>
-          )}
-          {defense && (
-            <span className="pill danger" style={{ gap: 6 }}><IcoShield size={13} />防守环境：A 池禁止新开仓</span>
-          )}
-        </div>
+        {profileErr && <div className="overview-notice is-error" role="alert"><span>参数档案：{profileErr}</span><button className="overview-text-button" type="button" onClick={() => { api.backtestProfile().then(next => { setProfileState(next); setManualProfile(manualParametersFromProfile(next)); setEditConfigHash(next.active.config_hash); setProfileErr('') }).catch(() => setProfileErr('参数载入失败，请稍后重试')) }}>重新载入条件</button></div>}
         {scanning && scanStatus && (
-          <div style={{ marginTop: 14 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 6 }}>
-              <span>
-                {scanStatus.stage}
-                {(scanStatus.status === 'cancelling' || scanStatus.cancel_requested) && (
-                  <span className="badge badge-warn" style={{ marginLeft: 8 }}>取消请求已发送</span>
-                )}
-              </span>
-              <span className="num">{scanStatus.progress}%</span>
-            </div>
-            <div className="progress">
-              <i style={{
-                width: `${Math.max(scanStatus.progress, scanStatus.status === 'cancelling' ? 8 : 0)}%`,
-                background: scanStatus.status === 'cancelling' || scanStatus.cancel_requested
-                  ? 'linear-gradient(90deg, var(--warn), var(--up))'
-                  : undefined,
-              }} />
-            </div>
-            {scanTask && <div style={{ marginTop: 6, fontSize: 11, color: 'var(--faint)' }} className="mono">task {scanTask}</div>}
+          <div className="overview-scan-progress" aria-live="polite">
+            <div><span>{scanStatus.stage}</span><b className="num">{scanStatus.progress}%</b></div>
+            <div className="overview-progress-track" role="progressbar" aria-valuenow={scanStatus.progress} aria-valuemin={0} aria-valuemax={100} aria-label="扫描进度"><i style={{ width: `${Math.max(0, Math.min(100, scanStatus.progress))}%` }} /></div>
           </div>
         )}
-        {err && <div className="err" style={{ marginTop: 8 }}>{err}</div>}
-      </div>
+      </section>
 
-      {/* 最新交易日资金热力图（treemap） */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="h-sec">
-          <div>
-            <h2 style={{ margin: 0 }}>市场资金热力图</h2>
-            <span className="hint">按{heatmap?.classification_title || '细分行业'}显示，净流入和净流出各 Top 10</span>
-          </div>
-          {profileState && profileState.active.required_scan_days > days && (
-            <span className="hint">该参数需要至少 {profileState.active.required_scan_days} 日，启动时会自动扩展回看窗口</span>
-          )}
-          <label className="classification-control">
-            <span>分类标准</span>
-            <select
-              value={classification}
-              onChange={(event) => {
-                setClassification(event.target.value as ClassificationKey)
-                setHeatmap(null)
-                setSector(null)
-              }}
-              aria-label="资金板块分类标准"
-            >
-              {(classificationCatalog?.items || [
-                { key: 'industry', title: '细分行业', available: true },
-                { key: 'market', title: '上市板块', available: true },
-                { key: 'area', title: '地域', available: true },
-              ]).filter((item) => item.available).map((item) => (
-                <option key={item.key} value={item.key}>{item.title}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-        {heatErr ? (
-          <div className="muted" style={{ fontSize: 12 }}>资金热力图不可用：{heatErr}</div>
-        ) : heatmap ? (
-          <MoneyHeatmap data={heatmap} />
-        ) : (
-          <div className="muted" style={{ fontSize: 12 }}>加载资金热力图…</div>
-        )}
-      </div>
-
-      {/* 板块资金流 */}
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="h-sec">
-          <h2 style={{ margin: 0 }}>{sector?.classification_title || '细分行业'}资金流 <span className="tag">观察建仓 / 出逃</span></h2>
-          <div className="seg">
-            {[5, 10, 20].map((n) => (
-              <button key={n} className={`seg-item ${sectorDays === n ? 'on' : ''}`} onClick={() => setSectorDays(n)}>{n} 日</button>
-            ))}
-          </div>
-        </div>
-        {sector && <SectorFlowPanel data={sector} />}
-      </div>
-
-      {/* 股票卡片网格 */}
-      <div className="h-sec" style={{ marginTop: 4 }}>
-        <h2 style={{ margin: 0 }}>
-          {pool === 'A' ? 'A 池 · 严格研究候选' : pool === 'B' ? 'B 池 · 观察名单' : '全部候选'}
-          <span className="tag">{data.items.length} 只</span>
-        </h2>
-      </div>
-      <div className="stock-grid">
-        {data.items.map((it) => {
-          const b = tierBadge(it.tier, it.pool, it.tradeable)
-          return (
-            <article key={it.ts_code} className="stock-card">
-              <div className="head">
-                <div>
-                  <span className="name">{it.name}</span>
-                  <span className="code">{it.code}</span>
-                  <span className={b.cls} style={{ marginLeft: 7 }}>{b.text}</span>
-                </div>
-                <span className="score">{it.score.toFixed(1)}<small>分</small></span>
-              </div>
-              <div className="meta">
-                <span>价 <b className="num">{it.price?.toFixed(2) ?? 'n/a'}</b></span>
-                <span>{it.industry}</span>
-                <span>市值 <b className="num">{it.mv_yi?.toFixed(0) ?? 'n/a'}亿</b></span>
-                <span>量比 <b className="num">{it.vol_ratio?.toFixed(1) ?? 'n/a'}×</b></span>
-              </div>
-              {it.trade && (
-                <div className="trade-row">
-                  <span>止损<b className="text-danger num">{it.trade.stop_loss ?? '—'}</b></span>
-                  <span>目标1<b className="text-ok num">{it.trade.target_1 ?? '—'}</b></span>
-                  <span>仓位<b className="num">{it.trade.position_pct}%</b></span>
-                  <span>持有≤<b className="num">{it.trade.max_hold_days}日</b></span>
-                </div>
-              )}
-              {miniOption(it) && <EChart option={miniOption(it)!} height={110} />}
-              <div className="reason">
-                {it.reasons.split('；').filter(Boolean).slice(0, 4).map((r, i) => (
-                  <span key={i}>{i === 0 ? <b>✓ </b> : <span className="sep">· </span>}{r}</span>
-                ))}
-              </div>
-              <div className="stock-card-actions">
-                <button className="btn btn-sm" type="button" onClick={() => nav(`/stock/${it.ts_code}`)}>查看详情</button>
-                <button className="btn btn-sm" type="button" onClick={() => nav(`/stock/${it.ts_code}#ai-review`)}>AI 评测</button>
-              </div>
-            </article>
-          )
-        })}
-      </div>
-      {!data.items.length && (
-        <div className="empty">
-          <strong>当前池无标的</strong>
-          {regime?.allow_new_entries === false ? '防守环境已禁止新开仓，属正常状态。' : '请运行扫描或切换到 B 观察池。'}
-        </div>
+      {todayGuide && todayGuide.next_action !== 'RUN_SCAN' && (
+        <div className="overview-today"><div><b>{todayGuide.title}</b><span>{todayGuide.reason}</span></div><button className="overview-text-button" type="button" onClick={onTodayAction} disabled={syncStarting}>{syncStarting ? '正在启动…' : todayGuide.primary_label} <span aria-hidden="true">→</span></button></div>
       )}
+
+      <section className="overview-results" aria-labelledby="overview-results-title" aria-busy={loading}>
+        <div className="overview-results-heading">
+          <div><span className="overview-eyebrow">SCAN RESULTS</span><h2 id="overview-results-title">{selectedRun ? '历史结果' : '本次结果'} <span className="overview-count">{visibleData ? items.length : '—'}</span></h2></div>
+          <div className="overview-pool-tabs" role="tablist" aria-label="股票池">
+            {(['A', 'B', 'ALL'] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={pool === value} className={pool === value ? 'is-active' : ''} onClick={() => setPool(value)}>{value === 'A' ? 'A · 严格候选' : value === 'B' ? 'B · 观察名单' : '全部'}</button>)}
+          </div>
+        </div>
+        <div className="overview-result-identity">
+          <div><span className={`overview-result-state ${isHistory || historicalResult ? 'is-history' : visibleData?.is_current ? 'is-current' : ''}`}>{historicalResult ? '缓存待核对' : selectedRun ? '历史查看' : visibleData?.is_current ? '已发布' : visibleData?.view_state === 'HISTORICAL' ? '当前不可用' : '待发布'}</span><span>{publication ? `记录 ${publication.run_id}` : '等待首次成功扫描'}</span>{publication?.completed_at && <time>{publication.completed_at.slice(0, 19).replace('T', ' ')}</time>}</div>
+          <label>查看记录<select aria-label="查看扫描记录" value={selectedRun} onChange={(event) => { setData(null); setSearchParams(event.target.value ? { run_id: event.target.value } : {}) }}><option value="">最新发布</option>{history.map(run => <option value={run.run_id} key={run.run_id}>{displayDate(run.as_of)} · {run.created_at.slice(11, 16)} · {run.run_id.slice(0, 12)}</option>)}</select></label>
+        </div>
+        {historyErr && <p className="overview-config-note">{historyErr}</p>}
+        {selectedRun && <div className="overview-notice is-history"><span>正在查看冻结的历史名单。走势截至扫描日，参数和身份按当次记录解释。</span><button className="overview-text-button" type="button" onClick={() => { setData(null); setSearchParams({}) }}>返回最新</button></div>}
+        {publication && <div className="overview-result-proof">
+          <span>本次条件 <b className="num" title={publication.entry_hash}>{publication.entry_hash?.slice(0, 12) || '未记录'}</b></span>
+          <span>完整资格 <b>{publication.qualification_integrity_error ? '核对未通过' : completeCount ?? '旧记录未归档'}</b></span>
+          <span>展示 A / B <b>{publication.counts ? `${publication.counts.A} / ${publication.counts.B}` : '未记录'}</b></span>
+          {typeof publication.pool_report?.withheld_strict === 'number' && publication.pool_report.withheld_strict > 0 && <span>严格形态转观察 <b>{publication.pool_report.withheld_strict} 只</b></span>}
+        </div>}
+        {publication?.qualification_integrity_error && <div className="overview-notice is-error" role="alert">完整名单的数量、哈希或证据未通过一致性核对。请重新扫描，当前记录不可作为有效候选。</div>}
+        {defense && publication && <p className="overview-gate-note">本次市场环境处于防守期，严格形态会进入观察名单；A 池为零不表示扫描失败。</p>}
+        <div className="overview-results-meta">
+          <span>扫描基准日 <b className="num">{displayDate(visibleData?.as_of)}</b></span>
+          {historicalResult && visibleData && <span className="overview-history-label">历史缓存 · 待核对</span>}
+          {items.length > 0 && <><span>平均综合分 <b className="num">{avgScore.toFixed(1)}</b></span><span>有数据候选资金净额 <b className="num">{totalFlow === null ? '缺少数据' : `${(totalFlow / 10000).toFixed(2)} 亿`}</b> · 已取得 {availableFlows.length}/{items.length} 只</span></>}
+          <span className="overview-results-hint">综合分用于相对排序，不是上涨概率</span>
+        </div>
+        {err && <div className="overview-notice is-error" role="alert"><span>{err}</span><button type="button" className="overview-text-button" onClick={() => loadOverview()} disabled={loading}>重试</button></div>}
+        {cacheNote && <div className={`overview-notice ${historicalResult ? 'is-history' : ''}`} role="status">{cacheNote}</div>}
+        {loading && !items.length ? (
+          <div className="overview-empty" role="status"><span className="overview-loading-line" /><h3>正在读取候选</h3><p>正在核对 {pool === 'ALL' ? '全部股票池' : `${pool} 池`} 的服务端扫描结果。</p></div>
+        ) : items.length ? (
+          <div className="overview-candidates">
+            {items.map((it, index) => {
+              const badge = tierBadge(it.tier, it.pool, it.tradeable)
+              const chart = miniOption(it)
+              const reasons = it.reasons.replace(/^\[[^\]]+\]\s*/, '').split('；').filter(Boolean).slice(0, 3).join(' · ')
+              return (
+                <article key={it.ts_code} className="overview-candidate" aria-label={`${it.name}候选证据`}>
+                  <div className="overview-candidate-identity">
+                    <span className="overview-rank num">{String(index + 1).padStart(2, '0')}</span>
+                    <div><div className="overview-stock-name"><button type="button" onClick={() => nav(stockHref(it.ts_code))}>{it.name}</button><span className={badge.cls}>{badge.text}</span></div><div className="overview-stock-meta"><span className="num">{it.code}</span><span>{it.industry || '行业未分类'}</span></div><div className="overview-stock-price"><b className="num">{it.price?.toFixed(2) ?? '—'}</b><span>元 · 市值 {it.mv_yi?.toFixed(0) ?? '—'} 亿</span></div></div>
+                  </div>
+                  <div className="overview-candidate-chart">{chart ? <EChart option={chart} height={82} /> : <div className="overview-chart-empty">暂无走势数据</div>}<span>{selectedRun ? '扫描日以前' : '近期走势'} · 箱体参考</span></div>
+                  <div className="overview-candidate-evidence">
+                    <dl><div><dt>横盘天数</dt><dd className="num">{it.box_days ?? '—'}<small> 日</small></dd></div><div><dt>箱体振幅</dt><dd className="num">{it.box_amp?.toFixed(1) ?? '—'}<small>%</small></dd></div><div><dt>突破量比</dt><dd className="num">{it.vol_ratio?.toFixed(1) ?? '—'}<small>×</small></dd></div></dl>
+                    <p className="overview-evidence-reason" title={reasons}>{reasons || '暂无入选原因摘要，请查看详情核对。'}</p>
+                    <span className="overview-breakout-date">突破日 {displayDate(it.breakout_date)}</span>
+                    {it.fund_window && <span className={`overview-funding-window ${it.fund_window.complete ? '' : 'is-incomplete'}`} title={it.fund_window.reason}>{it.fund_window.complete ? '资金窗口完整' : '资金窗口待补齐'} · {it.fund_window.observed_days ?? it.fund_window.observed_dates?.length ?? 0}/{it.fund_window.required_days ?? 5} 日{it.data_missing_fields?.length ? ` · 指标缺失 ${it.data_missing_fields.length} 项` : ''}</span>}
+                  </div>
+                  <div className="overview-candidate-actions"><div className="overview-score"><b className="num">{it.score.toFixed(1)}</b><span>综合分</span></div><button className="overview-text-button" type="button" onClick={() => nav(stockHref(it.ts_code))} aria-label={`查看${it.name}详情`}>查看证据 <span aria-hidden="true">→</span></button>{!isHistory && <button className="overview-ai-button" type="button" onClick={() => nav(`${stockHref(it.ts_code)}#ai-review`)}>AI 评测</button>}</div>
+                </article>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="overview-empty"><span className="overview-empty-symbol" aria-hidden="true">∅</span><h3>{err ? '暂未取得当前池结果' : '当前池暂无候选'}</h3><p>{visibleData?.empty_reason || (err ? '请重试读取结果，或稍后再来查看。' : defense ? '当前处于防守环境，没有严格候选是正常结果。' : '空名单也是筛选结果，可以查看其他股票池或调整下一次筛选条件。')}</p></div>
+        )}
+      </section>
+
+      <section className="overview-market-context" aria-labelledby="overview-market-title">
+        <div className="overview-section-heading"><div><span className="overview-eyebrow">MARKET CONTEXT</span><h2 id="overview-market-title">资金环境</h2><p>结合行业资金分布，补充候选的市场背景。</p></div><label className="overview-classification">分类标准<select value={classification} onChange={(event) => { setClassification(event.target.value as ClassificationKey); setHeatmap(null); setSector(null) }} aria-label="资金板块分类标准">{(classificationCatalog?.items || [{ key: 'industry', title: '细分行业', available: true }, { key: 'market', title: '上市板块', available: true }, { key: 'area', title: '地域', available: true }]).filter((item) => item.available).map((item) => <option key={item.key} value={item.key}>{item.title}</option>)}</select></label></div>
+        <div className="overview-market-panel"><div className="overview-panel-heading"><h3>市场资金热力图</h3><span>净流入 / 净流出各 Top 10</span></div>{heatErr ? <div className="overview-notice">资金热力图不可用：{heatErr}</div> : heatmap ? <MoneyHeatmap data={heatmap} /> : <div className="overview-chart-empty">正在读取资金分布…</div>}</div>
+        <div className="overview-market-panel"><div className="overview-panel-heading"><h3>{sector?.classification_title || '细分行业'}资金流</h3><div className="overview-period-tabs" aria-label="资金流观察天数">{[5, 10, 20].map((n) => <button type="button" key={n} aria-pressed={sectorDays === n} className={sectorDays === n ? 'is-active' : ''} onClick={() => setSectorDays(n)}>{n} 日</button>)}</div></div>{sector ? <SectorFlowPanel data={sector} /> : <div className="overview-chart-empty">暂无资金流数据</div>}</div>
+      </section>
     </div>
   )
 }

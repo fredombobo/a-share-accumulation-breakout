@@ -4,6 +4,7 @@ import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
@@ -53,6 +54,47 @@ def _client(db: Path, *routers) -> TestClient:
     return TestClient(app)
 
 
+@pytest.mark.parametrize(("state", "available_at", "source", "available"), [
+    ("missing_table", None, None, False),
+    ("empty_table", None, None, False),
+    ("populated", None, "tushare", False),
+    ("populated", "2026-09-11T18:00:00+08:00", None, False),
+    ("populated", "   ", "tushare", False),
+    ("populated", "2026-09-11T18:00:00+08:00", " ", False),
+    ("populated", "2026-09-11T18:00:00+08:00", "tushare", True),
+])
+def test_catalog_optional_chip_dataset_is_read_only_and_unavailable_when_empty(
+    tmp_path: Path, state: str, available_at: str | None, source: str | None, available: bool,
+) -> None:
+    db = tmp_path / "chip-catalog.db"
+    with sqlite3.connect(db) as conn:
+        if state != "missing_table":
+            conn.execute("CREATE TABLE cyq_history(ts_code TEXT,trade_date TEXT,available_at TEXT,source TEXT)")
+        if state == "populated":
+            conn.execute("INSERT INTO cyq_history VALUES (?,?,?,?)", ("000001.SZ", "20260911", available_at, source))
+    original = db.read_bytes()
+    with _client(db, backtest_router) as client:
+        response = client.get("/api/backtest/catalog")
+    assert response.status_code == 200
+    payload = response.json()
+    plugin = next(item for item in payload["conditions"] if item["id"] == "chip_cost_concentration_v1")
+    dataset = plugin["dataset"]
+    assert dataset["available"] is available
+    assert dataset["rows"] == (1 if state == "populated" else 0)
+    assert plugin["default_enabled"] is False
+    assert plugin["production_ready"] is False
+    assert payload["paper_trading_enabled"] is payload["live_trading_enabled"] is False
+    if state == "empty_table":
+        assert dataset["codes"] == dataset["invalid_lineage_rows"] == 0
+        assert dataset["earliest"] is dataset["latest"] is None
+        assert "暂无数据" in dataset["reason"]
+    elif state == "populated":
+        assert dataset["codes"] == 1
+        assert dataset["invalid_lineage_rows"] == (0 if available else 1)
+        assert dataset["earliest"] == dataset["latest"] == "20260911"
+    assert db.read_bytes() == original
+
+
 def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: Path) -> None:
     db = _research_db(tmp_path / "api.db")
     client = _client(db, backtest_router)
@@ -82,7 +124,10 @@ def test_professional_preview_returns_frozen_multi_parameter_contract(tmp_path: 
     assert payload["parameter_space"]["long_running"] is False
     assert payload["parameters"]["target_pct"]["values"] == [0.1, 0.12, 0.15]
     assert payload["parameters"]["max_hold_days"] == {"mode": "fixed", "value": 30}
-    assert payload["contract_version"] == "professional-backtest-v1.6.0"
+    assert payload["contract_version"] == "professional-backtest-v1.8.0"
+    assert payload["portfolio_model"]["version"] == "research-portfolio-v2.2.1"
+    assert payload["portfolio_model"]["execution_model_version"] == "v2.1.3"
+    assert payload["portfolio_model"]["fee_version"] == "v2-fixed-2026-08-18"
     assert preview.json()["can_run"] is False  # Fixture intentionally has no PIT metadata.
     assert payload["data_scope"]["issues"]
     assert payload["entry_mechanism"] == entry_mechanism_identity(

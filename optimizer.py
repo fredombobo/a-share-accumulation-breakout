@@ -422,6 +422,7 @@ def _replay_params(df: pd.DataFrame, signals: list[dict], combos: list[dict]) ->
                         "ret": sim["ret"],
                         "win": sim["win"],
                         "exit": sim["exit"],
+                        "exit_phase": sim.get("exit_phase"),
                         "days": sim["days"],
                         "max_dd": sim.get("max_dd"),
                         "entry": sim.get("entry"),

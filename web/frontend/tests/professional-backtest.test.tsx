@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -120,13 +120,13 @@ const completedTask: BacktestTask = {
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
       exit: { stop_pct: 0.05, target_pct: 0.15, max_hold_days: 30, exit_window: 10 },
       is: { net_n_trades: 50, net_profit_factor: 1.42, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 },
-      oos: { net_n_trades: 40, net_profit_factor: 1.22, net_avg_return: 0.08, portfolio_max_drawdown: 0.09 },
+      oos: { net_n_trades: 40, net_profit_factor: 1.22, net_avg_return: 0.08, portfolio_total_return: 0.08, portfolio_max_drawdown: 0.09 },
     }],
     selected: {
       param_id: 'p1', signal: { box_max_days: 200, breakout_vol_ratio: 1.8 },
       exit: { stop_pct: 0.05, target_pct: 0.15, max_hold_days: 30, exit_window: 10 },
       is: { net_n_trades: 50, net_profit_factor: 1.42, portfolio_total_return: 0.1, portfolio_max_drawdown: 0.06 },
-      oos: { net_n_trades: 40, net_profit_factor: 1.22, net_avg_return: 0.08, portfolio_max_drawdown: 0.09 },
+      oos: { net_n_trades: 40, net_profit_factor: 1.22, net_avg_return: 0.08, portfolio_total_return: 0.08, portfolio_max_drawdown: 0.09 },
     },
     wf: {
       evidence_complete: true, wf_pass: true, train_mean_pf: 1.35, oos_mean_pf: 1.18,
@@ -160,6 +160,24 @@ completedTask.result!.independent_leaderboard = [{
 afterEach(() => vi.restoreAllMocks())
 
 describe('专业回测工作台', () => {
+  it('仅复制入场条件时保留待验证身份，不触发完整档案启用', async () => {
+    const copied = profileState(false)
+    copied.active.source.kind = 'BACKTEST_ENTRY_COPY'
+    const task = { ...completedTask, entry_copy: { can_copy: true, reasons: [] }, profile_activation: { ...eligible, can_activate: false } }
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({ classification: 'industry', classification_title: '细分行业', group_label: '行业', classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择', classifications: [], groups: [], industries: [], stocks: [], stock_count: 30 })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState(true))
+    vi.spyOn(api, 'backtestStatus').mockResolvedValue(task)
+    const copy = vi.spyOn(api, 'copyBacktestEntry').mockResolvedValue(copied)
+    const activate = vi.spyOn(api, 'activateBacktestProfile')
+    render(<ProfessionalBacktest />)
+    fireEvent.click(await screen.findByRole('button', { name: '复制入场条件到每日筛选' }))
+    expect(await screen.findByText('来源 回测入场条件（待验证）')).toBeVisible()
+    expect(screen.getByText('已复制入场条件，下一次扫描生效。新配置待验证，不继承原回测收益。')).toBeVisible()
+    expect(copy).toHaveBeenCalledWith('probt-good', 'default-hash')
+    expect(activate).not.toHaveBeenCalled()
+  })
   it('使用版本化默认参数先预览，不静默启动任务', async () => {
     vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
     vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
@@ -179,7 +197,7 @@ describe('专业回测工作台', () => {
 
     render(<ProfessionalBacktest />)
     await screen.findByRole('heading', { name: '多参数研究回测' })
-    expect(screen.getByRole('heading', { name: '止损与止盈（百分比）' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '退出规则参数' })).toBeVisible()
     expect(screen.getByLabelText('止盈比例离散值')).toHaveValue('10, 12')
     expect(screen.getByLabelText('交易日采样间隔')).toHaveValue(10)
     expect(screen.getByText(/每隔 N 个交易日生成一个研究决策截面/)).toBeVisible()
@@ -191,6 +209,60 @@ describe('专业回测工作台', () => {
     fireEvent.click(screen.getByRole('button', { name: '查看冻结预览' }))
     expect(previewSpy.mock.calls[0][0].parameters.box_max_days).toEqual({ mode: 'range', start: 60, stop: 200, step: 20 })
     expect(await screen.findByText('24')).toBeVisible()
+    expect(runSpy).not.toHaveBeenCalled()
+  })
+
+  it('六项退出规则集中编辑，高级退出默认折叠且网格值原样进入预览', async () => {
+    const fullCatalog: BacktestCatalog = {
+      ...catalog,
+      parameters: [...catalog.parameters,
+        { key: 'vol_ratio_min', title: '标杆量倍数', group: 'exit', value_type: 'number', minimum: 1, maximum: 5, default: { mode: 'fixed', value: 1.5 }, description: '用于退出观察' },
+        { key: 'exit_window', title: '出货观察窗口', group: 'exit', value_type: 'integer', minimum: 2, maximum: 30, default: { mode: 'fixed', value: 7 }, description: '退出观察天数' },
+        { key: 'strong_reset', title: '强势重置天数', group: 'exit', value_type: 'integer', minimum: 1, maximum: 20, default: { mode: 'fixed', value: 3 }, description: '退出观察重置' },
+      ],
+    }
+    vi.spyOn(api, 'backtestCatalog').mockResolvedValue(fullCatalog)
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '当前分类只用于选择',
+      classifications: [], groups: [], industries: [], stocks: [], stock_count: 30,
+    })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task: null })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState())
+    const previewSpy = vi.spyOn(api, 'backtestPreview').mockResolvedValue(preview)
+    const runSpy = vi.spyOn(api, 'backtestRun')
+    render(<ProfessionalBacktest />)
+
+    const exits = await screen.findByRole('region', { name: '退出规则参数' })
+    const entry = screen.getByRole('region', { name: '入场筛选参数' })
+    expect(within(entry).queryByLabelText('最长持有天数')).not.toBeInTheDocument()
+    expect(within(exits).getByRole('spinbutton', { name: '最长持有天数' })).toBeVisible()
+    const advanced = within(exits).getByLabelText('高级退出规则')
+    expect(advanced).not.toHaveAttribute('open')
+    expect(within(exits).getByLabelText('标杆量倍数', { selector: 'input' })).not.toBeVisible()
+    fireEvent.click(within(exits).getByText('高级退出规则'))
+    expect(advanced).toHaveAttribute('open')
+    expect(within(exits).getByRole('spinbutton', { name: '出货观察窗口' })).toBeVisible()
+    expect(within(exits).getByRole('spinbutton', { name: '强势重置天数' })).toBeVisible()
+
+    fireEvent.change(within(exits).getByRole('spinbutton', { name: '最长持有天数' }), { target: { value: '45' } })
+    fireEvent.change(within(exits).getByLabelText('止损比例离散值'), { target: { value: '5, 9' } })
+    fireEvent.change(within(exits).getByLabelText('标杆量倍数参数模式'), { target: { value: 'range' } })
+    fireEvent.change(within(exits).getByLabelText('标杆量倍数起点'), { target: { value: '1.4' } })
+    fireEvent.change(within(exits).getByLabelText('标杆量倍数终点'), { target: { value: '2' } })
+    fireEvent.change(within(exits).getByLabelText('标杆量倍数步长'), { target: { value: '0.2' } })
+    fireEvent.click(screen.getByRole('button', { name: '检查参数空间' }))
+    await screen.findByRole('dialog', { name: '参数检查通过' })
+    const sent = previewSpy.mock.calls[0][0].parameters
+    expect(sent.max_hold_days).toEqual({ mode: 'fixed', value: 45 })
+    expect(sent.stop_pct).toEqual({ mode: 'values', values: [0.05, 0.09] })
+    expect(sent.vol_ratio_min).toEqual({ mode: 'range', start: 1.4, stop: 2, step: 0.2 })
+    expect(sent.exit_window).toEqual({ mode: 'fixed', value: 7 })
+    expect(sent.strong_reset).toEqual({ mode: 'fixed', value: 3 })
+    fireEvent.click(screen.getByRole('button', { name: '查看冻结预览' }))
+    expect(screen.getByRole('button', { name: '启动研究回测' })).toBeEnabled()
+    fireEvent.change(within(exits).getByRole('spinbutton', { name: '最长持有天数' }), { target: { value: '46' } })
+    expect(screen.getByRole('button', { name: '启动研究回测' })).toBeDisabled()
     expect(runSpy).not.toHaveBeenCalled()
   })
 
@@ -217,7 +289,7 @@ describe('专业回测工作台', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
-  it('已完成结果用真实字段生成五类图谱和可读参数摘要', async () => {
+  it('已完成结果按三类页签展示真实图谱和可读参数摘要', async () => {
     vi.spyOn(api, 'backtestCatalog').mockResolvedValue(catalog)
     vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
       classification: 'industry', classification_title: '细分行业', group_label: '行业',
@@ -230,12 +302,29 @@ describe('专业回测工作台', () => {
     render(<ProfessionalBacktest />)
 
     expect(await screen.findByRole('heading', { name: '结果图谱' })).toBeVisible()
-    expect(screen.getByRole('region', { name: '净收益对照' })).toBeVisible()
-    expect(screen.getByRole('region', { name: 'Profit Factor 对照' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: '回测报告' })).toBeVisible()
+    expect(screen.getByLabelText('回测核心指标')).toBeVisible()
+    const profileSummary = screen.getByRole('region', { name: '当前今日选股参数' })
+    expect(profileSummary).toHaveAttribute('title', expect.stringContaining('default-hash'))
+    expect(profileSummary).not.toHaveTextContent('default-hash')
+    expect(screen.getByRole('heading', { name: '回测已完成' }).closest('section')).toHaveAttribute('title', expect.stringContaining('probt-good'))
+    expect(screen.getByText('研究配置').closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(screen.getByText('研究配置'))
+    expect(screen.getByRole('region', { name: '退出规则参数' })).toBeVisible()
+    expect(screen.getByRole('tab', { name: /业绩与风险/ })).toHaveAttribute('aria-selected', 'true')
+    const equity = screen.getByRole('region', { name: '净值与回撤' })
+    expect(equity).toBeVisible()
+    expect(within(equity).getByText('暂无可绘制数据')).toBeVisible()
+    expect(screen.getByRole('region', { name: '月度收益日历' })).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'OOS 基线对照' })).getByTestId('result-echart')).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: /交易画像/ }))
+    expect(screen.getByRole('tab', { name: /交易画像/ })).toHaveAttribute('aria-selected', 'true')
+    fireEvent.click(screen.getByRole('tab', { name: /参数稳健性/ }))
+    expect(screen.getByRole('tab', { name: /参数稳健性/ })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('region', { name: '参数风险收益分布' })).toBeVisible()
-    expect(screen.getByRole('region', { name: '独立路径前十的 OOS 收益' })).toBeVisible()
+    expect(screen.getByRole('region', { name: '独立路径表现矩阵' })).toBeVisible()
     expect(screen.getByRole('region', { name: 'WF 窗口稳定性' })).toBeVisible()
-    expect(screen.getAllByTestId('result-echart')).toHaveLength(5)
+    expect(within(screen.getByRole('region', { name: '参数风险收益分布' })).getByTestId('result-echart')).toBeVisible()
     expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('止盈')
     expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('最长持有')
     expect(screen.getByLabelText('入选参数摘要')).toHaveTextContent('二次出货观察窗')
@@ -247,7 +336,24 @@ describe('专业回测工作台', () => {
     expect(screen.getByText('旧记录 0（过滤前未记录）')).toBeVisible()
     expect(screen.getByText(/这是抽样研究，不是逐日完整回测/)).toBeVisible()
     expect(screen.getAllByText('15.00%')).toHaveLength(2)
-    expect(screen.getByText(/不绘制或推测净值曲线/)).toBeVisible()
+  })
+
+  it('初始化失败给出明确原因与重新载入入口，不显示空报告', async () => {
+    vi.spyOn(api, 'backtestCatalog').mockRejectedValue(new Error('本地研究服务不可用'))
+    vi.spyOn(api, 'backtestUniverse').mockResolvedValue({
+      classification: 'industry', classification_title: '细分行业', group_label: '行业',
+      classification_mode: 'CURRENT_CLASSIFICATION_FROZEN_UNIVERSE', classification_note: '',
+      classifications: [], groups: [], industries: [], stocks: [], stock_count: 0,
+    })
+    vi.spyOn(api, 'backtestLatest').mockResolvedValue({ task: null })
+    vi.spyOn(api, 'backtestProfile').mockResolvedValue(profileState())
+    render(<ProfessionalBacktest />)
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true')
+    const error = await screen.findByRole('alert')
+    expect(error).toHaveTextContent('暂时无法载入工作台')
+    expect(error).toHaveTextContent('本地研究服务不可用')
+    expect(within(error).getByRole('button', { name: '重新载入' })).toBeEnabled()
+    expect(screen.queryByLabelText('研究回测报告')).not.toBeInTheDocument()
   })
 
   it('逐日预登记机制明确展示时点与不可启用边界', async () => {
@@ -342,7 +448,8 @@ describe('专业回测工作台', () => {
     expect(screen.getByText('结果缺少可验证权益路径，排行榜未去重')).toBeVisible()
     expect(screen.getByRole('columnheader', { name: '路径证据' })).toBeVisible()
     expect(screen.getAllByText('未去重').length).toBeGreaterThan(0)
-    expect(screen.getByRole('region', { name: '历史名义参数前十的 OOS 收益' })).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: /参数稳健性/ }))
+    expect(screen.getByRole('region', { name: '历史名义参数表现矩阵' })).toBeVisible()
   })
 
   it('缺失指标保持空状态，不把 null 画成零收益', () => {
@@ -367,7 +474,33 @@ describe('专业回测工作台', () => {
     }} />)
 
     expect(screen.queryAllByTestId('result-echart')).toHaveLength(0)
-    expect(screen.getAllByText('暂无可绘制数据')).toHaveLength(5)
+    expect(screen.getAllByText('暂无可绘制数据').length).toBeGreaterThan(0)
+    for (const tab of ['交易画像', '参数稳健性', '业绩与风险']) {
+      fireEvent.click(screen.getByRole('tab', { name: new RegExp(tab) }))
+      expect(screen.queryAllByTestId('result-echart')).toHaveLength(0)
+    }
+  })
+
+  it('仅有平均单笔收益不能替代组合总收益', () => {
+    const base = completedTask.result!
+    const onlyAverage = { net_avg_return: 0.08 }
+    render(<BacktestResultCharts result={{
+      ...base,
+      selected: { ...base.selected!, is: onlyAverage, oos: onlyAverage },
+      leaderboard: [{ ...base.leaderboard[0], is: onlyAverage, oos: onlyAverage }],
+      independent_leaderboard: [{ ...base.leaderboard[0], is: onlyAverage, oos: onlyAverage }],
+      baselines: {},
+      cost_stress: null,
+      wf: { evidence_complete: false, wf_pass: false, wf_detail: [] },
+    }} />)
+
+    const baseline = screen.getByRole('region', { name: 'OOS 基线对照' })
+    expect(within(baseline).queryByTestId('result-echart')).not.toBeInTheDocument()
+    expect(within(baseline).getByText('暂无可绘制数据')).toBeVisible()
+    fireEvent.click(screen.getByRole('tab', { name: /参数稳健性/ }))
+    const risk = screen.getByRole('region', { name: '参数风险收益分布' })
+    expect(within(risk).queryByTestId('result-echart')).not.toBeInTheDocument()
+    expect(within(risk).getByText('暂无可绘制数据')).toBeVisible()
   })
 
   it('切换分类标准后把所选细分方向写入预览请求', async () => {

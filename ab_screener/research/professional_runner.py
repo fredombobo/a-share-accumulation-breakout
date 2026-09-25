@@ -14,6 +14,7 @@ import pandas as pd
 
 from ab_screener.research.condition_plugins import resolve_enabled_conditions
 from ab_screener.research.data_scope import inspect_scope
+from ab_screener.research.market_benchmark import BENCHMARK_CODE, build_market_comparison
 from ab_screener.research.portfolio_metric_contract import (
     normalize_portfolio_metrics,
     portfolio_total_return,
@@ -89,11 +90,13 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
             ]
             scope_start = min([windows["is"][0]] + [row["train_start"] for row in windows["wf"]])
             data_scope = inspect_scope(db_path, universe["codes"], scope_start, windows["oos"][1], history_days)
+    from ab_screener.research.trusted_run import trusted_portfolio_identity
     from build_version import build_version
 
     normalized = {
-        "contract_version": "professional-backtest-v1.6.0",
+        "contract_version": "professional-backtest-v1.8.0",
         "code_version": build_version(),
+        "portfolio_model": trusted_portfolio_identity(),
         "data_scope": data_scope,
         "strategy": strategy,
         "sample_step": step,
@@ -129,6 +132,11 @@ def prepare_professional_request(db_path: str | Path, payload: dict[str, Any]) -
             ),
         },
     }
+    if data_scope.get("can_run"):
+        from ab_screener.research.pit_reader import latest_research_cutoff
+
+        normalized["knowledge_cutoff"] = latest_research_cutoff(db_path)
+    normalized["market_benchmark"] = {"code": BENCHMARK_CODE, "version": "market-price-comparison-v1"}
     normalized["input_hash"] = request_hash(normalized)
     return normalized
 
@@ -139,15 +147,19 @@ def execute_professional_run(
     *,
     progress: ProgressCallback,
     cancel_check: CancelCheck,
+    trial_checkpoint: Callable[[list[dict[str, Any]]], None] | None = None,
 ) -> dict[str, Any]:
     """Run IS selection, OOS, WF, baselines and 2x cost stress."""
     from ab_screener.research.backtest_engine import run_single_backtest
     from ab_screener.research.baselines import ma_cross_baseline, random_baseline_trades
     from ab_screener.research.pit_reader import build_research_pit_snapshot
-    from ab_screener.research.trusted_run import trusted_portfolio_policy
+    from ab_screener.research.trusted_run import trusted_portfolio_identity, trusted_portfolio_policy
     from optimizer import ResearchCancelled, run_grid
     from walkforward import wf_recheck
 
+    frozen_model = prepared_request.get("portfolio_model")
+    if frozen_model is not None and frozen_model != trusted_portfolio_identity():
+        raise ProfessionalGridError("EXECUTION_MODEL_CHANGED", "成交或组合模型已变化，请重新准备研究请求")
     expanded = expand_parameter_space(prepared_request["parameters"])
     if prepared_request.get("data_scope", {}).get("can_run") is False:
         raise ProfessionalGridError("RESEARCH_DATA_SCOPE_INCOMPLETE", "研究/预热行情不完整",
@@ -171,6 +183,8 @@ def execute_professional_run(
         max_codes=len(prepared_request["universe"]["codes"]),
         history_days=max(540, horizon * 2),
         universe_codes=prepared_request["universe"]["codes"],
+        benchmark_code=BENCHMARK_CODE,
+        decision_at=prepared_request.get("knowledge_cutoff"),
     )
     policy = trusted_portfolio_policy()
     if cancel_check():
@@ -255,12 +269,25 @@ def execute_professional_run(
                     "oos": _metric_subset(oos_map.get(key)),
                 }
             )
+        if trial_checkpoint is not None:
+            # Persist every completed trial before later WF/baseline work can
+            # fail; the UI leaderboard is intentionally capped at 100 rows.
+            trial_checkpoint([_clean(row) for row in composites[-len(exit_groups):]])
         progress("GRID", next_pct, f"参数组 {index + 1}/{len(signal_groups)} 完成")
 
     leaderboard = sorted(composites, key=_is_rank, reverse=True)
     path_analysis = _path_analysis(leaderboard)
     independent_leaderboard = _independent_leaderboard(leaderboard)
     best = next((row for row in leaderboard if int(row["is"].get("net_n_trades") or 0) >= 30), None)
+    # A frozen single-mechanism diagnostic must retain a small sample, not hide
+    # its costs/WF/benchmark just because it cannot be promoted.
+    fixed_diagnostic = (
+        (prepared_request.get("research_boundary") or {}).get("mode")
+        == "PREREGISTERED_HISTORICAL_DIAGNOSTIC"
+    )
+    if (best is None and (entry_mechanism.get("research_only") or fixed_diagnostic) and len(leaderboard) == 1
+            and int(leaderboard[0]["is"].get("net_n_trades") or 0) > 0):
+        best = leaderboard[0]
     if best is None:
         research_only = bool(entry_mechanism.get("research_only"))
         empty_result = {
@@ -277,6 +304,7 @@ def execute_professional_run(
             "entry_mechanism": entry_mechanism,
             "leaderboard": leaderboard[:100],
             "independent_leaderboard": independent_leaderboard[:100],
+            "evaluated_combinations": len(leaderboard),
             "path_analysis": path_analysis,
             "selected": None,
             "wf": None,
@@ -379,12 +407,15 @@ def execute_professional_run(
                 raise RuntimeError("明细重放与原网格权益哈希不同，拒绝交付不一致报告")
             details[label] = build_details(portfolio, prepared_request["universe"].get("industry_by_code", {}))
     progress("REPORT", 96, "生成探索性研究报告")
+    market_comparison = build_market_comparison(
+        snapshot, windows, details, best, portfolio_total_return(cost_stress["metrics"]), wf)
     verdict, verdict_label, reasons = _verdict(
         best,
         wf,
         baselines,
         cost_stress,
         research_only=bool(entry_mechanism.get("research_only")),
+        market_comparison=market_comparison,
     )
     result = {
         "status": "done",
@@ -406,6 +437,7 @@ def execute_professional_run(
         "path_analysis": path_analysis,
         "selected": _clean(best),
         "account_details": details,
+        "market_comparison": market_comparison,
         "wf": wf,
         "baselines": baselines,
         "cost_stress": cost_stress,
@@ -645,9 +677,21 @@ def _verdict(
     stress: dict[str, Any],
     *,
     research_only: bool = False,
+    market_comparison: dict[str, Any] | None = None,
 ) -> tuple[str, str, list[str]]:
     oos = best["oos"]
     reasons: list[str] = []
+    if best.get("is") is not None and int(best["is"].get("net_n_trades") or 0) < 30:
+        reasons.append("IS 实际成交不足 30 笔，不能因保留诊断结果而视为通过")
+    if market_comparison is not None:
+        if market_comparison.get("status") != "COMPLETE":
+            reasons.append("沪深300同期对照证据不足")
+        else:
+            comparison = market_comparison["oos"]
+            if comparison["excess_return"] <= 0:
+                reasons.append("OOS 净收益未超过同期沪深300价格指数")
+            if comparison.get("stress_excess_return") is None or comparison["stress_excess_return"] <= 0:
+                reasons.append("2 倍成本下未保持相对沪深300的正收益差")
     oos_n = int(oos.get("net_n_trades") or 0)
     if oos_n < 30:
         reasons.append(f"OOS 实际成交仅 {oos_n} 笔，低于 30 笔最低解释门槛")
@@ -757,5 +801,17 @@ def _report_markdown(result: dict[str, Any]) -> str:
             "",
             "## 主要阻断/说明",
             *[f"- {item}" for item in result.get("verdict_reasons") or result.get("warnings", [])],
+            "",
+            "## 沪深300同期价格基准（收益差不是 alpha）",
+            str((result.get("market_comparison") or {}).get("notice", "该报告未记录同期大盘对照")),
+            *[
+                f"- {scope.upper()}：策略 {row['strategy_return']:.2%}；"
+                f"沪深300 {row['benchmark_return']:.2%}；收益差 {row['excess_return'] * 100:.2f} 个百分点；"
+                f"策略回撤 {row['strategy_max_drawdown']:.2%} / 指数回撤 {row['benchmark_max_drawdown']:.2%}"
+                for scope in ("is", "oos")
+                if (row := (result.get("market_comparison") or {}).get(scope))
+                and "strategy_return" in row
+            ],
+            str((result.get("market_comparison") or {}).get("reason", "")),
         ]
     )

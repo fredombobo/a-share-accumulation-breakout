@@ -200,6 +200,7 @@ def test_true_max_hold_parameter_changes_time_exit_path() -> None:
     long_trade = result[param_id("A", long)][0]
 
     assert short_trade["exit"] == long_trade["exit"] == "time"
+    assert short_trade["exit_phase"] == long_trade["exit_phase"] == "CLOSE"
     assert short_trade["days"] == 3
     assert long_trade["days"] == 6
     assert short_trade["exit_date"] != long_trade["exit_date"]

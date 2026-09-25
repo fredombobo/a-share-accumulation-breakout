@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -23,24 +25,11 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def _expected_market_date(conn: sqlite3.Connection, now: datetime) -> str | None:
-    today = now.astimezone(_TZ).strftime("%Y%m%d")
-    before_close = now.astimezone(_TZ).hour < 16
-    if _table_exists(conn, "trade_cal"):
-        operator = "<" if before_close else "<="
-        row = conn.execute(
-            f"SELECT cal_date FROM trade_cal WHERE is_open=1 AND cal_date {operator} ? "
-            "ORDER BY cal_date DESC LIMIT 1",
-            (today,),
-        ).fetchone()
-        if row:
-            return str(row[0])
-    if _table_exists(conn, "daily"):
-        row = conn.execute(
-            "SELECT MAX(trade_date) FROM daily WHERE trade_date<=?", (today,)
-        ).fetchone()
-        return str(row[0]) if row and row[0] else None
-    return None
+def _latest_date(conn: sqlite3.Connection, table: str) -> str | None:
+    if not _table_exists(conn, table):
+        return None
+    row = conn.execute(f"SELECT MAX(trade_date) FROM {table}").fetchone()
+    return str(row[0]) if row and row[0] else None
 
 
 def _response(action: str, **details: Any) -> dict[str, Any]:
@@ -64,22 +53,35 @@ def build_today_guide(
     now = now or datetime.now(_TZ)
     if now.tzinfo is None:
         now = now.replace(tzinfo=_TZ)
-    with sqlite3.connect(str(db_path), timeout=30) as conn:
-        conn.row_factory = sqlite3.Row
-        # fail-closed：legacy 行情表缺失（如仅迁移了 v2 表的副本）→ 视为数据未就绪。
-        latest_market: str | None = None
-        if _table_exists(conn, "daily"):
-            latest_row = conn.execute("SELECT MAX(trade_date) FROM daily").fetchone()
-            latest_market = str(latest_row[0]) if latest_row and latest_row[0] else None
-        expected_market = _expected_market_date(conn, now)
+    from ab_screener.application.scan_publication import read_scan_publication
+    from ab_screener.market_regime import data_freshness
 
-        if latest_market is None or (expected_market and latest_market < expected_market):
-            return _response(
-                "SYNC_DATA",
-                latest_market_date=latest_market,
-                expected_market_date=expected_market,
-                blocker_codes=["MARKET_DATA_STALE"],
-            )
+    path = Path(db_path).resolve()
+    if not path.is_file():
+        return _response("SYNC_DATA", latest_market_date=None, expected_market_date=None,
+                         blocker_codes=["MARKET_DATA_MISSING"])
+    with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=10)) as conn:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        # fail-closed：legacy 行情表缺失（如仅迁移了 v2 表的副本）→ 视为数据未就绪。
+        latest_market = _latest_date(conn, "daily")
+        latest_moneyflow = _latest_date(conn, "moneyflow")
+        latest_basic = _latest_date(conn, "daily_basic")
+        freshness = data_freshness(latest_market or "", store=SimpleNamespace(db_path=path),
+                                   reference_now=now)
+        expected_market = freshness.get("expected_as_of") or None
+        details = {"latest_market_date": latest_market, "expected_market_date": expected_market,
+                   "latest_moneyflow_date": latest_moneyflow, "latest_basic_date": latest_basic,
+                   "freshness": freshness}
+        blockers = list(freshness.get("blocking_reasons") or [])
+        if not freshness.get("is_current"):
+            blockers.append("MARKET_DATA_STALE")
+        if not expected_market or latest_moneyflow != expected_market:
+            blockers.append("MONEYFLOW_DATA_STALE")
+        if not expected_market or latest_basic != expected_market:
+            blockers.append("DAILY_BASIC_DATA_STALE")
+        if blockers:
+            return _response("SYNC_DATA", **details, blocker_codes=blockers)
 
         active_scan = None
         if _table_exists(conn, "scan_jobs"):
@@ -93,29 +95,24 @@ def build_today_guide(
                 "WAIT_SCAN",
                 task_id=str(active_scan["task_id"]),
                 task_status=str(active_scan["status"]),
-                latest_market_date=latest_market,
-                expected_market_date=expected_market,
+                **details,
             )
 
-        scan = None
-        if _table_exists(conn, "scan_runs"):
-            scan = conn.execute(
-                "SELECT run_id,result_hash FROM scan_runs "
-                "WHERE as_of=? AND status='SUCCEEDED' ORDER BY created_at DESC LIMIT 1",
-                (latest_market,),
-            ).fetchone()
-        if scan is None:
+        try:
+            scan = read_scan_publication(path)
+        except (sqlite3.Error, ValueError, KeyError, TypeError):
+            scan = None
+        if not (scan and scan.get("verified") is True and scan.get("state") == "READY"
+                and scan.get("as_of") == expected_market):
             return _response(
                 "RUN_SCAN",
                 trade_date=latest_market,
-                latest_market_date=latest_market,
-                expected_market_date=expected_market,
+                **details,
             )
 
         return _response(
             "DAILY_COMPLETE",
             trade_date=latest_market,
             scan_run_id=str(scan["run_id"]),
-            latest_market_date=latest_market,
-            expected_market_date=expected_market,
+            **details,
         )

@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ab_screener.ai.client import has_provider
+from ab_screener.ai.client import AIModel, default_provider, has_provider
 from ab_screener.api.deps import get_db_path
 from ab_screener.intelligence.ai_analysis import (
     AIInsightError,
@@ -26,14 +26,27 @@ def _signal(db_path: str, ts_code: str) -> tuple[dict[str, Any] | None, str]:
 
 def _with_generation_capability(review: dict[str, Any]) -> dict[str, Any]:
     """Expose model capability without leaking configuration or credentials."""
-    generation_available = has_provider("deepseek")
+    provider = default_provider()
+    models = AIModel.get_all()
+    generation_available = has_provider(provider)
+    status = "configured" if generation_available else "not_configured"
+    if provider not in models:
+        status = "unsupported"
     review["generation"] = {
         "available": generation_available,
-        "provider": "deepseek",
+        "status": status,
+        "provider": provider,
+        "model": models.get(provider, {}).get("model", ""),
+        "providers": [
+            {"id": key, "label": label, "configured": has_provider(key), "model": models[key]["model"]}
+            for key, label in (("deepseek", "DeepSeek"), ("openai", "OpenAI 兼容接口"), ("ollama", "本地 Ollama"))
+        ],
         "message": (
-            "可按需生成外部模型文字解读"
+            "模型配置已读取，尚未验证调用；点击生成后验证连接并解读当前证据"
             if generation_available
-            else "未配置外部模型；本地证据评测已可独立使用"
+            else "AI_PROVIDER 不是受支持的提供方，请检查模型配置"
+            if status == "unsupported"
+            else "模型未配置；Tushare 是行情接口，AI 解读需要单独配置模型服务"
         ),
     }
     return review
@@ -58,7 +71,7 @@ def generate_review(
     db_path: str = Depends(get_db_path),
 ) -> dict[str, Any]:
     """Explicit external-model enhancement; the GET endpoint remains side-effect free."""
-    provider = str(body.get("provider") or "deepseek").lower()
+    provider = str(body.get("provider") or default_provider()).strip().lower()
     if provider not in {"deepseek", "openai", "ollama"}:
         raise HTTPException(
             status_code=422,
@@ -70,6 +83,13 @@ def generate_review(
             detail={"code": "AI_PROVIDER_NOT_CONFIGURED", "message": f"{provider} 未配置；本地证据评测仍可使用", "details": {}, "retryable": True},
         )
     code = str(ts_code).strip().upper()
+    try:
+        review = local_evidence_review(db_path, code)
+    except AIInsightError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "STOCK_NOT_FOUND", "message": str(exc), "details": {}, "retryable": False},
+        ) from exc
     signal, run_id = _signal(db_path, code)
     result = analyze_stock(
         db_path,
@@ -78,13 +98,14 @@ def generate_review(
         refresh=True,
         provider=provider,
         run_id=run_id,
+        persist=False,
     )
     if not result.get("available"):
         raise HTTPException(
             status_code=503,
-            detail={"code": "AI_PROVIDER_FAILED", "message": str(result.get("reason") or "AI 调用失败"), "details": {}, "retryable": True},
+            detail={"code": result.get("error_code") or "AI_PROVIDER_FAILED", "message": str(result.get("reason") or "AI 调用失败"), "details": {"provider": provider}, "retryable": True},
         )
     return {
-        "review": _with_generation_capability(local_evidence_review(db_path, code)),
+        "review": _with_generation_capability(review),
         "generated": result,
     }

@@ -1,11 +1,16 @@
 version: 1
-updated_at: "2026-09-05T18:46:00+08:00"
+updated_at: "2026-09-19T06:59:20+08:00"
 program: PERSONAL-RESEARCH-WORKBENCH
-overall_status: ENGINEERING_ACCEPTED
+overall_status: RESEARCH_SNAPSHOT_EVIDENCE_PENDING
 overall_note: >
+  跳空止损纠错代码与四臂原参数重放摘要已存在，成交模型v2.1.3、组合模型research-portfolio-v2.2.0。
+  2026-09-19只读复核能找到四个原始报告，但未找到摘要所列纠错run_id的原始记录，
+  因此逐笔会计、数据身份、OOS/WF和基线的最终验收仍待原始证据补齐；不能再表述为尚未实施纠错。
+  本次按个人研究开发快照发布，见GITHUB-SNAPSHOT-2026-09-19.md；以下日用验收为此前历史证据。
   当前范围为 AB/8001 每日选股、专业回测与使用说明；不恢复纸面交易或机构控制台。
   离线质量、正常日用链路及桌面/窄屏已验收；固定参数两次回放的权益、成交、成本和数据快照完全一致。
-  最近研究验收构建 30df60d6a142 的工程回放 probt-49462a73e38d 仍为 EXPLORATORY_WEAK；不自动晋级。
+  同期沪深300对照与预登记中期动量配对诊断已交付；研究构建 f75ac755a527、最终呈现构建 1d1102a401a3。
+  probt-mom6m-v1-momentum 为 NO_CANDIDATE/TARGET_NOT_MET，未找到可大幅跑赢的有效因子；不自动晋级。
   原机构 P8 和策略研究失败保留，不等同个人研究产品不能使用，也不包装成策略已通过。
 historical_institutional_status: BLOCKED
 historical_institutional_note: >
@@ -23,6 +28,72 @@ protected_user_docs:
   - docs/RESEARCH-ROADMAP.md
 ready_now: []
 tasks:
+  DUAL-BOARD-DIAGNOSTIC-20260905:
+    status: blocked
+    execution_status: complete
+    research_target: TARGET_NOT_MET
+    final_acceptance: NEEDS_CORRECTION
+    blocker: 原始失败工件保留；已有四臂纠错摘要，但纠错原始报告尚未补齐，不把离线质量通过冒充最终验收
+    plan: docs/DUAL-BOARD-PREREGISTRATION-2026-09-05.md
+    result: docs/DUAL-BOARD-RESULT-2026-09-05.md
+    code_version: 190aa017d295
+    quality: PASS_1230_PYTHON_23_FRONTEND
+    run_ids: [probt-dual-v1-control, probt-dual-v1-momentum]
+    scope: HISTORICAL_DIAGNOSTIC_ONLY
+    strategy_edge_verified: false
+  EXIT-GAP-REAL-QUOTE-CORRECTION:
+    status: blocked
+    implementation_status: complete
+    replay_summary_status: available
+    final_acceptance: EVIDENCE_INCOMPLETE
+    blocker: 摘要对应的四个纠错run_id未在已核对的本机研究库中找到，逐笔会计与数据身份等无法独立复算
+    plan: docs/DUAL-BOARD-RESULT-2026-09-05.md
+    evidence: 对照IS中688179.SH在20250605开盘12.59元，止损成交却为当日最高12.68元
+    reconciliation: docs/GITHUB-SNAPSHOT-2026-09-19.md
+    replay_summary: web/frontend/public/reliability/replay-summary.json
+    summary_completed_at: "2026-09-14T00:15:33+08:00"
+    summary_code_version: c3a798b31cc7
+    execution_model: v2.1.3
+    portfolio_model: research-portfolio-v2.2.0
+    strategy_edge_verified: false
+  FUNDAMENTAL-FACTOR-FOUNDATION-20260905:
+    status: complete
+    plan: docs/FUNDAMENTAL-FACTORS-PREREGISTRATION-2026-09-05.md
+    result: docs/FUNDAMENTAL-FACTORS-RESULT-2026-09-05.md
+    scope: SOURCE_CATALOG_PIT_FORMULAS_AND_DATA_QUALIFICATION
+    code_version: ee8ff8f51c03
+    accepted_scope: ENGINEERING_AND_BOUNDED_DATA_PROBE_ONLY
+    evidence:
+      - 严格质量门1210 Python、23前端、Ruff、Mypy 39文件、架构和构建通过
+      - 3只固定股票、12次真实HTTPS请求、617条财报归档；最终离线重验不重复联网
+      - 13张pt表内容哈希未变，四份归档文件哈希全部校验一致
+    qualification: BLOCKED
+    return_experiment_executed: false
+    strategy_edge_verified: false
+  FUNDAMENTAL-HISTORICAL-DATA-QUALIFICATION:
+    status: blocked
+    blocker: 缺可核验的历史原版和修订时间链、部分借款字段、完整可比单季EPS
+    result: docs/FUNDAMENTAL-FACTORS-RESULT-2026-09-05.md
+  FUNDAMENTAL-FACTOR-SIX-ARM-RESEARCH:
+    status: blocked
+    blocker: 必须先通过 FUNDAMENTAL-HISTORICAL-DATA-QUALIFICATION
+    strategy_edge_verified: false
+  MARKET-EXCESS-MOMENTUM-20260905:
+    status: complete
+    plan: docs/MARKET-EXCESS-MOMENTUM-PREREGISTRATION-2026-09-05.md
+    result: docs/MARKET-EXCESS-MOMENTUM-RESULT-2026-09-05.md
+    completed_at: "2026-09-05T20:19:13+08:00"
+    accepted_scope: ENGINEERING_AND_PAIRED_EXPERIMENT_EXECUTION_ONLY
+    research_build_version: f75ac755a527
+    presentation_build_version: 1d1102a401a3
+    run_ids: [probt-mom6m-v1-control, probt-mom6m-v1-momentum]
+    research_target: TARGET_NOT_MET
+    evidence:
+      - 预登记及同身份两臂逐日运行完成，原权益路径保持一致；没有追加调参。
+      - 严格质量门1177项Python、23项前端、Ruff/Mypy/架构及构建通过；最终呈现修正后23项前端和构建再次通过。
+      - 真实报告1440px/390px、5按钮键盘操作、页面刷新与重启恢复通过；pt_*内容不变。
+    note: 新因子OOS净收益0.026674%，同期沪深300为0.197959%；2倍成本为负且仅7笔，不能称为有效盈利因子。
+    strategy_edge_verified: false
   ONE-CLICK-RUNTIME-HOTFIX-20260905:
     status: complete
     plan: docs/ONE-CLICK-START-HOTFIX-2026-09-05.md
