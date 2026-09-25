@@ -63,6 +63,7 @@ jobs:
             ab_screener/research/scorecard.py scripts/strategy_scorecard.py \
             ab_screener/research/availability_policy.py ab_screener/research/oos_seal.py \
             ab_screener/data/g0_audit.py scripts/run_g0_audit.py \
+            ab_screener/research/cross_section.py scripts/run_cross_section_g2.py scripts/sync_namechange.py \
             ab_screener/api/routers/professional_backtest.py \
             ab_screener/api/routers/lean_ai_review.py \
             ab_screener/intelligence/ai_analysis.py ab_screener/application/today_guide.py \

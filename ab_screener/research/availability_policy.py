@@ -31,6 +31,8 @@ _RULES: dict[str, tuple[time, int] | None] = {
     "stock_basic": (time(0, 0), 0),
     "delisted_basic": (time(0, 0), 0),
     "cyq": None,
+    # ADR-022 修订 1：历史名称按生效日 start_date 当日 00:00 可用（ST 等变更先公告后生效）
+    "namechange": (time(0, 0), 0),
 }
 _FINANCIAL = frozenset({"fina_indicator", "income", "balancesheet", "cashflow"})
 DECISION_TIME = time(9, 15)
@@ -71,7 +73,7 @@ def rule_available_at(
         base = _day(source)
     else:
         if not trade_date:
-            raise AvailabilityPolicyError(f"{dataset} 推定需要 trade_date")
+            raise AvailabilityPolicyError(f"{dataset} 推定需要 trade_date（namechange 传 start_date）")
         base = _day(trade_date)
     return (base + timedelta(days=offset)).replace(hour=at.hour, minute=at.minute)
 

@@ -170,7 +170,13 @@ def judge_g2(doc: dict[str, Any]) -> GateResult:
         reasons.append(f"样本 {n:.0f} < 300")
     if lo <= 0:
         reasons.append(f"聚类 95% CI 下界 {lo:.4f} ≤ 0")
-    if mean <= placebo:
+    # 横截面证据给出伪信号门槛（毛额 95% 分位）时，用毛额对毛额比较；否则沿用事件研究口径
+    threshold = _num(m, "placebo_threshold")
+    compared = _num(m, "gross_mean") if threshold is not None else mean
+    if threshold is not None and compared is not None:
+        if compared <= threshold:
+            reasons.append(f"毛额均值 {compared:.4f} 未超过伪信号 95% 分位 {threshold:.4f}")
+    elif mean <= placebo:
         reasons.append(f"均值 {mean:.4f} 未优于伪事件 {placebo:.4f}")
     return _judge("G2", doc, reasons, kills)
 

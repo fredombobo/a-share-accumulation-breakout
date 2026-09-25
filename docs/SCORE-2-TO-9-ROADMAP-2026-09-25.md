@@ -82,7 +82,15 @@
 .\.venv312\Scripts\python.exe scripts\strategy_scorecard.py --register docs\prereg\H-20260925-abnormal-turnover.md
 .\.venv312\Scripts\python.exe scripts\strategy_scorecard.py --register docs\prereg\H-20260925-ep-value.md
 .\.venv312\Scripts\python.exe scripts\strategy_scorecard.py               # 查看分数与阻断
+.\.venv312\Scripts\python.exe scripts\sync_namechange.py                   # 历史名称（ST 判定，ADR-022 修订 1）
+.\.venv312\Scripts\python.exe scripts\run_cross_section_g2.py --hypothesis H-20260925-max-lottery
+.\.venv312\Scripts\python.exe scripts\run_cross_section_g2.py --hypothesis H-20260925-abnormal-turnover
+.\.venv312\Scripts\python.exe scripts\run_cross_section_g2.py --hypothesis H-20260925-ep-value
+.\.venv312\Scripts\python.exe scripts\strategy_scorecard.py               # 再看 G2 裁决
 ```
+
+`run_cross_section_g2.py` 只读 IS（2016–2023），读取窗口与封存区间重叠即拒绝；每次运行记入试验台账，
+主规格（`--variant 0`）写 `G2.json`，`--variant 1/2` 为 G4 扰动。G2 未通过的假设按止损归档，不解封 OOS、不改定义重跑。
 
 G0 的成本校准项默认不通过：把券商费率确认文件放进证据根，并在 `configs/research/cost_model_v1.json`
 填 `broker_statement` 与哈希后重跑审计。其余五项由数据库实测决定。

@@ -72,6 +72,9 @@ $Stages = @(
             "$Root\ab_screener\research\oos_seal.py" `
             "$Root\ab_screener\data\g0_audit.py" `
             "$Root\scripts\run_g0_audit.py" `
+            "$Root\ab_screener\research\cross_section.py" `
+            "$Root\scripts\run_cross_section_g2.py" `
+            "$Root\scripts\sync_namechange.py" `
             "$Root\paper_trading\rules.py" "$Root\paper_trading\engine.py" `
             "$Root\backtest_custom.py" "$Root\web\backend_app.py"
     } },
