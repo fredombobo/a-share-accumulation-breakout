@@ -31,7 +31,7 @@ def test_plaintext_gateway_is_rejected_without_network_access() -> None:
         tushare_init.init_pro(token="test-token", http_url="http://example.test/")
 
 
-def test_user_specified_http_gateway_and_shared_client(monkeypatch) -> None:
+def test_default_gateway_is_https_and_shared_client(monkeypatch) -> None:
     calls = []
 
     class Response:
@@ -42,24 +42,45 @@ def test_user_specified_http_gateway_and_shared_client(monkeypatch) -> None:
         calls.append((url, kwargs))
         return Response()
 
+    assert tushare_init.DEFAULT_HTTP_URL == "https://a.sszhixia.cn/"
     monkeypatch.setattr(tushare_init.crequests, "post", fake_post)
-    client = tushare_init.init_pro(token="offline-test-token", http_url="http://a.sszhixia.cn/")
+    client = tushare_init.init_pro(token="offline-test-token", http_url=tushare_init.DEFAULT_HTTP_URL)
     result = client.trade_cal(exchange="SSE", start_date="20260911", end_date="20260911")
-    assert calls[0][0] == "http://a.sszhixia.cn/trade_cal"
+    assert calls[0][0] == "https://a.sszhixia.cn/trade_cal"
     assert calls[0][1]["json"]["token"] == "offline-test-token"
+    assert calls[0][1]["verify"] is True
     assert calls[0][1]["allow_redirects"] is False
     assert result.to_dict("records") == [{"cal_date": "20260911"}]
     assert tushare_init.get_pro() is tushare_init.pro
 
 
 @pytest.mark.parametrize("url", [
-    "http://a.sszhixia.cn.evil.test/", "http://a.sszhixia.cn:8080/",
-    "http://a.sszhixia.cn/other/", "http://a.sszhixia.cn/?token=secret",
-    "http://a.sszhixia.cn/#fragment", "http://user:secret@a.sszhixia.cn/",
+    "http://a.sszhixia.cn/", "http://a.sszhixia.cn.evil.test/", "http://a.sszhixia.cn:8080/",
+    "https://a.sszhixia.cn/?token=secret", "https://a.sszhixia.cn/#fragment",
+    "https://user:secret@a.sszhixia.cn/",
 ])
-def test_http_exception_is_limited_to_the_user_specified_root(url) -> None:
+def test_plaintext_and_malformed_gateways_are_rejected(url) -> None:
     with pytest.raises(tushare_init.DataTransportSecurityError):
         tushare_init.init_pro(token="offline-test-token", http_url=url)
+
+
+def test_legacy_plaintext_env_is_upgraded_to_same_host_https(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "TUSHARE_TOKEN=file-token-value\nTUSHARE_HTTP_URL=http://a.sszhixia.cn/\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(tushare_init, "_ENV_PATH", env_file)
+    with pytest.warns(UserWarning, match="明文旧配置"):
+        assert tushare_init.resolve_http_url() == "https://a.sszhixia.cn/"
+
+
+def test_other_plaintext_env_value_is_rejected(tmp_path: Path, monkeypatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("TUSHARE_HTTP_URL=http://other.test/\n", encoding="utf-8")
+    monkeypatch.setattr(tushare_init, "_ENV_PATH", env_file)
+    with pytest.raises(tushare_init.DataTransportSecurityError, match="https://"):
+        tushare_init.resolve_http_url()
 
 
 def test_mutated_client_endpoint_is_checked_before_query(monkeypatch) -> None:
@@ -67,8 +88,8 @@ def test_mutated_client_endpoint_is_checked_before_query(monkeypatch) -> None:
         pytest.fail("invalid endpoint must be rejected before network access")
 
     monkeypatch.setattr(tushare_init.crequests, "post", forbidden_post)
-    client = tushare_init.init_pro(token="offline-test-token", http_url="http://a.sszhixia.cn/")
-    client._DataApi__http_url = "http://other.test/"
+    client = tushare_init.init_pro(token="offline-test-token", http_url="https://a.sszhixia.cn/")
+    client._DataApi__http_url = "http://a.sszhixia.cn/"
     with pytest.raises(tushare_init.DataTransportSecurityError):
         client.trade_cal()
 

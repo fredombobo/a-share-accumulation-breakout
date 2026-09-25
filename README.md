@@ -136,7 +136,7 @@ npm run build          # 更新 dist 后仍可用单端口
 ## 注意
 
 - Token 只放 `.env`，**不要提交、不要发给别人**  
-- 当前指定的数据网关是 `http://a.sszhixia.cn/`，此连接不经过 TLS；其它 HTTP 节点仍拒绝，详见 [调用与传输说明](docs/TUSHARE-CALLING-METHOD.md)。
+- 数据网关为 `https://a.sszhixia.cn/`，强制 HTTPS + 证书验证、拒绝重定向；明文 HTTP 一律拒绝，详见 [调用与传输说明](docs/TUSHARE-CALLING-METHOD.md)。
 - 本地行情库在 `runtime/`（已 gitignore）  
 - 防守环境 A 池为空是风控，不是程序坏了  
 

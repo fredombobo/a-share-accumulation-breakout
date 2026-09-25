@@ -1,6 +1,6 @@
-"""可选 HTTPS/TLS 独立探针；不作为用户指定 HTTP 接口的业务连通性判定。
+"""数据网关 HTTPS/TLS 独立探针：证书元数据 + 一次真实查询。
 
-报告不包含 Token；HTTP 没有 TLS 证书，不能生成 TLS 验证通过结论。
+报告不包含 Token；网关必须是 https://，明文地址在 tushare_init 层即被拒绝。
 """
 from __future__ import annotations
 
