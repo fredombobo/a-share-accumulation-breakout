@@ -59,6 +59,7 @@ jobs:
             ab_screener/operations/runtime_identity.py ab_screener/operations/personal_daily.py \
             ab_screener/data/benchmark_pit_sync.py \
             ab_screener/data/chip_pit_capture.py scripts/capture_chip_pit.py \
+            ab_screener/operations/daily_notify.py \
             ab_screener/api/routers/professional_backtest.py \
             ab_screener/api/routers/lean_ai_review.py \
             ab_screener/intelligence/ai_analysis.py ab_screener/application/today_guide.py \
