@@ -4,13 +4,13 @@
 > 后续所有抓取、回填、smoke **只** `from tushare_init import pro`（或 `get_pro()`）。  
 > 禁止在其它文件再写 `ts.pro_api(...)`、禁止裸 `requests` 直连、禁止把 Token 写进源码。
 
-## 调用方式（用户于 2026-09-14 再确认）
+## 调用方式（2026-09-25 起改回 HTTPS）
 
 ```python
 import os
 import tushare as ts
 pro = ts.pro_api(os.environ['TUSHARE_TOKEN'])
-pro._DataApi__http_url = 'http://a.sszhixia.cn/'
+pro._DataApi__http_url = 'https://a.sszhixia.cn/'
 ```
 
 等价入口（项目内唯一允许的写法）：
@@ -28,18 +28,20 @@ pro = get_pro()
 | 项 | 位置 | 值 |
 |----|------|-----|
 | Token | 项目 `.env` 的 `TUSHARE_TOKEN`（已 gitignore） | 不入库 |
-| HTTP URL | `TUSHARE_HTTP_URL` 或默认 | `http://a.sszhixia.cn/` |
+| HTTP URL | `TUSHARE_HTTP_URL` 或默认 | `https://a.sszhixia.cn/` |
 
 `.env.example` 只保留占位符 `your_token_here`。
 
-本地 `.env` 已保存本次用户提供的 Token 与 `TUSHARE_HTTP_URL=http://a.sszhixia.cn/`。
+本地 `.env` 应为 `TUSHARE_HTTP_URL=https://a.sszhixia.cn/`。若仍是 2026-09-14 ~ 09-25 的
+`http://a.sszhixia.cn/`，读取时会自动升级为同主机 HTTPS 并警告；`bootstrap.py` 会直接改写该行。
 初始化时读取项目 `.env`，覆盖父进程遗留的同名配置。不要在其它模块复制 Token 或另建客户端。
 修改配置后，已有常驻进程需要重启才能使先前导入的客户端生效。
 
 ## 说明
 
 - 底层 query 由 `tushare_init` 用 curl_cffi `impersonate=chrome` 接管，调用方式不变。
-- HTTP 仅允许本次指定的根地址；其它节点须为 HTTPS，仍校验证书并拒绝重定向。
-- 地址使用 HTTP，传输不经过 TLS；不将其标记为 HTTPS / TLS 验证通过。
+- 只允许 HTTPS：校验证书、拒绝重定向；任何明文 HTTP 地址（含运行中改写）一律拒绝。
+- 切换后先在本机运行 `python scripts/check_vendor_tls.py` 确认证书与一次真实查询均通过。
+- 历史：2026-09-14 ~ 09-25 曾按用户指定使用明文 HTTP，期间 Token 未加密传输；如担心泄露，可在供应商处更换 Token。
 - 龙虎榜 smoke：`python scripts/lhb_tushare_smoke.py`（无 Token 则退出，不访问网络）。
 - 日志与异常走 `sanitize_error()`，不得打印 Token。

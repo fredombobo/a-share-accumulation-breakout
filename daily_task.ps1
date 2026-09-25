@@ -59,6 +59,17 @@ try {
     $sw.Flush(); $sw.Close()
 }
 
+# 结果推送：只有 .env 配置了 AB_NOTIFY_WEBHOOK_URL 才会发送；推送成败都不改变退出码。
+$py = Join-Path $Root '.venv312\Scripts\python.exe'
+if (Test-Path -LiteralPath $py) {
+    Push-Location $Root
+    try {
+        & $py -m ab_screener.operations.daily_notify --exit-code $code --log $log 2>&1 | ForEach-Object { Write-Host $_ }
+    } catch {
+        Write-Host "[notify] 推送脚本异常：$($_.Exception.Message)"
+    } finally { Pop-Location }
+}
+
 # 日志轮转：只留最近 N 份
 Get-ChildItem -LiteralPath $logDir -Filter 'daily_task_*.log' -EA SilentlyContinue |
     Sort-Object LastWriteTime -Descending |

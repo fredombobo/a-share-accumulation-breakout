@@ -2,14 +2,14 @@
 Tushare 唯一标准初始化入口（全项目只引用本文件）
 ================================================
 
-用户指定并冻结的标准调用方式（2026-09-14 再确认，后续所有模块一律引用本文件初始化，
+用户指定的标准调用方式（2026-09-25 起改回 HTTPS，后续所有模块一律引用本文件初始化，
 不得在其它文件重复 `ts.pro_api` / 第二套 URL）：
 
 ```python
 import os
 import tushare as ts
 pro = ts.pro_api(os.environ['TUSHARE_TOKEN'])
-pro._DataApi__http_url = 'http://a.sszhixia.cn/'
+pro._DataApi__http_url = 'https://a.sszhixia.cn/'
 ```
 
 Token 只放项目 `.env` 的 `TUSHARE_TOKEN`，禁止写进仓库源码。
@@ -30,6 +30,9 @@ pro = get_pro()
     用 curl_cffi 接管 query（抗 TLS 指纹拦截），调用方式不变。
   - Token 必须通过项目 `.env` 或环境变量的 `TUSHARE_TOKEN` 提供；项目
     `.env` 是本项目权威配置，避免父进程残留旧 Token。
+  - 传输必须 HTTPS + 证书验证 + 禁止重定向。2026-09-14 ~ 09-25 期间使用过的
+    `http://a.sszhixia.cn/` 若仍留在 `.env`，读取配置时自动升级为同主机 HTTPS
+    并给出警告；显式传入或运行中改写为明文地址一律拒绝。
 """
 from __future__ import annotations
 
@@ -67,9 +70,10 @@ from tushare.pro.client import DataApi
 # ═══════════════════════════════════════════════════════════
 # pro = ts.pro_api('<此 token>')
 DEFAULT_TOKEN = ""
-# 用户于 2026-09-14 明确指定的地址；仅此 HTTP 节点是允许的例外。
-# pro._DataApi__http_url = 'http://a.sszhixia.cn/'
-DEFAULT_HTTP_URL = "http://a.sszhixia.cn/"
+# pro._DataApi__http_url = 'https://a.sszhixia.cn/'
+DEFAULT_HTTP_URL = "https://a.sszhixia.cn/"
+# 2026-09-14 ~ 09-25 的明文配置；仅用于把旧 .env 升级为同主机 HTTPS，绝不用于连接。
+LEGACY_PLAINTEXT_URL = "http://a.sszhixia.cn/"
 
 _ENV_PATH = Path(__file__).resolve().parent / ".env"
 
@@ -95,11 +99,11 @@ def _resolve_token() -> str:
 
 
 class DataTransportSecurityError(RuntimeError):
-    """供应商数据通道超出已配置的地址边界。"""
+    """供应商数据通道未满足 TLS 安全边界。"""
 
 
 def validate_http_url(raw: str) -> str:
-    """允许用户指定的 HTTP 根地址，其它节点必须 HTTPS 且不得内嵌凭据。"""
+    """规范化数据网关地址，并拒绝明文、带凭据、带查询/片段或无主机的 URL。"""
     value = raw.strip().rstrip("/") + "/"
     parsed = urlsplit(value)
     if not parsed.hostname:
@@ -108,9 +112,10 @@ def validate_http_url(raw: str) -> str:
         raise DataTransportSecurityError("TUSHARE_HTTP_URL 不得内嵌凭据")
     if parsed.query or parsed.fragment:
         raise DataTransportSecurityError("TUSHARE_HTTP_URL 不得包含查询参数或片段")
-    if parsed.scheme.lower() != "https" and value != DEFAULT_HTTP_URL:
+    if parsed.scheme.lower() != "https":
         raise DataTransportSecurityError(
-            "除用户指定的 http://a.sszhixia.cn/ 外，TUSHARE_HTTP_URL 必须使用 https://"
+            "TUSHARE_HTTP_URL 必须使用 https://（Token 不得明文传输）；"
+            f"请把 .env 改为 TUSHARE_HTTP_URL={DEFAULT_HTTP_URL}"
         )
     return value
 
@@ -118,6 +123,13 @@ def validate_http_url(raw: str) -> str:
 def _resolve_http_url() -> str:
     _load_dotenv()
     raw = (os.environ.get("TUSHARE_HTTP_URL") or DEFAULT_HTTP_URL).strip()
+    if raw.rstrip("/") + "/" == LEGACY_PLAINTEXT_URL:
+        warnings.warn(
+            f"TUSHARE_HTTP_URL={LEGACY_PLAINTEXT_URL} 是明文旧配置，已按同主机升级为 "
+            f"{DEFAULT_HTTP_URL}；请同步修改 .env",
+            stacklevel=2,
+        )
+        raw = DEFAULT_HTTP_URL
     return validate_http_url(raw)
 
 
@@ -193,7 +205,7 @@ def init_pro(token: str | None = None, http_url: str | None = None, timeout: int
     等价于::
 
         pro = ts.pro_api(token)
-        pro._DataApi__http_url = 'http://a.sszhixia.cn/'
+        pro._DataApi__http_url = 'https://a.sszhixia.cn/'
     """
     _patch_dataapi_query_with_curl_cffi()
     tok = (token or _resolve_token()).strip()

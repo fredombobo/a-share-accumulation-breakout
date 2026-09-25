@@ -58,6 +58,12 @@ jobs:
             ab_screener/research/resilient_absorption.py ab_screener/research/post_breakout_supply_dry_up.py \
             ab_screener/operations/runtime_identity.py ab_screener/operations/personal_daily.py \
             ab_screener/data/benchmark_pit_sync.py \
+            ab_screener/data/chip_pit_capture.py scripts/capture_chip_pit.py \
+            ab_screener/operations/daily_notify.py \
+            ab_screener/research/scorecard.py scripts/strategy_scorecard.py \
+            ab_screener/research/availability_policy.py ab_screener/research/oos_seal.py \
+            ab_screener/data/g0_audit.py scripts/run_g0_audit.py \
+            ab_screener/research/cross_section.py scripts/run_cross_section_g2.py scripts/sync_namechange.py \
             ab_screener/api/routers/professional_backtest.py \
             ab_screener/api/routers/lean_ai_review.py \
             ab_screener/intelligence/ai_analysis.py ab_screener/application/today_guide.py \

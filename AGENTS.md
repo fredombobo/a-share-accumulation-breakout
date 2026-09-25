@@ -16,7 +16,7 @@
 | 数据 | `data_fetch.py` / `local_store.py` / `sync_daily.py` | SQLite 增量 + Tushare 直连 |
 | 扫描 | `run_screener.py` | CLI 全市场扫描 → xlsx/md/charts |
 | Web | `web/backend_app.py` + `web/frontend` | FastAPI 8001 + React 3001 |
-| 客户端 | `tushare_init.py`（`tushare_http` 兼容转发） | `ts.pro_api` + `_DataApi__http_url=http://a.sszhixia.cn/`（用户于 2026-09-14 指定；curl_cffi） |
+| 客户端 | `tushare_init.py`（`tushare_http` 兼容转发） | `ts.pro_api` + `_DataApi__http_url=https://a.sszhixia.cn/`（curl_cffi + 证书验证，禁止重定向） |
 
 ## 运行前环境
 
@@ -46,7 +46,7 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 
 ## 硬约束（踩坑后写死）
 
-1. **Tushare 只从 `tushare_init.py` 取 pro**（`from tushare_init import pro`）。用户于 2026-09-14 指定：`ts.pro_api(token)` + `pro._DataApi__http_url = "http://a.sszhixia.cn/"`。调用规范见 `docs/TUSHARE-CALLING-METHOD.md`，Token 保存于受忽略的 `.env`；该明确指定的 HTTP 根地址替代此前 HTTPS 默认值，其它 HTTP 节点仍拒绝。底层沿用 curl_cffi；HTTPS 保留证书验证，所有重定向仍拒绝。
+1. **Tushare 只从 `tushare_init.py` 取 pro**（`from tushare_init import pro`）。标准写法：`ts.pro_api(token)` + `pro._DataApi__http_url = "https://a.sszhixia.cn/"`（2026-09-25 用户确认改回 HTTPS，见 `docs/TUSHARE-CALLING-METHOD.md`）。底层必须 curl_cffi 且开启证书验证；明文 HTTP 或重定向一律 fail-closed（旧 `.env` 的 `http://a.sszhixia.cn/` 仅在读取时升级为同主机 HTTPS）。
 2. **禁止全市场 fina_indicator 循环**；只对候选股 `sync_fina_for_codes`。
 3. **SQLite 每操作新连接**；upsert 用 `ON CONFLICT DO UPDATE`，禁止 `INSERT OR REPLACE`（会静默 NULL 列）。
 4. **sync 按交易日历 diff 补洞**，不要只看 MAX(trade_date)。
@@ -87,6 +87,8 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
   - `full`：可严肃谈 OOS/edge；`degraded`：仅摸底；`insufficient`：禁止优化
 - 历史扩容：`python sync_history.py`（需**有效** Token，目标 ~730 交易日）
 - 自动窗优化：`python run_optimize_plan.py A 600 10`（勿写死 2025 窗）
+- 筹码前向 PIT：`python scripts/capture_chip_pit.py --apply`（日跑第 2 步自动执行，只前向、不补历史）；`--readiness` 看严格口径可用交易日。见 `docs/CHIP-PIT-FORWARD-CAPTURE-2026-09-25.md`
+- 评分：`python scripts/strategy_scorecard.py` 机器裁决（证据根 `runtime/research/scorecard/`）；G0 审计 `scripts/run_g0_audit.py`；研究口径见 ADR-022（rule-v1 可用时点、三个预登记机制、OOS 2024-01-01~2026-09-25 封存由 `oos_seal.py` 强制，禁止绕过或二次解封）
 
 ## 入场定义（冻结 v1）
 
