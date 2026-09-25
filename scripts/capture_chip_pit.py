@@ -67,7 +67,7 @@ def main() -> int:
             )
         except ChipCaptureError:
             raise
-        except Exception as exc:  # noqa: BLE001 - 供应商异常统一脱敏后失败
+        except Exception as exc:  # 供应商异常统一脱敏后失败
             if args.apply:
                 raise ChipCaptureError(sanitize_error(exc)) from exc
             raise
