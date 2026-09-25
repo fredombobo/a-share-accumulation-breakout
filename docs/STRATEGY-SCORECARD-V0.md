@@ -66,6 +66,8 @@
 
 **当前分数：2/10**（证据为负 + 测量底座部分可用）。本标尺不因工程完整度加分。
 
+> 2026-09-25 起分数以机器裁决为准：`python scripts/strategy_scorecard.py`（证据根 `runtime/research/scorecard/`），见 `SCORE-2-TO-9-ROADMAP-2026-09-25.md`。
+
 ## 5. 与研究文档的关系
 
 - 本文件只定义门禁与分数映射，不定义策略。

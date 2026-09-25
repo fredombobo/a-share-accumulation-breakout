@@ -66,6 +66,8 @@ $Stages = @(
             "$Root\ab_screener\data\chip_pit_capture.py" `
             "$Root\scripts\capture_chip_pit.py" `
             "$Root\ab_screener\operations\daily_notify.py" `
+            "$Root\ab_screener\research\scorecard.py" `
+            "$Root\scripts\strategy_scorecard.py" `
             "$Root\paper_trading\rules.py" "$Root\paper_trading\engine.py" `
             "$Root\backtest_custom.py" "$Root\web\backend_app.py"
     } },

@@ -25,6 +25,7 @@
 - [STATUS](./STATUS.md) —— 项目状态看板（用户维护，勿由 Agent 覆盖）
 - [RESEARCH-ROADMAP](./RESEARCH-ROADMAP.md) —— 研究路线图（用户维护）
 - [策略评分标尺 v0](./STRATEGY-SCORECARD-V0.md) —— 2→9 分门禁、止损与当前自评
+- [评分 2→9 路线图（2026-09-25）](./SCORE-2-TO-9-ROADMAP-2026-09-25.md) —— 机器裁决命令 `scripts/strategy_scorecard.py`、各档条件与待决事项
 - [预登记模板 v0](./PREREGISTRATION-TEMPLATE-V0.md) —— 新假设开跑前必须填写
 - [Phase 0–2 推进记录（2026-09-14/15）](./PHASE0-2-PROGRESS-2026-09-15.md) —— manifest 竞态修复、Phase 1 事件研究证伪、Phase 2-A 筹码 PIT 阻断
 - [预登记：突破 × 筹码结构](./PREREGISTRATION-CHIP-OVERHANG-2026-09-15.md) —— H-20260915-chip-overhang（含修订 1）
