@@ -3,6 +3,7 @@
 用法：
   python scripts/strategy_scorecard.py                        # 评估并打印分数与下一步阻断
   python scripts/strategy_scorecard.py --report runtime/research/scorecard/latest.json
+  python scripts/strategy_scorecard.py --register docs/prereg/<H>.md   # 冻结文档 → registration.json
   python scripts/strategy_scorecard.py --import-g2 runtime/research/scorecard/<H>/event-study \\
       --hypothesis <H> [--horizon 20]                         # 事件研究产物 → G2 证据
 
@@ -18,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from ab_screener.research.scorecard import evaluate, g2_from_event_study
+from ab_screener.research.scorecard import build_registration, evaluate, g2_from_event_study
 
 DEFAULT_ROOT = Path("runtime/research/scorecard")
 
@@ -30,9 +31,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--import-g2", help="event_study_matched.py 输出目录（须位于证据根内）")
     parser.add_argument("--hypothesis", help="--import-g2 的目标假设 ID")
     parser.add_argument("--horizon", type=int, default=20)
+    parser.add_argument("--register", help="已冻结的预登记文档（docs/prereg/H-*.md）→ registration.json")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
+    if args.register:
+        registration = build_registration(Path(args.register))
+        folder = root / registration["hypothesis_id"]
+        target = folder / "registration.json"
+        if target.exists():
+            print(f"拒绝覆盖已存在的预登记: {target}")
+            return 2
+        folder.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(registration, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        trials = folder / "trials.json"
+        if not trials.exists():
+            trials.write_text('{"trials": []}\n', encoding="utf-8")
+        print(f"预登记已写入 {target}")
     if args.import_g2:
         if not args.hypothesis:
             parser.error("--import-g2 需要 --hypothesis")

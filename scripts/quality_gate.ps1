@@ -68,6 +68,10 @@ $Stages = @(
             "$Root\ab_screener\operations\daily_notify.py" `
             "$Root\ab_screener\research\scorecard.py" `
             "$Root\scripts\strategy_scorecard.py" `
+            "$Root\ab_screener\research\availability_policy.py" `
+            "$Root\ab_screener\research\oos_seal.py" `
+            "$Root\ab_screener\data\g0_audit.py" `
+            "$Root\scripts\run_g0_audit.py" `
             "$Root\paper_trading\rules.py" "$Root\paper_trading\engine.py" `
             "$Root\backtest_custom.py" "$Root\web\backend_app.py"
     } },

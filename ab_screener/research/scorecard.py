@@ -497,3 +497,33 @@ def g2_from_event_study(study_dir: Path, evidence_root: Path, *, horizon: int = 
             "placebo_mean": placebo.get("mean"),
         },
     }
+
+
+def build_registration(doc_path: Path, *, repo_root: Path | None = None) -> dict[str, Any]:
+    """从已冻结的预登记文档生成 registration.json 内容（校验通用协议哈希）。"""
+    import re
+
+    repo = (repo_root or _repo_root()).resolve()
+    doc = (repo / doc_path).resolve() if not Path(doc_path).is_absolute() else Path(doc_path).resolve()
+    if not doc.is_relative_to(repo):
+        raise ValueError("预登记文档必须位于仓库内")
+    text = doc.read_text(encoding="utf-8")
+    title = re.search(r"^# 预登记：(H-\d{8}-[a-z0-9-]+)", text, re.MULTILINE)
+    frozen = re.search(r"已冻结\*\*\s*(\S+\+08:00)", text)
+    trials = re.search(r"max_trials = (\d+)", text)
+    mechanism = re.search(r"^- 一句话：(.+)$", text, re.MULTILINE)
+    if not (title and frozen and trials and mechanism):
+        raise ValueError("预登记文档缺少 hypothesis_id / 冻结时间 / max_trials / 机制一句话")
+    for ref_path, ref_sha in re.findall(r"`(docs/prereg/[^`]+\.md)` SHA-256 `([0-9a-f]{64})`", text):
+        if sha256_file(repo / ref_path) != ref_sha:
+            raise ValueError(f"引用的通用协议 {ref_path} 已被修改（SHA-256 不符）")
+    if _parse_time(frozen.group(1)) is None:
+        raise ValueError("冻结时间不可解析")
+    return {
+        "hypothesis_id": title.group(1),
+        "frozen_at": frozen.group(1),
+        "mechanism": mechanism.group(1).strip(),
+        "document": str(doc.relative_to(repo)),
+        "document_sha256": sha256_file(doc),
+        "max_trials": int(trials.group(1)),
+    }

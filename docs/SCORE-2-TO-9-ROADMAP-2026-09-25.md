@@ -64,7 +64,30 @@
 - 9 分额外要求前瞻一致记录 ≥12 个月、无衰减、3× 成本仍为正；
 - G7：换数据源/市场/制度阶段复现，且由不同实现复算通过。
 
-## 3. 需要你做的决定
+## 3. 已确定的三项口径（ADR-022，2026-09-25）
+
+用户授权按最合理方案确定，见 `docs/ADR/ADR-022-research-decisions-2026-09-25.md`：
+
+1. 历史 PIT：**捕获 + 规则推定**双口径（rule-v1），报告分开统计；筹码只接受真实捕获。
+2. 新机制：`H-20260925-max-lottery`、`H-20260925-abnormal-turnover`、`H-20260925-ep-value`，
+   预登记 `docs/prereg/`（已冻结）；OOS `2024-01-01~2026-09-25` 由 `configs/research/oos_seal.json` 封存，
+   代码强制、每个假设只可解封一次。
+3. 组合弱相关阈值：月度超额收益两两相关 ≤ 0.5。
+
+### 本机下一步命令（按顺序）
+
+```powershell
+.\.venv312\Scripts\python.exe scripts\run_g0_audit.py                    # G0 审计（只读）
+.\.venv312\Scripts\python.exe scripts\strategy_scorecard.py --register docs\prereg\H-20260925-max-lottery.md
+.\.venv312\Scripts\python.exe scripts\strategy_scorecard.py --register docs\prereg\H-20260925-abnormal-turnover.md
+.\.venv312\Scripts\python.exe scripts\strategy_scorecard.py --register docs\prereg\H-20260925-ep-value.md
+.\.venv312\Scripts\python.exe scripts\strategy_scorecard.py               # 查看分数与阻断
+```
+
+G0 的成本校准项默认不通过：把券商费率确认文件放进证据根，并在 `configs/research/cost_model_v1.json`
+填 `broker_statement` 与哈希后重跑审计。其余五项由数据库实测决定。
+
+## 3b. 原待决事项（已由上节决定）
 
 1. **历史 PIT 口径**：标尺要求“全历史 PIT 可用时点”，而库里早期数据是批量入库。二选一：
    - A. 只承认真实捕获时点（最严格）：G0 只能从捕获日起算，历史研究永远不能过 G0；

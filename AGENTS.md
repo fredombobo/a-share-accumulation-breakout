@@ -88,6 +88,7 @@ Web（进阶）：单端口已托管 `web/frontend/dist`，一般只需 `backend
 - 历史扩容：`python sync_history.py`（需**有效** Token，目标 ~730 交易日）
 - 自动窗优化：`python run_optimize_plan.py A 600 10`（勿写死 2025 窗）
 - 筹码前向 PIT：`python scripts/capture_chip_pit.py --apply`（日跑第 2 步自动执行，只前向、不补历史）；`--readiness` 看严格口径可用交易日。见 `docs/CHIP-PIT-FORWARD-CAPTURE-2026-09-25.md`
+- 评分：`python scripts/strategy_scorecard.py` 机器裁决（证据根 `runtime/research/scorecard/`）；G0 审计 `scripts/run_g0_audit.py`；研究口径见 ADR-022（rule-v1 可用时点、三个预登记机制、OOS 2024-01-01~2026-09-25 封存由 `oos_seal.py` 强制，禁止绕过或二次解封）
 
 ## 入场定义（冻结 v1）
 
