@@ -126,6 +126,8 @@ export interface OverviewItem {
   reasons: string
   pool?: string
   tier?: string
+  a_pool_mode?: 'TRADEABLE' | 'RESEARCH_GATED' | string | null
+  research_candidate?: boolean
   tradeable?: boolean
   trade?: TradeCard
   fina?: FinaRow[]

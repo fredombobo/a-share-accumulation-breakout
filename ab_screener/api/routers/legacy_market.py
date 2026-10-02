@@ -25,6 +25,7 @@ from ab_screener.domain.market_classification import (
     ClassificationDefinition,
     get_classification,
 )
+from config import B_DISPLAY_MIN_SCORE
 from scoring import calc_fund_flow_strength
 from signals import detect_accumulation_breakout
 
@@ -341,6 +342,11 @@ def overview(pool: str = "A", run_id: str | None = None):
     selected = []
     for row in rows:
         pool_tag, tier = _parse_pool_tier(row.get("reasons"))
+        # Historical publications created before the scanner-side display
+        # gate may still contain low-score B rows. Keep the page contract
+        # stable without rewriting immutable audit payloads.
+        if pool_tag == "B" and (_number(row.get("total_score")) or 0) < B_DISPLAY_MIN_SCORE:
+            continue
         totals[pool_tag] += 1
         if pool == "ALL" or pool == pool_tag:
             selected.append((row, pool_tag, tier))
@@ -382,7 +388,10 @@ def overview(pool: str = "A", run_id: str | None = None):
             )},
             "score": _number(row.get("total_score")) or 0,
             "breakout_date": row.get("breakout_date") or "", "reasons": str(row.get("reasons") or ""),
-            "pool": pool_tag, "tier": tier, "tradeable": False, "trade": None,
+            "pool": pool_tag, "tier": tier,
+            "a_pool_mode": row.get("a_pool_mode") or ("TRADEABLE" if pool_tag == "A" and tier == "strict" else None),
+            "research_candidate": bool(row.get("research_candidate") or row.get("a_pool_mode") == "RESEARCH_GATED"),
+            "tradeable": False, "trade": None,
             "candidate_status": "CURRENT_CANDIDATE" if current else "HISTORICAL_CANDIDATE",
             "is_current_candidate": current, "scan_as_of": scan_as_of,
             "signal_as_of": sig["as_of"], "price_as_of": row.get("trade_date") or scan_as_of,
@@ -525,6 +534,8 @@ def stock_detail(ts_code: str, run_id: str | None = None):
         "chart_basis": "THROUGH_SCAN_DATE" if historical_end else "LATEST_AVAILABLE",
         "classification_basis": "CURRENT_STOCK_BASIC",
         "fina": fina,
+        "a_pool_mode": (candidate or {}).get("a_pool_mode") or ("TRADEABLE" if pool == "A" and tier == "strict" else None),
+        "research_candidate": bool((candidate or {}).get("research_candidate") or (candidate or {}).get("a_pool_mode") == "RESEARCH_GATED"),
         "tradeable": False,
         "trade": None,
         "pool": pool,

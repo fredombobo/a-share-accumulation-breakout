@@ -43,7 +43,8 @@ function displayTimestamp(value?: string) {
     day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(value))
 }
 
-function tierBadge(tier?: string, pool?: string, tradeable?: boolean) {
+function tierBadge(tier?: string, pool?: string, tradeable?: boolean, aPoolMode?: string | null) {
+  if (pool === 'A' && aPoolMode === 'RESEARCH_GATED') return { text: 'A 研究候选', cls: 'pill warn' }
   if (pool === 'A' && (tradeable || tier === 'strict')) return { text: '严格候选', cls: 'pill ok' }
   if (pool === 'A') return { text: 'A 池', cls: 'pill ok' }
   const t = (tier || '').toLowerCase()
@@ -556,6 +557,7 @@ export default function Overview() {
   const defense = regime?.allow_new_entries === false
   const cancelling = scanStatus?.status === 'cancelling' || !!scanStatus?.cancel_requested
   const publication = visibleData?.publication
+  const researchQuota = publication?.pool_report?.research_a as { weekly_used_count?: number; max_count?: number; new_selected?: number } | undefined
   const isHistory = !!selectedRun || visibleData?.view_state === 'HISTORICAL'
   const entryChanged = !!(publication?.entry_hash && profileState?.active.entry_hash && publication.entry_hash !== profileState.active.entry_hash)
   const completeCount = publication?.qualification?.total ?? publication?.qualification?.counts?.total
@@ -621,7 +623,7 @@ export default function Overview() {
             {scanning && <button className="btn btn-danger" type="button" onClick={onCancel} disabled={cancelling}><IcoStop size={14} />取消扫描</button>}
           </div>
         </div>
-        <p className="overview-config-note">条件用于严格形态筛选，观察补量沿用固定规则。展示上限不改变完整资格名单；新设置在下一次扫描生效。{profileState && profileState.active.required_scan_days > days ? ` 本档案需要至少 ${profileState.active.required_scan_days} 日，扫描时自动扩展。` : ''}</p>
+        <p className="overview-config-note">条件用于严格形态筛选，观察补量沿用固定规则；B 池页面与导出只展示综合分 ≥80 的股票，低分证据仍保留在完整资格快照。展示上限不改变完整资格名单；新设置在下一次扫描生效。{profileState && profileState.active.required_scan_days > days ? ` 本档案需要至少 ${profileState.active.required_scan_days} 日，扫描时自动扩展。` : ''}</p>
         {entryChanged && <p className="overview-entry-changed">下一次条件已改变。本次结果仍保留扫描时的条件与证据。</p>}
         {manualProfileOpen && manualProfile && (
           <section className="overview-entry-editor" aria-label="下一次扫描筛选条件">
@@ -661,7 +663,7 @@ export default function Overview() {
         <div className="overview-results-heading">
           <div><span className="overview-eyebrow">SCAN RESULTS</span><h2 id="overview-results-title">{selectedRun ? '历史结果' : '本次结果'} <span className="overview-count">{visibleData ? items.length : '—'}</span></h2></div>
           <div className="overview-pool-tabs" role="tablist" aria-label="股票池">
-            {(['A', 'B', 'ALL'] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={pool === value} className={pool === value ? 'is-active' : ''} onClick={() => setPool(value)}>{value === 'A' ? 'A · 严格候选' : value === 'B' ? 'B · 观察名单' : '全部'}</button>)}
+            {(['A', 'B', 'ALL'] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={pool === value} className={pool === value ? 'is-active' : ''} onClick={() => setPool(value)}>{value === 'A' ? 'A · 候选（含研究）' : value === 'B' ? 'B · 观察名单' : '全部'}</button>)}
           </div>
         </div>
         <div className="overview-result-identity">
@@ -674,10 +676,11 @@ export default function Overview() {
           <span>本次条件 <b className="num" title={publication.entry_hash}>{publication.entry_hash?.slice(0, 12) || '未记录'}</b></span>
           <span>完整资格 <b>{publication.qualification_integrity_error ? '核对未通过' : completeCount ?? '旧记录未归档'}</b></span>
           <span>展示 A / B <b>{publication.counts ? `${publication.counts.A} / ${publication.counts.B}` : '未记录'}</b></span>
+          {typeof researchQuota?.weekly_used_count === 'number' && <span>研究 A 本周 <b>{researchQuota.weekly_used_count} / {researchQuota.max_count ?? 7}</b>{typeof researchQuota.new_selected === 'number' ? ` · 本次新增 ${researchQuota.new_selected}` : ''}</span>}
           {typeof publication.pool_report?.withheld_strict === 'number' && publication.pool_report.withheld_strict > 0 && <span>严格形态转观察 <b>{publication.pool_report.withheld_strict} 只</b></span>}
         </div>}
         {publication?.qualification_integrity_error && <div className="overview-notice is-error" role="alert">完整名单的数量、哈希或证据未通过一致性核对。请重新扫描，当前记录不可作为有效候选。</div>}
-        {defense && publication && <p className="overview-gate-note">本次市场环境处于防守期，严格形态会进入观察名单；A 池为零不表示扫描失败。</p>}
+        {defense && publication && <p className="overview-gate-note">本次市场环境处于防守期；A 池中的“研究候选”仅供盘后复核，不自动生成交易计划。</p>}
         <div className="overview-results-meta">
           <span>扫描基准日 <b className="num">{displayDate(visibleData?.as_of)}</b></span>
           {historicalResult && visibleData && <span className="overview-history-label">历史缓存 · 待核对</span>}
@@ -691,7 +694,7 @@ export default function Overview() {
         ) : items.length ? (
           <div className="overview-candidates">
             {items.map((it, index) => {
-              const badge = tierBadge(it.tier, it.pool, it.tradeable)
+              const badge = tierBadge(it.tier, it.pool, it.tradeable, it.a_pool_mode)
               const chart = miniOption(it)
               const reasons = it.reasons.replace(/^\[[^\]]+\]\s*/, '').split('；').filter(Boolean).slice(0, 3).join(' · ')
               return (
@@ -713,7 +716,7 @@ export default function Overview() {
             })}
           </div>
         ) : (
-          <div className="overview-empty"><span className="overview-empty-symbol" aria-hidden="true">∅</span><h3>{err ? '暂未取得当前池结果' : '当前池暂无候选'}</h3><p>{visibleData?.empty_reason || (err ? '请重试读取结果，或稍后再来查看。' : defense ? '当前处于防守环境，没有严格候选是正常结果。' : '空名单也是筛选结果，可以查看其他股票池或调整下一次筛选条件。')}</p></div>
+          <div className="overview-empty"><span className="overview-empty-symbol" aria-hidden="true">∅</span><h3>{err ? '暂未取得当前池结果' : '当前池暂无候选'}</h3><p>{visibleData?.empty_reason || (err ? '请重试读取结果，或稍后再来查看。' : pool === 'B' ? '当前没有综合分 ≥80 的观察候选；低分证据仍保留在完整资格快照。' : defense ? '当前处于防守环境；若没有满足研究配额的完整证据候选，A 池会保持为空。' : '空名单也是筛选结果，可以查看其他股票池或调整下一次筛选条件。')}</p></div>
         )}
       </section>
 

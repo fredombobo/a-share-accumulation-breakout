@@ -76,7 +76,7 @@ __all__ = [
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="横盘吸筹→启动 选股（A池可交易 / B池观察）")
+    parser = argparse.ArgumentParser(description="横盘吸筹→启动 选股（A池含研究候选 / B池观察）")
     parser.add_argument("--top", type=int, default=TOP_N, help="A 池数量（默认15）")
     parser.add_argument("--days", type=int, default=HORIZON_DAYS, help="回看天数")
     parser.add_argument("--force", action="store_true", help="强制重新拉取数据")
@@ -106,7 +106,7 @@ def main() -> int:
     print(f"A池: {result.get('pool_report', {}).get('a_count')}  B池: {result.get('pool_report', {}).get('b_count')}")
     if df is not None and not df.empty:
         cols = [c for c in ["代码", "名称", "池", "筛选层级", "主题板块", "最新价", "综合分", "止损价", "目标1", "建议仓位%", "可交易"] if c in df.columns]
-        print("\n-- A 池可交易 --")
+        print("\n-- A 池候选（研究型仅供复核，不自动交易） --")
         print(df[cols].to_string(index=False))
     dfb = result.get("df_b")
     if dfb is not None and not dfb.empty:

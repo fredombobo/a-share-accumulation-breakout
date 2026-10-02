@@ -81,6 +81,20 @@ def _pool_and_tier(reasons: object) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _is_research_a(row: Mapping[str, Any], pool: str | None, tier: str | None) -> bool:
+    """Return whether an A row is the explicitly gated research fallback.
+
+    Research A rows are allowed to be relaxed, or to be strict during a market
+    defense regime, but they must carry the immutable ``RESEARCH_GATED`` marker
+    written by the scanner. This keeps the production strict A contract closed
+    while making the fallback auditable.
+    """
+    if pool != "A":
+        return False
+    mode = str(row.get("a_pool_mode") or "").upper()
+    return mode == "RESEARCH_GATED" and tier in {"strict", "relaxed"}
+
+
 QUALIFICATION_VERSION = 1
 QUALIFICATION_SCOPE = "DAILY_SCAN_QUALIFIED_V1"
 
@@ -147,7 +161,12 @@ def _validate_qualification(result: Mapping[str, Any], final: list[dict], as_of:
             raise ValueError("qualified pool/tier lineage mismatch")
         fresh = result.get("freshness") or {}
         regime = result.get("regime") or {}
-        if pool == "A" and (tier != "strict" or fresh.get("can_publish_a") is not True or regime.get("allow_new_entries") is not True):
+        research_a = _is_research_a(row, pool, tier)
+        if pool == "A" and (
+            fresh.get("can_publish_a") is not True
+            or (not research_a and (tier != "strict" or regime.get("allow_new_entries") is not True))
+            or (research_a and row.get("tradeable") is True)
+        ):
             raise ValueError("qualified A requires strict/current data/market eligibility")
         actual_missing = candidate_data_missing_fields(row, as_of)
         reported_missing = row.get("data_missing_fields") or []
@@ -323,8 +342,8 @@ def complete_scan_run(
                 pool, tier = _pool_and_tier(candidate.get('reasons'))
                 if not code or code in seen or str(candidate.get('trade_date')) != as_of or pool not in counts:
                     raise ValueError('invalid/duplicate candidate or publication date/pool mismatch')
-                if pool == 'A' and tier != 'strict':
-                    raise ValueError('only strict candidates may be published in A')
+                if pool == 'A' and tier != 'strict' and not _is_research_a(candidate, pool, tier):
+                    raise ValueError('only strict or explicitly gated research candidates may be published in A')
                 seen.add(code)
                 counts[pool] += 1
             if counts != {'A': count_a, 'B': count_b}:

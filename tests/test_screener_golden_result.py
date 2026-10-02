@@ -20,7 +20,9 @@ from local_store import LocalStore
 
 AS_OF = "20260807"
 EXPECTED_A_CODES = ["000001.SZ", "000002.SZ", "000003.SZ"]
-EXPECTED_B_CODES = ["000006.SZ"]
+# The fixture's theme observation scores below the B display threshold, so it
+# remains in the complete qualification snapshot but not in the B page list.
+EXPECTED_B_CODES = []
 
 # golden：各 A 池标的（代码, 综合分, 信号强度分, 箱体天数, 箱体振幅%, 突破日）
 GOLDEN_A = {
@@ -295,10 +297,17 @@ def test_scanner_freezes_custom_profile_into_result_and_pool_report(frozen_marke
         "config_hash": custom.config_hash(),
         "a_pool_uses_profile": True,
         "b_pool_uses_profile": False,
-        "daily_extra_gates": [
-            "market_regime", "fund_flow", "fundamentals", "liquidity", "score"
-        ],
-    }
+            "daily_extra_gates": [
+                "market_regime", "fund_flow", "fundamentals", "liquidity", "score"
+            ],
+            "research_a_pool": {
+                "enabled": True,
+                "target": 3,
+                "min": 1,
+                "max": 7,
+                "tradeable": False,
+            },
+        }
 
 
 def test_scan_dataset_version_snapshots_after_cache_partition_write(

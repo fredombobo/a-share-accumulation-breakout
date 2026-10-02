@@ -3,6 +3,7 @@ import copy
 import json
 import sqlite3
 
+import pandas as pd
 import pytest
 
 from ab_screener.application.scan_audit import build_qualification_report, complete_scan_run
@@ -367,7 +368,12 @@ def test_scanner_full_b_is_independent_of_top_and_marks_theme_data_gaps(frozen_m
         monkeypatch.setattr(orchestrator, "TOP_N_WATCH", top_b)
         results.append(run_scan(store=store, as_of=AS_OF, workers=1, days=160, force=True, persist=False))
     assert len({result["qualification_report"]["hash"] for result in results}) == 1
-    assert len(results[0]["df_b"]) == 30 and len(results[1]["df_b"]) == 50
+    assert len(results[0]["df_b"]) <= 30 and len(results[1]["df_b"]) <= 50
+    assert all(
+        pd.to_numeric(result["df_b"].get("综合分", pd.Series(dtype=float)), errors="coerce").ge(80).all()
+        for result in results
+    )
+    assert results[0]["pool_report"]["b_display_min_score"] == 80.0
     full = results[0]["qualified_candidates"]
     assert sum(row["qualified_pool"] == "B" for row in full) >= 61
     by_code = {row["ts_code"]: row for row in full}

@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -42,6 +43,7 @@ from ab_screener.screener.evaluator import (
 from ab_screener.screener.prefilter import prefilter
 from charting import plot_top_kline_batch
 from config import (
+    B_DISPLAY_MIN_SCORE,
     BOX_LADDER_DAYS,
     BUILD_WATCH_POOL,
     FUND_FLOW_DAYS,
@@ -50,6 +52,14 @@ from config import (
     INCLUDE_RELAXED_IN_A,
     RELAXED_FUND_FLOW_MIN_RATIO,
     REQUIRED_THEMES,
+    RESEARCH_A_ALLOW_DEFENSE,
+    RESEARCH_A_MIN_BOX_DAYS,
+    RESEARCH_A_MIN_SCORE,
+    RESEARCH_A_MIN_VOL_RATIO,
+    RESEARCH_A_POOL_ENABLED,
+    RESEARCH_A_POOL_MAX,
+    RESEARCH_A_POOL_MIN,
+    RESEARCH_A_POOL_TARGET,
     TARGET_SELECT_COUNT,
     THEME_MIN_PER_SECTOR,
     TOP_N,
@@ -64,7 +74,7 @@ from config import (
 )
 from market_regime import data_freshness, detect_regime
 from parallel_scan import resolve_workers
-from pool_select import qualified_pools, split_pools
+from pool_select import filter_b_display, qualified_pools, select_research_a, split_pools
 from sector_themes import annotate_themes
 
 # 兼容旧进程缓存的 config（热更新前无此字段）
@@ -76,6 +86,51 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _DEFAULT_THEME_MIN = {t: THEME_MIN_PER_SECTOR for t in REQUIRED_THEMES}
+
+
+def _research_week_state(db_path: str | Path, as_of: str) -> dict[str, object]:
+    """Read the current ISO week’s already-published research A codes.
+
+    The query is read-only and intentionally best-effort: a missing legacy
+    audit table leaves the quota available instead of blocking a scan. The
+    state is used only to avoid showing the same research candidate repeatedly
+    and to cap new research A names at seven per week.
+    """
+    try:
+        day = datetime.strptime(str(as_of)[:8], "%Y%m%d").date()
+    except ValueError:
+        return {"week": "unknown", "used_codes": set(), "remaining": int(RESEARCH_A_POOL_MAX)}
+    monday = day - timedelta(days=day.weekday())
+    sunday = monday + timedelta(days=6)
+    week = f"{day.isocalendar().year}-W{day.isocalendar().week:02d}"
+    used: set[str] = set()
+    try:
+        uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=5) as conn:
+            rows = conn.execute(
+                """
+                SELECT c.payload_json
+                FROM scan_run_candidates c
+                JOIN scan_runs r ON r.run_id=c.run_id
+                WHERE c.stage='final' AND r.status='SUCCEEDED'
+                  AND r.as_of>=? AND r.as_of<=? AND c.pool='A'
+                """,
+                (monday.strftime("%Y%m%d"), sunday.strftime("%Y%m%d")),
+            ).fetchall()
+        for (payload,) in rows:
+            try:
+                item = json.loads(payload or "{}")
+            except (TypeError, ValueError):
+                continue
+            if str(item.get("a_pool_mode") or "").upper() == "RESEARCH_GATED" and item.get("ts_code"):
+                used.add(str(item["ts_code"]))
+    except (OSError, sqlite3.Error):
+        pass
+    return {
+        "week": week,
+        "used_codes": used,
+        "remaining": max(0, int(RESEARCH_A_POOL_MAX) - len(used)),
+    }
 
 
 def _resolve_store(store):
@@ -132,11 +187,19 @@ def _serialize_candidates(parts, latest_date, sig_by_code, quote_dates) -> list[
             evidence = _annotate_candidate_data([r.to_dict()], latest_date, quote_dates)[0]
             tier = str(evidence.get("筛选层级") or "unknown")
             qualified_pool = str(r.get("qualified_pool") or pool_name)
+            a_pool_mode = r.get("a_pool_mode")
+            if not a_pool_mode and qualified_pool == "A" and tier == "strict":
+                # A strict candidate may be displayed in B when the daily
+                # slot limit is exhausted; preserve its qualification lineage
+                # across the final and complete snapshots.
+                a_pool_mode = "TRADEABLE"
             fund_window = r.get("fund_window")
             missing = evidence["data_missing_fields"]
             incomplete = tier == "data_incomplete" or bool(missing) or not isinstance(fund_window, dict) or fund_window.get("complete") is not True
             scan_rows.append({
                 "pool": pool_name, "tier": tier, "source_tier": source_tier, "qualified_pool": qualified_pool,
+                "a_pool_mode": a_pool_mode,
+                "research_candidate": bool(r.get("研究候选") or r.get("research_candidate") or a_pool_mode == "RESEARCH_GATED"),
                 "observation_group": "DATA_INCOMPLETE" if incomplete else qualified_pool,
                 "trade_date": latest_date,
                 "ts_code": r["ts_code"],
@@ -188,7 +251,7 @@ def run_scan(
     profile: StrategyProfile | None = None,
     persist: bool = True,
 ) -> dict:
-    """主扫描：A 池(strict 可交易) + B 池(观察，可选 theme_fill)。
+    """主扫描：A 池(strict 可交易及明确标注的研究候选) + B 池观察。
 
     默认 top = A 池数量（15）。theme_fill 永不混入 A 池。
     cancel_check：返回 True 时在阶段间停止扫描（在不可中断的并行阶段内于分片粒度生效）。
@@ -264,6 +327,17 @@ def run_scan(
         "required_themes": list(REQUIRED_THEMES),
         "theme_selection": "ALL_ELIGIBLE_THEME_OBSERVATIONS", "theme_qualification_quota": None,
         "theme_trigger": {"requires_nonempty_post_ladder": True, "shortfall_count_lt": 3},
+        "research_a_pool": {
+            "enabled": bool(RESEARCH_A_POOL_ENABLED),
+            "target": int(RESEARCH_A_POOL_TARGET),
+            "min": int(RESEARCH_A_POOL_MIN),
+            "max": int(RESEARCH_A_POOL_MAX),
+            "min_score": float(RESEARCH_A_MIN_SCORE),
+            "min_box_days": int(RESEARCH_A_MIN_BOX_DAYS),
+            "min_vol_ratio": float(RESEARCH_A_MIN_VOL_RATIO),
+            "allow_defense": bool(RESEARCH_A_ALLOW_DEFENSE),
+            "tradeable": False,
+        },
     }
     n_workers = resolve_workers(SCAN_WORKERS if workers is None else workers)
 
@@ -558,7 +632,7 @@ def run_scan(
     if _stop_if_cancelled("拆池"):
         return _cancelled_result(regime)
     if not regime.allow_new_entries:
-        _prog("环境", 85, "防守环境：A 池清空（禁止新开仓）；结果仍写入 B/观察供回看")
+        _prog("环境", 85, "防守环境：关闭新开仓名额；保留少量 A 研究候选供盘后复核")
     eligibility_allowed = bool(fresh.get("can_publish_a") and regime.allow_new_entries)
     qualified_a, qualified_b = qualified_pools(df_all, can_publish_a=eligibility_allowed)
     a_df, b_df, pool_report = split_pools(
@@ -569,6 +643,145 @@ def run_scan(
         regime_max_slots=slots,
         can_publish_a=eligibility_allowed,
     )
+
+    # 研究型 A 候选：当 strict A 为空（最常见于防守期）或数量低于
+    # 最低配额时，从完整 B 资格名单中选出 1~7 只高质量 relaxed/strict
+    # 形态。它们仍保留 B 的原始 tier 和证据，但以 A 标签展示，且永远
+    # 标记为 RESEARCH_GATED，不进入交易卡片或自动下单。
+    research_week = _research_week_state(scan_store.db_path, latest_date)
+    research_used_codes = set(research_week.get("used_codes") or set())
+    research_week_remaining = int(research_week.get("remaining") or 0)
+    research_report = {
+        "enabled": bool(RESEARCH_A_POOL_ENABLED),
+        "selected": 0,
+        "target": int(RESEARCH_A_POOL_TARGET),
+        "min_count": int(RESEARCH_A_POOL_MIN),
+        "max_count": int(RESEARCH_A_POOL_MAX),
+        "week": research_week.get("week"),
+        "weekly_used_count": len(research_used_codes),
+        "weekly_remaining": research_week_remaining,
+        "reason": "disabled",
+    }
+    research_enabled = bool(
+        RESEARCH_A_POOL_ENABLED
+        and fresh.get("can_publish_a") is True
+        and (not regime.allow_new_entries and RESEARCH_A_ALLOW_DEFENSE or len(a_df) < RESEARCH_A_POOL_MIN)
+    )
+    if research_enabled and not qualified_b.empty:
+        # Repeated runs in the same ISO week should not keep recycling the
+        # same names as *new* candidates.  Once a name has been published in
+        # this week's research A, it may be retained on a later scan if its
+        # current evidence still passes; that keeps the page useful after the
+        # seven-name weekly cap is reached without inflating the quota.
+        unused_pool = qualified_b.loc[
+            ~qualified_b["ts_code"].astype(str).isin(research_used_codes)
+        ].copy()
+        used_pool = qualified_b.loc[
+            qualified_b["ts_code"].astype(str).isin(research_used_codes)
+        ].copy()
+        new_selected = pd.DataFrame(columns=qualified_b.columns)
+        reused_selected = pd.DataFrame(columns=qualified_b.columns)
+        new_report: dict[str, object] = {}
+        if research_week_remaining > 0 and not unused_pool.empty:
+            effective_target = min(int(RESEARCH_A_POOL_TARGET), research_week_remaining)
+            effective_max = min(int(RESEARCH_A_POOL_MAX), research_week_remaining)
+            effective_min = min(int(RESEARCH_A_POOL_MIN), effective_max)
+            new_selected, _new_remaining, new_report = select_research_a(
+                unused_pool,
+                target=effective_target,
+                min_count=effective_min,
+                max_count=effective_max,
+                min_score=RESEARCH_A_MIN_SCORE,
+                min_box_days=RESEARCH_A_MIN_BOX_DAYS,
+                min_vol_ratio=RESEARCH_A_MIN_VOL_RATIO,
+            )
+        refill_n = max(0, int(RESEARCH_A_POOL_TARGET) - len(new_selected))
+        if refill_n and not used_pool.empty:
+            reused_selected, _reused_remaining, _reused_report = select_research_a(
+                used_pool,
+                target=refill_n,
+                min_count=0,
+                max_count=refill_n,
+                min_score=RESEARCH_A_MIN_SCORE,
+                min_box_days=RESEARCH_A_MIN_BOX_DAYS,
+                min_vol_ratio=RESEARCH_A_MIN_VOL_RATIO,
+            )
+        research_a = _concat_candidate_frames(new_selected, reused_selected)
+        research_report = {
+            "enabled": True,
+            "target": int(RESEARCH_A_POOL_TARGET),
+            "min_count": int(RESEARCH_A_POOL_MIN),
+            "max_count": int(RESEARCH_A_POOL_MAX),
+            "week": research_week.get("week"),
+            "weekly_used_count": len(research_used_codes),
+            "weekly_remaining": research_week_remaining,
+            "selected": int(len(research_a)),
+            "new_selected": int(len(new_selected)),
+            "reused_selected": int(len(reused_selected)),
+            "selected_codes": sorted(research_a["ts_code"].astype(str).tolist()) if not research_a.empty else [],
+            "selected_tiers": research_a["筛选层级"].value_counts().to_dict() if not research_a.empty and "筛选层级" in research_a.columns else {},
+            "reason": "research_quota_filled" if not research_a.empty else str(new_report.get("reason") or "no_eligible_candidates"),
+        }
+        new_codes = set(new_selected["ts_code"].astype(str)) if not new_selected.empty else set()
+        weekly_used_after = len(research_used_codes | new_codes)
+        research_report["weekly_used_count"] = weekly_used_after
+        research_report["weekly_remaining"] = max(0, int(RESEARCH_A_POOL_MAX) - weekly_used_after)
+        research_report["weekly_used_before"] = len(research_used_codes)
+        if not research_a.empty:
+            selected_codes = set(research_a["ts_code"].astype(str))
+            # A/B 展示名单必须互斥；完整资格快照也同步移除已提升的行。
+            qualified_b = qualified_b.loc[
+                ~qualified_b["ts_code"].astype(str).isin(selected_codes)
+            ].reset_index(drop=True)
+            if not b_df.empty and "ts_code" in b_df.columns:
+                b_df = b_df.loc[~b_df["ts_code"].astype(str).isin(selected_codes)].reset_index(drop=True)
+            # 移出研究 A 后用下一顺位观察行补回 B 展示额度，保持 B 池
+            # 的 top_n_watch 语义和历史分页稳定性。
+            if len(b_df) < TOP_N_WATCH and "ts_code" in qualified_b.columns:
+                existing_b = set(b_df["ts_code"].astype(str)) if not b_df.empty else set()
+                refill = qualified_b.loc[
+                    ~qualified_b["ts_code"].astype(str).isin(existing_b | selected_codes)
+                ].head(max(0, TOP_N_WATCH - len(b_df)))
+                b_df = _concat_candidate_frames(b_df, refill).head(TOP_N_WATCH).reset_index(drop=True)
+            a_df = _concat_candidate_frames(a_df, research_a).drop_duplicates("ts_code", keep="first")
+            qualified_a = _concat_candidate_frames(qualified_a, research_a).drop_duplicates("ts_code", keep="first")
+            research_report["mode"] = "防守研究" if not regime.allow_new_entries else "放宽研究"
+        else:
+            research_report["mode"] = "无合格研究候选"
+    elif research_enabled and research_week_remaining <= 0:
+        research_report["reason"] = "weekly_quota_reached_and_no_reusable_candidate"
+        research_report["mode"] = "本周配额已满"
+    elif RESEARCH_A_POOL_ENABLED:
+        research_report["reason"] = "freshness_or_regime_gate"
+
+    # B 池的展示名单只保留综合分达到门槛的观察对象。完整 qualified_b
+    # 快照不做这个裁剪，便于审计、前瞻观察和回测闭环复核。
+    b_df = filter_b_display(b_df, min_score=B_DISPLAY_MIN_SCORE, limit=TOP_N_WATCH)
+    if len(b_df) < TOP_N_WATCH and not qualified_b.empty:
+        existing_b = set(b_df["ts_code"].astype(str)) if not b_df.empty else set()
+        refill = filter_b_display(
+            qualified_b.loc[~qualified_b["ts_code"].astype(str).isin(existing_b)],
+            min_score=B_DISPLAY_MIN_SCORE,
+            limit=TOP_N_WATCH - len(b_df),
+        )
+        b_df = _concat_candidate_frames(b_df, refill).head(TOP_N_WATCH).reset_index(drop=True)
+
+    pool_report["research_a"] = research_report
+    pool_report["research_a_count"] = int(research_report.get("selected") or 0)
+    if a_df is not None and not a_df.empty:
+        tier_column = "筛选层级" if "筛选层级" in a_df.columns else "tier"
+        if tier_column in a_df.columns:
+            pool_report["a_tiers"] = a_df[tier_column].value_counts().to_dict()
+    pool_report["tradeable_a_count"] = int(sum(
+        1 for _, row in a_df.iterrows()
+        if str(row.get("a_pool_mode") or "TRADEABLE") == "TRADEABLE"
+    )) if a_df is not None and not a_df.empty else 0
+    pool_report["a_count"] = int(len(a_df))
+    pool_report["b_count"] = int(len(b_df))
+    pool_report["b_display_min_score"] = float(B_DISPLAY_MIN_SCORE)
+    pool_report["b_display_filtered_count"] = max(0, int(len(qualified_b) - len(b_df)))
+    pool_report["qualified_counts"] = {"A": int(len(qualified_a)), "B": int(len(qualified_b))}
+    pool_report["total_candidates"] = int(len(qualified_a) + len(qualified_b))
     pool_report["box_ladder"] = ladder_rep
     pool_report["strategy_profile"] = {
         "profile_id": active_profile.profile_id,
@@ -577,13 +790,23 @@ def run_scan(
         "a_pool_uses_profile": True,
         "b_pool_uses_profile": False,
         "daily_extra_gates": ["market_regime", "fund_flow", "fundamentals", "liquidity", "score"],
+        "research_a_pool": {
+            "enabled": bool(RESEARCH_A_POOL_ENABLED),
+            "target": int(RESEARCH_A_POOL_TARGET),
+            "min": int(RESEARCH_A_POOL_MIN),
+            "max": int(RESEARCH_A_POOL_MAX),
+            "tradeable": False,
+        },
     }
 
     # 默认输出 A 池；合并导出时 A 在前
     top_df = a_df.copy() if a_df is not None and not a_df.empty else pd.DataFrame()
     export_df = pd.concat([a_df, b_df], ignore_index=True) if build_watch else a_df
 
-    print(f"\nA池(可交易)={len(a_df)}  B池(观察)={len(b_df)}  环境={regime.label}")
+    print(
+        f"\nA池(含研究)={len(a_df)}  可交易strict={pool_report.get('tradeable_a_count', 0)} "
+        f" B池(观察)={len(b_df)}  环境={regime.label}"
+    )
     print(f"池报告: {pool_report}")
 
     # K 线仅 A 池
