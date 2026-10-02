@@ -122,6 +122,8 @@ export interface OverviewItem {
   vol_ratio: number | null
   fund_net_wan: number | null
   fund_ratio: number | null
+  /** 20日收盘动量；研究证据，不参与当前综合分或分池。 */
+  momentum_20d: number | null
   breakout_date: string
   reasons: string
   pool?: string
@@ -293,6 +295,7 @@ export interface StockDetail {
     ma5: number | null
     ma10: number | null
     ma20: number | null
+    momentum_20d: number | null
     reasons: string[]
   }
   fundamentals: {

@@ -300,7 +300,7 @@ def _stored_signal(candidate: dict | None) -> dict:
     """Missing historical fields stay unknown; no current-parameter recalculation."""
     row = candidate or {}
     keys = ("box_high", "box_low", "box_days", "box_amp", "breakout_pct_chg",
-            "vol_shrink_ratio", "ma5", "ma10", "ma20")
+            "vol_shrink_ratio", "ma5", "ma10", "ma20", "momentum_20d")
     return {
         **{key: _number(row.get(key)) for key in keys},
         # scan projection stores box_amp in percent; the signal contract uses
@@ -384,7 +384,7 @@ def overview(pool: str = "A", run_id: str | None = None):
             "name": str(row.get("name") or ""), "industry": str(row.get("industry") or ""),
             **{key: _number(row.get(key)) for key in (
                 "price", "mv_yi", "pe", "pb", "turnover", "box_days", "box_amp",
-                "vol_ratio", "fund_net_wan", "fund_ratio",
+                "vol_ratio", "fund_net_wan", "fund_ratio", "momentum_20d",
             )},
             "score": _number(row.get("total_score")) or 0,
             "breakout_date": row.get("breakout_date") or "", "reasons": str(row.get("reasons") or ""),

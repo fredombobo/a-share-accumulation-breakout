@@ -705,7 +705,7 @@ export default function Overview() {
                   </div>
                   <div className="overview-candidate-chart">{chart ? <EChart option={chart} height={82} /> : <div className="overview-chart-empty">暂无走势数据</div>}<span>{selectedRun ? '扫描日以前' : '近期走势'} · 箱体参考</span></div>
                   <div className="overview-candidate-evidence">
-                    <dl><div><dt>横盘天数</dt><dd className="num">{it.box_days ?? '—'}<small> 日</small></dd></div><div><dt>箱体振幅</dt><dd className="num">{it.box_amp?.toFixed(1) ?? '—'}<small>%</small></dd></div><div><dt>突破量比</dt><dd className="num">{it.vol_ratio?.toFixed(1) ?? '—'}<small>×</small></dd></div></dl>
+                    <dl><div><dt>横盘天数</dt><dd className="num">{it.box_days ?? '—'}<small> 日</small></dd></div><div><dt>箱体振幅</dt><dd className="num">{it.box_amp?.toFixed(1) ?? '—'}<small>%</small></dd></div><div><dt>突破量比</dt><dd className="num">{it.vol_ratio?.toFixed(1) ?? '—'}<small>×</small></dd></div><div><dt>20日动量 <small>研究</small></dt><dd className="num">{it.momentum_20d == null ? '—' : `${(it.momentum_20d * 100).toFixed(1)}%`}</dd></div></dl>
                     <p className="overview-evidence-reason" title={reasons}>{reasons || '暂无入选原因摘要，请查看详情核对。'}</p>
                     <span className="overview-breakout-date">突破日 {displayDate(it.breakout_date)}</span>
                     {it.fund_window && <span className={`overview-funding-window ${it.fund_window.complete ? '' : 'is-incomplete'}`} title={it.fund_window.reason}>{it.fund_window.complete ? '资金窗口完整' : '资金窗口待补齐'} · {it.fund_window.observed_days ?? it.fund_window.observed_dates?.length ?? 0}/{it.fund_window.required_days ?? 5} 日{it.data_missing_fields?.length ? ` · 指标缺失 ${it.data_missing_fields.length} 项` : ''}</span>}

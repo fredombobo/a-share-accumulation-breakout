@@ -258,6 +258,7 @@ def test_scanner_golden_scores_and_reasons(frozen_market_store):
         row = rows_a[code]
         for field, value in expected.items():
             assert row[field] == value, f"{code}.{field} 期望 {value}，实际 {row[field]}"
+        assert np.isfinite(row["momentum_20d"]), f"{code} 应有完整的20日动量研究证据"
         assert "放量" in row["入选理由"] and "突破" in row["入选理由"]
 
 

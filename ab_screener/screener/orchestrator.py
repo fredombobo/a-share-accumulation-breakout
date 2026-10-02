@@ -531,6 +531,7 @@ def run_scan(
         latest_date=latest_date, require_breakout=True, require_fund_quality=True,
         trade_dates=trade_dates,
         expected_fund_dates=fresh.get("required_moneyflow_dates", []),
+        daily_sorted=daily_sorted,
     )
 
     quote_dates = daily_sorted.groupby('ts_code')['trade_date'].last().astype(str).to_dict()
@@ -569,6 +570,7 @@ def run_scan(
             latest_date=latest_date, require_breakout=True, require_fund_quality=False,
             trade_dates=trade_dates,
             expected_fund_dates=fresh.get("required_moneyflow_dates", []),
+            daily_sorted=daily_sorted,
         )
         if need_more and extra:
             # Observation fill must never re-filter or remove strict candidates.

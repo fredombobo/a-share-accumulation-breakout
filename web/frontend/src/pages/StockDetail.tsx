@@ -209,6 +209,7 @@ export default function StockDetail() {
                 </b></div>
               <div><span>缩量系数</span><b className="num">{sig.vol_shrink_ratio != null ? sig.vol_shrink_ratio.toFixed(2) : 'n/a'}</b></div>
               <div><span>MA5 / 10 / 20</span><b className="mono num">{num(sig.ma5)} / {num(sig.ma10)} / {num(sig.ma20)}</b></div>
+              <div><span>20日动量 <small>研究证据</small></span><b className="num" style={{ color: (sig.momentum_20d ?? 0) >= 0 ? 'var(--up-ink)' : 'var(--down-ink)' }}>{sig.momentum_20d != null ? (sig.momentum_20d * 100).toFixed(2) + '%' : 'n/a'}</b></div>
             </div>
             <div className="note" style={{ marginTop: 12 }}>{sig.reasons?.join('；') || '—'}</div>
           </div>

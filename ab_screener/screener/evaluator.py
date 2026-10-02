@@ -20,6 +20,7 @@ from typing import Any
 
 import pandas as pd
 
+from ab_screener.factors.registry import momentum_n
 from ab_screener.data.freshness import moneyflow_rows_for_window, moneyflow_window_status
 
 if os.path.dirname(os.path.dirname(os.path.abspath(__file__))) not in sys.path:
@@ -130,6 +131,7 @@ def _score_codes(
     require_fund_quality: bool = True,
     trade_dates: list[str] | None = None,
     expected_fund_dates: list[str] | None = None,
+    daily_sorted: pd.DataFrame | None = None,
 ) -> list[dict]:
     """对命中信号的代码做基本面+资金流+综合打分，返回行 dict 列表。"""
     from scoring import build_master_score
@@ -143,6 +145,11 @@ def _score_codes(
         param_weight_by_tier = {"strict": w, "relaxed": w}
 
     rows: list[dict] = []
+    bars_by_code = (
+        {str(code): group for code, group in daily_sorted.groupby("ts_code", sort=False)}
+        if daily_sorted is not None and not daily_sorted.empty and "ts_code" in daily_sorted.columns
+        else {}
+    )
     for code in codes:
         sig = sig_by_code.get(code)
         if not sig:
@@ -198,6 +205,8 @@ def _score_codes(
             sig.get("breakout_date"), latest_date, trade_dates=trade_dates,
         )
         total = round(max(0.0, min(100.0, total + fresh)), 1)
+        momentum_20d = momentum_n(bars_by_code[code], 20) if code in bars_by_code else float("nan")
+        momentum_20d = float(momentum_20d) if pd.notna(momentum_20d) else None
         industry = meta.get("industry", "")
         name = fund_row["name"]
         themes = match_themes(industry, name)
@@ -239,6 +248,8 @@ def _score_codes(
             "资金流分": detail["资金流分"],
             "基本面分": detail["基本面分"],
             "综合分": total,
+            # 只读研究证据：借鉴外部周频动量策略的定义，不参与当前评分或分池。
+            "momentum_20d": round(momentum_20d, 6) if momentum_20d is not None else None,
             "入选理由": reason,
             "突破日": sig.get("breakout_date"),
             "筛选层级": row_tier,
@@ -331,6 +342,8 @@ def _soft_setup_row(
                 reasons.append(f"20日位置{pos:.0%}")
 
     total = round(min(99.0, soft), 1)
+    momentum_20d = momentum_n(g2, 20)
+    momentum_20d = float(momentum_20d) if pd.notna(momentum_20d) else None
     industry = meta.get("industry", "")
     name = fund_row["name"]
     return {
@@ -362,6 +375,8 @@ def _soft_setup_row(
         "资金流分": fund_score,
         "基本面分": basic_score,
         "综合分": total,
+        # 只读研究证据：不参与 B 池筛选或综合分。
+        "momentum_20d": round(momentum_20d, 6) if momentum_20d is not None else None,
         "入选理由": f"[主题强制/{theme}]" + "；".join(reasons[:4]) + (f"；{fund_window['reason']}" if not fund_window["complete"] else ""),
         "突破日": sig.get("breakout_date"),
         "筛选层级": "theme_fill",
