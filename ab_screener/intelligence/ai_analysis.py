@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from ab_screener.ai.client import chat, has_provider
+from ab_screener.ai.client import AIClientError, AIModel, chat_checked, has_provider
 from ab_screener.ai.prompts import AB_SIGNAL_ANALYSIS_PROMPT, SYSTEM_PROMPT
 
 _TZ = ZoneInfo("Asia/Shanghai")
@@ -355,6 +355,7 @@ def build_stock_context(
         f"代码: {ts_code}",
         f"行业: {industry}",
         f"最新价: {price:.2f}" if price is not None else "最新价: 未知",
+        f"行情日期: {kline[-1]['trade_date']}" if kline else "行情日期: 未知",
     ]
     if val:
         pe = val.get("pe")
@@ -399,6 +400,7 @@ def build_stock_context(
         )
 
     return {
+        "as_of": str(kline[-1]["trade_date"]) if kline else "",
         "signal_context": _signal_context(payload) if payload else "无策略信号（独立个股解读）",
         "stock_info": stock_info,
         "kline_summary": tech_text,
@@ -463,21 +465,22 @@ def analyze_stock(
     refresh: bool = False,
     provider: str = "deepseek",
     run_id: str = "",
+    persist: bool = True,
 ) -> dict[str, Any]:
     """单股 AI 解读（含缓存幂等）。LLM 未配置时返回空解读（fail-open）。"""
     payload = signal or {}
     signal_date = str(payload.get("breakout_date") or payload.get("trade_date") or "").replace("-", "")[:8]
+    ctx = build_stock_context(db_path, ts_code, payload)
     if not signal_date:
-        signal_date = datetime.now(_TZ).strftime("%Y%m%d")
+        signal_date = str(ctx.get("as_of") or "").replace("-", "")[:8]
 
-    if not refresh:
+    if persist and not refresh:
         cached = _insight_cache(db_path, ts_code, signal_date)
         if cached:
             cached["available"] = True
             cached["cached"] = True
             return cached
 
-    ctx = build_stock_context(db_path, ts_code, payload)
     prompt = AB_SIGNAL_ANALYSIS_PROMPT.format(
         signal_context=ctx["signal_context"],
         stock_info=ctx["stock_info"],
@@ -488,29 +491,36 @@ def analyze_stock(
         current_price=ctx["current_price"],
     )
 
-    ai_text = chat(prompt, system=SYSTEM_PROMPT, temperature=0.3, max_tokens=2500, provider=provider)
-    if not ai_text:
+    model = AIModel.get_all().get(provider, {}).get("model", "")
+    try:
+        ai_text = chat_checked(prompt, system=SYSTEM_PROMPT, temperature=0.3, max_tokens=2500, provider=provider)
+    except AIClientError as exc:
         return {
             "ts_code": ts_code,
             "signal_date": signal_date,
             "provider": provider,
             "ai_text": "",
             "available": False,
-            "reason": "LLM 未配置或调用失败（DEEPSEEK_API_KEY 缺失）",
+            "reason": str(exc),
+            "error_code": exc.code,
         }
 
-    _save_insight(
-        db_path, ts_code=ts_code, signal_date=signal_date, run_id=run_id,
-        provider=provider, prompt=prompt, ai_text=ai_text,
-    )
+    if persist:
+        _save_insight(
+            db_path, ts_code=ts_code, signal_date=signal_date, run_id=run_id,
+            provider=provider, prompt=prompt, ai_text=ai_text,
+        )
     return {
         "ts_code": ts_code,
         "signal_date": signal_date,
         "run_id": run_id,
         "provider": provider,
+        "model": model,
         "ai_text": ai_text,
         "available": True,
         "cached": False,
+        "persisted": persist,
+        "created_at": datetime.now(_TZ).isoformat(timespec="seconds"),
     }
 
 

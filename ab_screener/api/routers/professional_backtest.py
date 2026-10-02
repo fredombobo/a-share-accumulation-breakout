@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from ab_screener.api.deps import get_db_path
 from ab_screener.application.strategy_profile_service import (
@@ -15,8 +15,11 @@ from ab_screener.application.strategy_profile_service import (
     activate_from_task,
     activate_manual_profile,
     activation_status,
+    copy_entry_from_task,
+    entry_copy_status,
     profile_state,
     reset_profile,
+    save_daily_entry,
 )
 from ab_screener.data.strategy_profile_repository import StrategyProfileRepositoryError
 from ab_screener.research.condition_plugins import condition_catalog
@@ -54,6 +57,20 @@ class ManualProfileRequest(BaseModel):
     acknowledge_research_only: bool = False
 
 
+class EntryProfileRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    entry: dict[str, Any]
+    expected_config_hash: str | None = None
+    acknowledge_research_only: bool = False
+
+
+class CopyEntryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    task_id: str
+    expected_config_hash: str | None = None
+    acknowledge_research_only: bool = False
+
+
 def _store(db_path: str) -> ResearchRunStore:
     key = str(Path(db_path).resolve())
     with _LOCK:
@@ -82,6 +99,7 @@ def _raise_grid_error(exc: ProfessionalGridError) -> NoReturn:
 def _raise_profile_error(exc: ProfileActivationError | StrategyProfileRepositoryError) -> NoReturn:
     invalid_request_codes = {
         "INVALID_MANUAL_PARAMETERS",
+        "INVALID_ENTRY_PARAMETERS",
         "MISSING_MANUAL_PARAMETER",
         "UNKNOWN_PARAMETER",
         "INVALID_PARAMETER_VALUE",
@@ -217,7 +235,7 @@ def latest(db_path: str = Depends(get_db_path)) -> dict[str, Any]:
         activation = activation_status(db_path, task)
     except StrategyProfileRepositoryError as exc:
         _raise_profile_error(exc)
-    return {"task": task, "profile_activation": activation}
+    return {"task": task, "profile_activation": activation, "entry_copy": entry_copy_status(task)}
 
 
 @router.get("/status/{task_id}")
@@ -226,7 +244,7 @@ def status(task_id: str, db_path: str = Depends(get_db_path)) -> dict[str, Any]:
     if task is None or task.get("research_mode") != _MODE:
         raise HTTPException(status_code=404, detail="专业回测任务不存在")
     try:
-        return {**task, "profile_activation": activation_status(db_path, task)}
+        return {**task, "profile_activation": activation_status(db_path, task), "entry_copy": entry_copy_status(task)}
     except StrategyProfileRepositoryError as exc:
         _raise_profile_error(exc)
 
@@ -253,6 +271,27 @@ def activate_profile(
             task,
             acknowledge_exploratory=body.acknowledge_exploratory,
         )
+    except (ProfileActivationError, StrategyProfileRepositoryError) as exc:
+        _raise_profile_error(exc)
+
+
+@router.post("/profile/entry")
+def save_entry_profile(body: EntryProfileRequest, db_path: str = Depends(get_db_path)) -> dict[str, Any]:
+    try:
+        return save_daily_entry(db_path, body.entry, expected_config_hash=body.expected_config_hash,
+                                acknowledge_research_only=body.acknowledge_research_only)
+    except (ProfileActivationError, StrategyProfileRepositoryError) as exc:
+        _raise_profile_error(exc)
+
+
+@router.post("/profile/copy-entry")
+def copy_research_entry(body: CopyEntryRequest, db_path: str = Depends(get_db_path)) -> dict[str, Any]:
+    task = _store(db_path).get(body.task_id)
+    if task is None or task.get("research_mode") != _MODE:
+        raise HTTPException(status_code=404, detail="专业回测任务不存在")
+    try:
+        return copy_entry_from_task(db_path, task, expected_config_hash=body.expected_config_hash,
+                                    acknowledge_research_only=body.acknowledge_research_only)
     except (ProfileActivationError, StrategyProfileRepositoryError) as exc:
         _raise_profile_error(exc)
 

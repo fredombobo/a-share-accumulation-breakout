@@ -231,11 +231,14 @@ def chip_dataset_status(db_path: str | Path | None) -> dict[str, Any]:
             return {"available": False, "rows": 0, "reason": "缺少 cyq_history"}
         row = conn.execute(
             "SELECT COUNT(*),COUNT(DISTINCT ts_code),MIN(trade_date),MAX(trade_date),"
-            "SUM(CASE WHEN available_at IS NULL OR source IS NULL THEN 1 ELSE 0 END) "
+            "COUNT(CASE WHEN available_at IS NULL OR TRIM(available_at)='' "
+            "OR source IS NULL OR TRIM(source)='' THEN 1 END) "
             "FROM cyq_history"
         ).fetchone()
     assert row is not None
-    return {
+    # COUNT returns 0 for an empty dataset; SUM would return NULL. Empty data
+    # is an unavailable optional condition, not a failure of the whole catalog.
+    result = {
         "available": int(row[0]) > 0 and int(row[4]) == 0,
         "rows": int(row[0]),
         "codes": int(row[1]),
@@ -243,6 +246,11 @@ def chip_dataset_status(db_path: str | Path | None) -> dict[str, Any]:
         "latest": row[3],
         "invalid_lineage_rows": int(row[4]),
     }
+    if not result["rows"]:
+        result["reason"] = "cyq_history 暂无数据"
+    elif result["invalid_lineage_rows"]:
+        result["reason"] = "筹码数据缺少可用时刻或来源"
+    return result
 
 
 def _as_dt(value: str) -> datetime:

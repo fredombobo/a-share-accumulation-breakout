@@ -7,16 +7,19 @@ from ab_screener.domain.execution.models import (
     Quote,
     Side,
 )
+from ab_screener.domain.stock_board_rules import ordinary_limit_bps
 
 DEFAULT_LIMIT_RATIO_BPS = 1000  # ±10%
 
 
 def limit_prices_micro(
-    quote: Quote, limit_ratio_bps: int = DEFAULT_LIMIT_RATIO_BPS
+    quote: Quote, limit_ratio_bps: int | None = None
 ) -> tuple[int, int]:
     """(涨停价, 跌停价) 微元，按 tick 四舍五入。"""
     if not quote.pre_close_micro or quote.pre_close_micro <= 0:
         return (0, 0)
+    if limit_ratio_bps is None:
+        limit_ratio_bps = ordinary_limit_bps(quote.ts_code, quote.trade_date)
     pre = quote.pre_close_micro
     up = _round_half_up(pre * (10_000 + limit_ratio_bps), 10_000)
     down = _round_half_up(pre * (10_000 - limit_ratio_bps), 10_000)

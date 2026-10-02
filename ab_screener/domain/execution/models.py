@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-EXECUTION_MODEL_VERSION = "v2.1.1"
+EXECUTION_MODEL_VERSION = "v2.1.3"
 FEE_VERSION = "v2-fixed-2026-08-18"
 TICK_MICRO = 10_000  # A 股最小变动 0.01 元 = 10000 微元
 

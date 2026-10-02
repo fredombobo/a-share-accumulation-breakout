@@ -13,6 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ab_screener.domain.stock_board_rules import (
+    cap_research_buy,
+    ordinary_limit_bps,
+    research_quantity_step,
+)
 from config import (
     COMMISSION_MIN_YUAN,
     COMMISSION_RATE,
@@ -170,16 +175,22 @@ def simulate_round_trip(
     exit_day_low: float | None = None,
     exit_day_high: float | None = None,
     notional: float = NOTIONAL,
+    ts_code: str = "",
+    entry_date: str = "",
+    exit_date: str = "",
+    exit_reference_price: float | None = None,
 ) -> FillResult:
     """简化单笔往返：次日开买入、某日开卖出；若当日触及止损/目标用保守序。"""
     ok, reason = can_buy(
-        open_p=entry_open, high=entry_high, low=entry_low, vol=entry_vol, pre_close=entry_pre_close
+        open_p=entry_open, high=entry_high, low=entry_low, vol=entry_vol, pre_close=entry_pre_close,
+        limit_up_ratio=ordinary_limit_bps(ts_code, entry_date) / 10_000,
     )
     if not ok:
         return FillResult(False, 0, 0.0, 0, 0, 0, 0, 0, 0, reason)
 
     buy_px = apply_slippage(entry_open, side="buy", high=entry_high, low=entry_low)
-    qty = size_buy(buy_px, notional)
+    step = research_quantity_step(ts_code, LOT)
+    qty = cap_research_buy(ts_code, int(notional / buy_px), step)
     if qty <= 0:
         return FillResult(False, 0, 0.0, 0, 0, 0, 0, 0, 0, "整手不足")
 
@@ -188,9 +199,14 @@ def simulate_round_trip(
     buy_other = other_fee_for(buy_notional)
     buy_slip = abs(buy_px - entry_open) * qty
 
+    if entry_date and exit_date and exit_date.replace("-", "") <= entry_date.replace("-", ""):
+        return FillResult(False, qty, buy_px, buy_comm, 0, buy_other, buy_slip,
+                          0, -(buy_comm + buy_other), "T1_NOT_SELLABLE")
+
     # 卖出：若同日止损与目标都触发，止损优先
     sell_side_ok, sell_reason = can_sell(
-        open_p=exit_open, high=exit_high, low=exit_low, vol=exit_vol, pre_close=exit_pre_close
+        open_p=exit_open, high=exit_high, low=exit_low, vol=exit_vol, pre_close=exit_pre_close,
+        limit_down_ratio=ordinary_limit_bps(ts_code, exit_date) / 10_000,
     )
     if not sell_side_ok:
         return FillResult(
@@ -199,9 +215,10 @@ def simulate_round_trip(
 
     hi = exit_day_high if exit_day_high is not None else exit_high
     lo = exit_day_low if exit_day_low is not None else exit_low
-    exit_px = exit_open
+    exit_px = exit_reference_price if exit_reference_price is not None else exit_open
     if stop_price is not None and lo is not None and lo <= stop_price:
-        exit_px = stop_price
+        # A gap below the frozen stop cannot fill back at the stop or daily high.
+        exit_px = min(exit_open, stop_price)
     elif target_price is not None and hi is not None and hi >= target_price:
         exit_px = target_price
 

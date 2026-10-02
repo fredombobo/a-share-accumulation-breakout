@@ -278,53 +278,18 @@ def resolve_trade_dates(
     end: str | None = None,
     trade_dates: list[str] | None = None,
 ) -> list[str]:
-    """解析开市日列表（排除周末+节假日）。
+    """Read verified independent calendar dates without network or quote inference.
 
-    优先级：显式 trade_dates → 本地 daily 去重日期 → Tushare trade_cal → 仅工作日兜底。
+    The legacy trade_dates argument is intentionally not trusted: callers used
+    to pass the dates already present in daily, which cannot detect an outage.
     """
-    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
 
-    end = (end or datetime.now().strftime("%Y%m%d"))[:8]
-    start = (start or (datetime.strptime(end, "%Y%m%d") - timedelta(days=120)).strftime("%Y%m%d"))[:8]
+    from ab_screener.data.trading_calendar import calendar_window
 
-    if trade_dates:
-        td = sorted({str(x)[:8] for x in trade_dates if str(x).strip()})
-        return [d for d in td if start <= d <= end] or td
-
-    # 1) 本地库已有日线交易日（天然不含休市）
-    if store is not None:
-        try:
-            td = store.distinct_dates("daily")
-            td = [str(x)[:8] for x in td if start <= str(x)[:8] <= end]
-            if len(td) >= 5:
-                return td
-        except Exception:  # noqa: BLE001
-            pass
-
-    # 2) Tushare 交易日历（含法定节假日 is_open=0）
-    try:
-        import sys
-        from pathlib import Path
-
-        root = Path(__file__).resolve().parent
-        if str(root) not in sys.path:
-            sys.path.insert(0, str(root))
-        from tushare_init import pro
-
-        cal = pro.trade_cal(exchange="", start_date=start, end_date=end, fields="cal_date,is_open")
-        if cal is not None and not cal.empty:
-            opens = sorted(
-                cal.loc[cal["is_open"].astype(str).isin(["1", "1.0", "True", "true"]) | (cal["is_open"] == 1), "cal_date"]
-                .astype(str)
-                .tolist()
-            )
-            if opens:
-                return opens
-    except Exception:  # noqa: BLE001
-        pass
-
-    # 3) 仅排除周末
-    return _weekdays_only(start, end)
+    end = end or datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
+    result = calendar_window(getattr(store, "db_path", None), today=end, as_of=start, required_days=1)
+    return result["open_dates"] if result["verified"] else []
 
 
 def data_freshness(
@@ -333,101 +298,20 @@ def data_freshness(
     trade_dates: list[str] | None = None,
     store=None,
     now: datetime | None = None,
+    *,
+    reference_now: datetime | None = None,
+    historical: bool = False,
+    required_moneyflow_days: int = 5,
 ) -> dict[str, Any]:
-    """数据新鲜度：按**交易日**计算滞后（排除周末与节假日）。
+    """Independent-calendar freshness; can_publish_a requires the exact expected day.
 
-    规则：
-    - expected = 截至当前应具备的最新交易日
-      · 若今天是交易日且本地时间 < 16:00（收盘数据未齐），expected=上一交易日
-      · 否则 expected=≤today 的最近交易日
-    - stale_days = expected 与 as_of 之间相差的交易日个数
-    - stale_days==0 → 新鲜；==1 → 偏旧；>=2 → 过期
+    Explicit historical replay uses reference_now or historical=True. Observed
+    daily dates cannot certify freshness, and this function never syncs data.
     """
-    from datetime import datetime, timedelta
+    from ab_screener.data.freshness import assess_data_freshness
 
-    now = now or datetime.now()
-    today = (today or now.strftime("%Y%m%d"))[:8]
-    if not as_of:
-        return {
-            "as_of": "",
-            "today": today,
-            "stale_days": 999,
-            "is_stale": True,
-            "label": "无数据",
-            "unit": "trading",
-            "expected_as_of": "",
-            "stale_label": "无数据",
-        }
-
-    a = str(as_of)[:8]
-    # 日历范围：as_of 往前一点，today 往后一点，保证覆盖
-    try:
-        start = (datetime.strptime(min(a, today), "%Y%m%d") - timedelta(days=30)).strftime("%Y%m%d")
-        end = (datetime.strptime(max(a, today), "%Y%m%d") + timedelta(days=10)).strftime("%Y%m%d")
-    except ValueError:
-        start, end = a, today
-
-    td = resolve_trade_dates(store, start=start, end=end, trade_dates=trade_dates)
-    unit = "trading"
-    if not td:
-        # 极端兜底：日历日
-        try:
-            stale = max(0, (datetime.strptime(today, "%Y%m%d") - datetime.strptime(a, "%Y%m%d")).days)
-        except ValueError:
-            stale = 999
-        is_stale = stale > 3
-        label = "过期" if is_stale else ("偏旧" if stale > 0 else "新鲜")
-        return {
-            "as_of": a,
-            "today": today,
-            "stale_days": stale,
-            "is_stale": is_stale,
-            "label": label,
-            "unit": "calendar",
-            "expected_as_of": today,
-            "stale_label": f"滞后 {stale} 个日历日",
-        }
-
-    # ≤ today 的开市日
-    opens = [d for d in td if d <= today]
-    if not opens:
-        opens = td[:]
-
-    expected = opens[-1]
-    # 今日若是交易日且未到 16:00，收盘库尚未更新，期望数据仍为上一交易日
-    if expected == today and now.hour < 16 and len(opens) >= 2:
-        expected = opens[-2]
-
-    # as_of 对齐到交易日序列
-    if a in td:
-        a_idx = td.index(a)
-    else:
-        prior = [d for d in td if d <= a]
-        a_idx = td.index(prior[-1]) if prior else 0
-        a = td[a_idx]
-
-    if expected in td:
-        e_idx = td.index(expected)
-    else:
-        e_idx = len(td) - 1
-        expected = td[e_idx]
-
-    stale = max(0, e_idx - a_idx)
-    is_stale = stale >= 2
-    if stale == 0:
-        label = "新鲜"
-    elif stale == 1:
-        label = "偏旧"
-    else:
-        label = "过期"
-
-    return {
-        "as_of": a,
-        "today": today,
-        "stale_days": stale,
-        "is_stale": is_stale,
-        "label": label,
-        "unit": unit,
-        "expected_as_of": expected,
-        "stale_label": f"滞后 {stale} 个交易日",
-    }
+    return assess_data_freshness(
+        as_of, today=today, trade_dates=trade_dates, store=store, now=now,
+        reference_now=reference_now, historical=historical,
+        required_moneyflow_days=required_moneyflow_days,
+    )

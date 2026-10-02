@@ -261,7 +261,7 @@ class TestTradeSimBench(unittest.TestCase):
         opens = [10.0] * n
         opens[15] = 10.8  # bench 出场次日开盘
         closes = [10.0] * n
-        closes[15] = 10.8
+        closes[15] = 11.2
         bars = pd.DataFrame(
             {
                 "open": opens,
@@ -277,6 +277,7 @@ class TestTradeSimBench(unittest.TestCase):
         )
         self.assertTrue(r["ok"])
         self.assertEqual(r["exit"], "bench")
+        self.assertEqual(r["exit_phase"], "OPEN")
         self.assertAlmostEqual(r["exit_price"], 10.8, places=4)
         self.assertAlmostEqual(r["ret"], 0.08, places=4)
 

@@ -84,6 +84,11 @@ class StrategyProfile:
             "require_structure": self.require_structure,
         }
 
+    def entry_hash(self) -> str:
+        """Technical entry identity only; preserve the existing full config hash."""
+        blob = json.dumps(self.signal_kwargs(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
     def exit_params(self) -> dict[str, Any]:
         return {
             "vol_ratio_min": self.vol_ratio_min,

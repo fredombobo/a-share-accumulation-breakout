@@ -114,7 +114,7 @@ class StrategyProfileRepository:
             ).fetchall()
         return [self._decode(row) for row in rows]
 
-    def activate(self, profile: StrategyProfile) -> dict[str, Any]:
+    def activate(self, profile: StrategyProfile, *, expected_config_hash: str | None = None) -> dict[str, Any]:
         if profile.status != "active":
             raise StrategyProfileRepositoryError(
                 "INVALID_STRATEGY_PROFILE_STATUS",
@@ -128,6 +128,16 @@ class StrategyProfileRepository:
         with self._connect() as conn:
             self._require_schema(conn)
             conn.execute("BEGIN IMMEDIATE")
+            if expected_config_hash is not None:
+                active = conn.execute("SELECT * FROM strategy_profiles WHERE status='active'").fetchall()
+                if len(active) > 1:
+                    raise StrategyProfileRepositoryError("MULTIPLE_ACTIVE_STRATEGY_PROFILES", "检测到多个启用中的参数档案")
+                current_hash = self._decode(active[0])["config_hash"] if active else default_profile().config_hash()
+                if current_hash != expected_config_hash:
+                    raise StrategyProfileRepositoryError(
+                        "PROFILE_CHANGED", "参数已被其他请求修改，请重新载入后保存",
+                        {"expected_config_hash": expected_config_hash, "current_config_hash": current_hash},
+                    )
             existing = conn.execute(
                 "SELECT config_hash FROM strategy_profiles WHERE profile_id=? AND version=?",
                 (profile.profile_id, profile.version),

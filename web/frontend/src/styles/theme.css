@@ -1270,6 +1270,32 @@
   .ai-narrative { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--border); background: var(--surface-2); }
   .ai-narrative summary { cursor: pointer; color: var(--accent); font-weight: 650; }
   .ai-narrative div { margin-top: 9px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ai-review .ai-model-status { margin-top: 17px; padding: 12px 0; border-block: 1px solid var(--border); }
+  .ai-review .ai-model-status > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+  .ai-review .ai-model-status strong { color: var(--text); font-size: 13px; }
+  .ai-review .ai-model-status span { color: var(--muted); font: 11px var(--font-num); overflow-wrap: anywhere; }
+  .ai-review .ai-model-status p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+  .ai-review .ai-review-actions { border-top: 0; margin-top: 0; }
+  .ai-review .ai-model-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 9px; }
+  .ai-review .ai-model-controls label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }
+  .ai-review .ai-model-controls select { min-height: 34px; max-width: 100%; padding: 6px 9px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border); border-radius: 5px; font: inherit; }
+  .ai-review .ai-connect-help { margin-top: 12px; padding: 11px 13px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 6px; }
+  .ai-review .ai-connect-help summary { cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; }
+  .ai-review .ai-connect-help p, .ai-review .ai-connect-help dd { color: var(--muted); font-size: 12px; line-height: 1.85; }
+  .ai-review .ai-connect-help dl { display: grid; gap: 10px; margin: 12px 0; }
+  .ai-review .ai-connect-help dl > div { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 10px; }
+  .ai-review .ai-connect-help dt { color: var(--text); font-size: 12px; font-weight: 600; }
+  .ai-review .ai-connect-help dd { margin: 0; }
+  .ai-review .ai-connect-help code { overflow-wrap: anywhere; font-size: 11px; }
+  .ai-review .ai-status-refresh { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 13px; margin-top: 12px; }
+  .ai-review .ai-status-refresh > span, .ai-review .ai-narrative-meta { color: var(--muted); font-size: 11px; line-height: 1.7; }
+  .ai-review .ai-narrative-meta { display: block; margin-top: 8px; }
+  .ai-review select:focus-visible, .ai-review summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  @media (max-width: 720px) {
+    .ai-review .ai-model-controls { align-items: stretch; flex-direction: column; }
+    .ai-review .ai-connect-help dl > div { grid-template-columns: 1fr; gap: 2px; }
+    .ai-review .ai-status-refresh .btn { width: 100%; min-height: 42px; }
+  }
 
   @media (max-width: 1100px) {
     .bt-studio { grid-template-columns: 1fr; }

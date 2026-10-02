@@ -1,6 +1,8 @@
 """Current-snapshot classification dimensions used by market views."""
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 from fastapi import HTTPException
@@ -83,3 +85,92 @@ def test_unknown_market_classification_fails_closed() -> None:
 
     assert caught.value.status_code == 422
     assert caught.value.detail["code"] == "UNKNOWN_CLASSIFICATION"
+
+
+@pytest.mark.parametrize("missing", [None, float("nan"), float("inf"), float("-inf"), "invalid"])
+def test_sector_aggregation_preserves_missing_groups_and_observed_zero(monkeypatch, missing) -> None:
+    store = _MarketStore()
+    dates = ["20260909", "20260910", "20260911"]
+    rows = pd.DataFrame([
+        {"ts_code": "000001.SZ", "trade_date": dates[0], "net_mf_amount": missing},
+        {"ts_code": "300001.SZ", "trade_date": dates[0], "net_mf_amount": 5.0},
+        {"ts_code": "300002.SZ", "trade_date": dates[0], "net_mf_amount": -5.0},
+        {"ts_code": "300001.SZ", "trade_date": dates[1], "net_mf_amount": 0.0},
+        {"ts_code": "300001.SZ", "trade_date": dates[2], "net_mf_amount": 7.0},
+        {"ts_code": "300002.SZ", "trade_date": dates[2], "net_mf_amount": missing},
+    ])
+    monkeypatch.setattr(store, "distinct_dates", lambda *args, **kwargs: dates)
+    monkeypatch.setattr(store, "load_moneyflow", lambda **kwargs: rows)
+    monkeypatch.setattr(legacy_market, "_store", store)
+    monkeypatch.setattr(legacy_market, "_SECTOR_FLOW_CACHE", {})
+
+    result_dates, pivot = legacy_market._load_sector_flow(5)
+    assert result_dates == dates
+    assert pivot["银行"].isna().all()  # all invalid on day 1; absent on days 2/3
+    assert pivot["软件服务"].tolist() == [0.0, 0.0, 7.0]
+    result = legacy_market.sector_flow(5)
+    assert result["industries"]["银行"] == [None, None, None]
+    assert result["groups"] == result["industries"]
+    assert result["industries"]["软件服务"] == [0.0, 0.0, 7.0]
+    assert all(item["industry"] != "银行" for key in ("top_in", "top_out") for item in result[key])
+    assert result["aggregation_basis"] == "AVAILABLE_RECORDS_ONLY"
+    json.dumps(result, allow_nan=False)
+
+
+def test_sector_flow_excludes_nonfinite_ranks_without_dropping_real_zero(monkeypatch) -> None:
+    pivot = pd.DataFrame({"未知": [float("nan"), float("inf")], "零值": [0.0, 0.0],
+                          "部分观测": [float("-inf"), 2.0]})
+    monkeypatch.setattr(legacy_market, "_load_sector_flow", lambda *args, **kwargs: (["20260910", "20260911"], pivot))
+    result = legacy_market.sector_flow()
+    assert result["industries"] == {"未知": [None, None], "零值": [0.0, 0.0], "部分观测": [None, 2.0]}
+    assert {item["industry"]: item["net_wan"] for item in result["top_in"]} == {"部分观测": 2.0, "零值": 0.0}
+    assert all(item["industry"] != "未知" for item in result["top_out"])
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize("verified", [True, False])
+def test_stock_sector_flow_aligns_only_to_verified_calendar(monkeypatch, verified) -> None:
+    from ab_screener.data import trading_calendar
+
+    dates = ["20260907", "20260908", "20260909", "20260910", "20260911"]
+    stored_dates = ["20260904", dates[0], dates[-1]]
+    store = _MarketStore()
+    monkeypatch.setattr(store, "load_moneyflow", lambda **kwargs: pd.DataFrame([
+        {"ts_code": "000001.SZ", "trade_date": dates[0], "net_mf_amount": 0.0},
+    ]))
+    monkeypatch.setattr(legacy_market, "_store", store)
+    monkeypatch.setattr(legacy_market, "_load_sector_flow", lambda *args, **kwargs: (
+        stored_dates, pd.DataFrame({"银行": [99.0, 0.0, 2.0]}, index=stored_dates),
+    ))
+    monkeypatch.setattr(trading_calendar, "calendar_window", lambda *args, **kwargs: {
+        "verified": verified, "status": "READY" if verified else "UNVERIFIED", "required_dates": dates,
+    })
+
+    result = legacy_market.stock_flow("000001.SZ", days=5)
+    sector = result["sector_flow"]
+    assert sector["dates"] == (dates if verified else stored_dates)
+    assert sector["net_wan"] == ([0.0, None, None, None, 2.0] if verified else [99.0, 0.0, 2.0])
+    if verified:
+        assert sector["dates"] == [row["trade_date"] for row in result["stock_flow"]]
+    assert sector["aggregation_basis"] == "AVAILABLE_RECORDS_ONLY"
+    json.dumps(result, allow_nan=False)
+
+
+def test_unavailable_sector_data_still_preserves_verified_calendar_gaps(monkeypatch) -> None:
+    from ab_screener.data import trading_calendar
+
+    dates = ["20260907", "20260908", "20260909", "20260910", "20260911"]
+    store = _MarketStore()
+    monkeypatch.setattr(store, "load_moneyflow", lambda **kwargs: pd.DataFrame())
+    monkeypatch.setattr(legacy_market, "_store", store)
+
+    def unavailable(*args, **kwargs):
+        raise HTTPException(status_code=500, detail="unavailable")
+
+    monkeypatch.setattr(legacy_market, "_load_sector_flow", unavailable)
+    monkeypatch.setattr(trading_calendar, "calendar_window", lambda *args, **kwargs: {
+        "verified": True, "status": "READY", "required_dates": dates,
+    })
+    result = legacy_market.stock_flow("000001.SZ", days=5)
+    assert result["sector_flow"]["dates"] == dates
+    assert result["sector_flow"]["net_wan"] == [None] * 5

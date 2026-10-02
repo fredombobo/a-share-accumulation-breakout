@@ -1,9 +1,11 @@
 """资金热力图双向展示回归测试。"""
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from ab_screener.api.routers.legacy_market import money_heatmap
 
@@ -58,3 +60,31 @@ def test_money_heatmap_top_is_applied_per_direction() -> None:
     assert [item["net_wan"] for item in outflows] == list(range(-13, -3, 1))
     assert len(result["items"]) == 20
     assert result["total_wan"] == -13
+
+
+@pytest.mark.parametrize("top", [0, 10])
+def test_heatmap_ignores_missing_and_nonfinite_values_in_ranking_and_total(top) -> None:
+    pivot = pd.DataFrame([{"流入": 12.0, "流出": -5.0, "零值": 0.0,
+                           "缺失": None, "非数": float("nan"),
+                           "正无穷": float("inf"), "负无穷": float("-inf")}])
+    with patch("ab_screener.api.routers.legacy_market._load_sector_flow", return_value=(["20260911"], pivot)):
+        result = money_heatmap(top=top)
+    assert {item["name"]: item["net_wan"] for item in result["items"]} == {"流入": 12, "流出": -5}
+    assert result["total_wan"] == 7
+    assert result["aggregation_basis"] == "AVAILABLE_RECORDS_ONLY"
+    json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize(("values", "expected"), [
+    ({"缺失": None, "无效": float("inf")}, None),
+    ({"零值": 0.0, "缺失": None}, 0),
+    ({"流入": 5.0, "流出": -5.0}, 0),
+])
+def test_heatmap_distinguishes_all_missing_from_observed_zero(values, expected) -> None:
+    with patch("ab_screener.api.routers.legacy_market._load_sector_flow",
+               return_value=(["20260911"], pd.DataFrame([values]))):
+        result = money_heatmap(top=0)
+    assert result["total_wan"] == expected
+    if expected is None:
+        assert result["items"] == []
+    json.dumps(result, allow_nan=False)

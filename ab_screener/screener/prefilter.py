@@ -24,7 +24,7 @@ from scoring import (
 )
 
 
-def prefilter(basic: pd.DataFrame, dbbasic: pd.DataFrame) -> pd.DataFrame:
+def prefilter(basic: pd.DataFrame, dbbasic: pd.DataFrame, *, as_of: str | None = None) -> pd.DataFrame:
     """剔除 ST/退市/次新/无数据，返回候选 ts_code 列表"""
     if basic is None or basic.empty or "ts_code" not in basic.columns:
         return pd.DataFrame()
@@ -39,7 +39,8 @@ def prefilter(basic: pd.DataFrame, dbbasic: pd.DataFrame) -> pd.DataFrame:
 
     # 次新股过滤（上市未满1年）
     list_dates = pd.to_datetime(df["list_date"], format="%Y%m%d", errors="coerce")
-    mask &= (datetime.now() - list_dates).dt.days >= 250
+    reference = datetime.strptime(as_of, '%Y%m%d') if as_of else datetime.now()
+    mask &= (reference - list_dates).dt.days >= 250
 
     # 价格/市值粗筛
     if "close" in df.columns:

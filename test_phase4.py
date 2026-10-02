@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import sys
+from contextlib import closing
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 os.environ.pop("PYTHONPATH", None)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,11 +29,14 @@ def test_regime_defense_strict():
     print("[PASS] defense strict", r.label)
 
 def test_fund_quality_no_column_fails():
-    df = pd.DataFrame({"x": [1, 2, 3]})
-    ok, n = fund_flow_quality_ok(df, 2)
+    expected = ["20260727", "20260728", "20260729", "20260730", "20260731"]
+    # Supply a complete, dated observation window so failure isolates the missing
+    # net-flow field instead of failing first on missing dates/denominator data.
+    df = pd.DataFrame({"trade_date": expected, "amount": [100.0] * 5, "x": [1, 2, 3, 4, 5]})
+    ok, n = fund_flow_quality_ok(df, 2, expected_dates=expected, expected_as_of=expected[-1])
     assert ok is False and n == 0
-    df2 = pd.DataFrame({"net_mf_amount": [10, -1, 5, 3]})
-    ok2, n2 = fund_flow_quality_ok(df2, 2)
+    df2 = df.assign(net_mf_amount=[10, -1, 5, 3, 2])
+    ok2, n2 = fund_flow_quality_ok(df2, 2, expected_dates=expected, expected_as_of=expected[-1])
     assert ok2 is True and n2 >= 2
     print("[PASS] fund quality gate")
 
@@ -42,15 +50,27 @@ def test_freshness_trading_days():
     td2 = ["20260728", "20260729", "20260730", "20260731", "20260803"]
     from datetime import datetime
     from zoneinfo import ZoneInfo
-    fr = data_freshness(
-        "20260731",
-        today="20260803",
-        trade_dates=td2,
-        now=datetime(2026, 8, 3, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
-    )
+    clock = datetime(2026, 8, 3, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    # Observed quote dates alone cannot certify freshness, including on Monday.
+    assert data_freshness("20260731", trade_dates=td2, now=clock)["can_publish_a"] is False
+    with TemporaryDirectory(prefix="ab-phase4-calendar-") as directory:
+        database = Path(directory) / "calendar.db"
+        with closing(sqlite3.connect(database)) as conn, conn:
+            conn.execute("CREATE TABLE trade_cal(cal_date TEXT PRIMARY KEY,is_open INTEGER,source TEXT)")
+            conn.executemany("INSERT INTO trade_cal VALUES (?,?,'tushare')", [
+                ("20260727", 1), ("20260728", 1), ("20260729", 1), ("20260730", 1),
+                ("20260731", 1), ("20260801", 0), ("20260802", 0), ("20260803", 1),
+            ])
+            # Current required datasets are independent from the calendar table.
+            for table in ("daily_basic", "moneyflow"):
+                conn.execute(f"CREATE TABLE {table}(ts_code TEXT,trade_date TEXT)")
+                conn.execute(f"INSERT INTO {table} VALUES ('000001.SZ','20260731')")
+        fr = data_freshness("20260731", store=SimpleNamespace(db_path=database), now=clock)
     assert fr["unit"] == "trading", fr
     assert fr["stale_days"] == 0, fr  # 排除周末后不应显示滞后 3 天
     assert fr["label"] == "新鲜", fr
+    assert fr["calendar_verified"] is True and fr["can_publish_a"] is True, fr
+    assert fr["expected_as_of"] == "20260731", fr
     print("[PASS] trading-day freshness excludes weekend", b, fr)
 
 def test_prefilter_and_split():

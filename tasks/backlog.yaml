@@ -5,6 +5,64 @@ notes: >
   Exception: V2-P0-BOOTSTRAP (planning commit only, no business code).
   v1.1 nine-point tasks remain historical complete.
 tasks:
+  - id: DUAL-BOARD-DIAGNOSTIC-20260905
+    title: 双创成熟股票池固定参数配对诊断与成交约束纠错
+    status: blocked
+    blocker: 两臂原始失败工件保留；已有成交纠错和四臂重放摘要，最终验收等待纠错原始报告补齐及独立复算
+    dependencies: [MARKET-EXCESS-MOMENTUM-20260905]
+    plan: docs/DUAL-BOARD-PREREGISTRATION-2026-09-05.md
+    acceptance:
+      - 双创各50只冻结抽样、两臂同参逐日、收益前预登记
+      - 双创涨跌幅和保守申报数量纠错，正常与边界测试及严格质量门通过
+      - 完整保留失败和风格基准缺口，不写纸面账本或今日选股配置
+  - id: EXIT-GAP-REAL-QUOTE-CORRECTION
+    title: 跳空止损市价语义及真实开盘一字板护栏纠错
+    status: blocked
+    blocker: 纠错代码及重放摘要已存在，但摘要对应的原始run_id记录尚未找到，见GITHUB-SNAPSHOT-2026-09-19.md
+    dependencies: [MARKET-EXCESS-MOMENTUM-20260905]
+    plan: docs/DUAL-BOARD-RESULT-2026-09-05.md
+    acceptance:
+      - 真实开盘可成交性先于计划价替换，跳空止损按保守开盘参考处理
+      - 覆盖688179.SH于20250605案例及一字板、停牌、T+1边界
+      - 不改双创冻结样本与阈值，以新模型身份重放并保留旧工件与差异
+      - 质量门、逐笔会计、OOS/WF及全部基线重验通过后才解除最终验收阻断
+  - id: FUNDAMENTAL-FACTOR-FOUNDATION-20260905
+    title: 可追溯财务因子、PIT 计算与真实数据资格体检
+    status: complete
+    dependencies: [MARKET-EXCESS-MOMENTUM-20260905]
+    plan: docs/FUNDAMENTAL-FACTORS-PREREGISTRATION-2026-09-05.md
+    acceptance:
+      - 三因子公式与来源冻结，缺失和历史修订 fail-closed
+      - 有限真实三表取数与只读本地体检，不倒填历史可用时点
+      - 全部质量门通过，真实收益验证与工程完成分开报告
+  - id: FUNDAMENTAL-HISTORICAL-DATA-QUALIFICATION
+    title: 财报历史原版与修订档案、缺失项和单季 EPS 口径验收
+    status: blocked
+    dependencies: [FUNDAMENTAL-FACTOR-FOUNDATION-20260905]
+    blocker: 当前供应商快照不能证明历史版本链，缺借款字段及单季 EPS；需要可核验原始公告或有相应授权的数据档案
+    plan: docs/FUNDAMENTAL-FACTORS-RESULT-2026-09-05.md
+    acceptance:
+      - 原始版本及修订发布时间有来源证据，禁止倒填当前快照 available_at
+      - 冻结股票与全部决策日覆盖检查，不用三股接口体检替代
+      - 缺失与明确零区分，单季 EPS 连续性和每股可比性核验
+  - id: FUNDAMENTAL-FACTOR-SIX-ARM-RESEARCH
+    title: 三因子独立与突破结合的六臂真实历史诊断
+    status: blocked
+    dependencies: [FUNDAMENTAL-HISTORICAL-DATA-QUALIFICATION]
+    blocker: 历史财务数据资格尚未通过，不生成伪造收益或 PASS
+    plan: docs/FUNDAMENTAL-FACTORS-PREREGISTRATION-2026-09-05.md
+    acceptance:
+      - 按冻结公式和完整面板运行 sample_step=1，不调现有阈值
+      - 成本、沪深300、等权对照、OOS/WF 及全部失败臂共同披露
+  - id: MARKET-EXCESS-MOMENTUM-20260905
+    title: 固定沪深300对照与中期动量配对诊断
+    status: complete
+    dependencies: [PERSONAL-RESEARCH-CLOSEOUT-20260905]
+    plan: docs/MARKET-EXCESS-MOMENTUM-PREREGISTRATION-2026-09-05.md
+    acceptance:
+      - 基准、因子和有无因子两臂预登记后运行，不按收益再调参
+      - 每日报价与权益对齐、缺失fail-closed、旧报告保持不可变
+      - 相关测试及质量门通过；真实结果无论成败均披露
   - id: ONE-CLICK-RUNTIME-HOTFIX-20260905
     title: 一键启动统一 Python 3.12、依赖安装与 Windows 批处理回归
     status: complete

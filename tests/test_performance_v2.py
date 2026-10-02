@@ -10,16 +10,22 @@ import json
 import sqlite3
 import time
 from collections.abc import Callable
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from ab_screener.api.app_factory import include_v2_routers
+from ab_screener.application.scan_audit import complete_scan_run
+from ab_screener.application.scan_jobs import ScanJobStore
+from ab_screener.application.scan_publication import read_scan_publication
+from ab_screener.domain.profile import default_profile
 from ab_screener.local_store import LocalStore
+from ab_screener.market_regime import data_freshness
 from paper_trading.account import opening_equity
 from paper_trading.orders import list_orders
 
@@ -54,12 +60,34 @@ def _business_dates(count: int, end: date = date(2026, 8, 26)) -> list[str]:
 
 
 @pytest.fixture()
-def performance_db(tmp_path: Path) -> Path:
+def performance_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from ab_screener.data import freshness
+
+    # Pin only the clock, leaving the independent-calendar and dataset readers
+    # active. A benchmark fixture must not become stale as the real date changes.
+    frozen_now = datetime(2026, 8, 26, 16, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    class FixtureClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now.astimezone(tz) if tz is not None else frozen_now.replace(tzinfo=None)
+
+    monkeypatch.setattr(freshness, "datetime", FixtureClock)
     db = tmp_path / "performance-v2.db"
-    LocalStore(db_path=db)
+    store = LocalStore(db_path=db)
     dates = _business_dates(20)
     codes = [f"{600000 + index:06d}.SH" for index in range(100)]
     now = "2026-08-26T16:30:00+08:00"
+    candidates = [
+        {"trade_date": dates[-1], "ts_code": code, "name": f"样本{index:03d}",
+         "industry": "测试行业", "price": 10.0, "mv_yi": 100.0, "pe": 15.0,
+         "pb": 1.5, "turnover": 2.0, "box_days": 20, "box_amp": 0.08,
+         "vol_ratio": 1.6, "fund_net_wan": 500.0, "fund_ratio": 0.03,
+         "total_score": 90.0 - index / 10, "reasons": "[池A|strict] fixture",
+         "breakout_date": dates[-1], "box_high": 10.2, "box_low": 9.5,
+         "ma5": 10.0, "ma20": 9.8, "sig_calculated": 1}
+        for index, code in enumerate(codes)
+    ]
 
     daily_rows = []
     for code_index, code in enumerate(codes):
@@ -79,26 +107,33 @@ def performance_db(tmp_path: Path) -> Path:
 
     with sqlite3.connect(db) as conn:
         conn.executemany(
+            "INSERT INTO stock_basic (ts_code,name,industry,market,list_date) VALUES (?,?,?,?,?)",
+            [(code, f"样本{index:03d}", "测试行业", "主板", "20000101")
+             for index, code in enumerate(codes)],
+        )
+        conn.executemany(
             "INSERT INTO daily (ts_code,trade_date,open,high,low,close,vol,amount) "
             "VALUES (?,?,?,?,?,?,?,?)",
             daily_rows,
         )
+        # Synthetic exchange calendar covers open AND closed dates independently
+        # of quote rows. Its scope is this disposable fixture only.
+        calendar_start = frozen_now.date() - timedelta(days=45)
+        calendar = [calendar_start + timedelta(days=index) for index in range(46)]
         conn.executemany(
-            "INSERT OR REPLACE INTO trade_cal (cal_date,is_open,source,updated_at) "
-            "VALUES (?,1,'local_infer',?)",
-            [(trade_date, now) for trade_date in dates],
+            "INSERT INTO trade_cal (cal_date,is_open,source,updated_at) VALUES (?,?,'tushare',?) "
+            "ON CONFLICT(cal_date) DO UPDATE SET is_open=excluded.is_open,source=excluded.source,updated_at=excluded.updated_at",
+            [(day.strftime("%Y%m%d"), int(day.weekday() < 5), now) for day in calendar],
         )
         conn.executemany(
-            "INSERT INTO scan_result (trade_date,ts_code,name,industry,price,mv_yi,pe,pb,"
-            "turnover,box_days,box_amp,vol_ratio,fund_net_wan,fund_ratio,total_score,reasons,"
-            "breakout_date,box_high,box_low,ma5,ma20,sig_calculated,created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            [
-                (dates[-1], code, f"样本{index:03d}", "测试行业", 10.0, 100.0, 15.0,
-                 1.5, 2.0, 20, 0.08, 1.6, 500.0, 0.03, 90.0 - index / 10,
-                 "[池A|strict] fixture", dates[-1], 10.2, 9.5, 10.0, 9.8, 1, now)
-                for index, code in enumerate(codes)
-            ],
+            "INSERT INTO daily_basic (ts_code,trade_date,close,pe,pb,turnover_rate,total_mv,circ_mv) "
+            "VALUES (?,?,?,15,1.5,2,1000000,800000)",
+            [(code, day, close) for code, day, _, _, _, close, _, _ in daily_rows if code in codes],
+        )
+        conn.executemany(
+            "INSERT INTO moneyflow (ts_code,trade_date,net_mf_amount,buy_elg_amount,buy_lg_amount,"
+            "sell_elg_amount,sell_lg_amount) VALUES (?,?,500,1000,1000,750,750)",
+            [(code, day) for code in codes for day in dates],
         )
         conn.execute(
             "INSERT INTO pt_account (account_id,initial_cash_fen,status,config_version,"
@@ -145,6 +180,23 @@ def performance_db(tmp_path: Path) -> Path:
                 for index in range(1000)
             ],
         )
+    fresh = data_freshness(dates[-1], store=store)
+    assert fresh["calendar_verified"] is True
+    assert fresh["can_publish_a"] is True
+    assert all(item["is_current"] for item in fresh["dataset_freshness"].values())
+    task_id = "performance-100-candidates"
+    ScanJobStore(db).reserve_running(task_id, top_n=100, days=160)
+    profile = default_profile()
+    assert complete_scan_run(
+        db, run_id=task_id, task_id=task_id, as_of=dates[-1], days=160,
+        result={"scan_candidates": candidates, "freshness": fresh, "total_candidates": 100, "hits": 100,
+                "regime": {"regime": "neutral", "label": "测试环境"}},
+        count_a=100, count_b=0, strategy_snapshot=profile.to_canonical_dict(),
+        config_hash=profile.config_hash(), code_version="performance-fixture-v2", research_mode="test",
+    )
+    publication = read_scan_publication(db)
+    assert publication["verified"] and publication["state"] == "READY"
+    assert len(publication["candidates"]) == 100
     return db
 
 
@@ -182,7 +234,11 @@ def test_overview_100_candidates_latency_and_payload(
         legacy_market._OVERVIEW_CACHE["payload"] = None
         response = client.get("/api/overview?pool=A")
         response.raise_for_status()
-        assert response.json()["count"] == 100
+        payload = response.json()
+        assert payload["count"] == 100
+        assert payload["view_state"] == "CURRENT"
+        assert payload["publication"]["publication_version"] == 2
+        assert payload["freshness"]["can_publish_a"] is True
         return response
 
     cold_response = cold_request()

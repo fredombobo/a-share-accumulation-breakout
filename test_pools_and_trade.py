@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 from market_regime import data_freshness, detect_regime_from_index_df
-from pool_select import breakout_freshness_bonus, split_pools
+from pool_select import breakout_freshness_bonus, filter_b_display, select_research_a, split_pools
 from portfolio import check_stops, load_portfolio, remove_position, upsert_position
 from trade_plan import build_trade_card
 
@@ -37,6 +37,50 @@ def test_split_pools_keeps_theme_fill_out_of_a():
     assert len(b) == 10
     assert (b["筛选层级"] == "theme_fill").all()
     print("[PASS] theme_fill 不进 A 池", rep)
+
+
+def test_research_a_quota_is_explicit_and_data_complete():
+    rows = []
+    for i in range(9):
+        rows.append({
+            "ts_code": f"600{i:03d}.SH", "名称": f"研究候选{i}", "行业": "半导体",
+            "综合分": 92 - i, "筛选层级": "relaxed", "箱体天数": 40,
+            "量比": 1.6, "data_missing_fields": [],
+            "fund_window": {"complete": True}, "入选理由": "放量突破",
+        })
+    rows.append({
+        "ts_code": "000001.SZ", "名称": "数据不足", "行业": "半导体",
+        "综合分": 99, "筛选层级": "relaxed", "箱体天数": 60,
+        "量比": 2.0, "data_missing_fields": ["pe"],
+        "fund_window": {"complete": True}, "入选理由": "缺数据",
+    })
+    rows.append({
+        "ts_code": "000002.SZ", "名称": "主题观察", "行业": "半导体",
+        "综合分": 99, "筛选层级": "theme_fill", "箱体天数": 60,
+        "量比": 2.0, "data_missing_fields": [],
+        "fund_window": {"complete": True}, "入选理由": "主题",
+    })
+    selected, remaining, report = select_research_a(pd.DataFrame(rows), target=3, max_count=7)
+    assert len(selected) == 3
+    assert report["selected"] == 3 and report["reason"] == "research_quota_filled"
+    assert set(selected["筛选层级"]) == {"relaxed"}
+    assert set(selected["a_pool_mode"]) == {"RESEARCH_GATED"}
+    assert selected["可交易"].eq(False).all()
+    assert "000001.SZ" in set(remaining["ts_code"])
+    assert "000002.SZ" in set(remaining["ts_code"])
+    print("[PASS] 研究 A 配额与数据完整性门槛", report)
+
+
+def test_b_display_keeps_only_scores_at_or_above_80():
+    df = pd.DataFrame([
+        {"ts_code": "000001.SZ", "综合分": 80.0},
+        {"ts_code": "000002.SZ", "综合分": 79.9},
+        {"ts_code": "000003.SZ", "综合分": 91.0},
+    ])
+    shown = filter_b_display(df, min_score=80, limit=30)
+    assert shown["ts_code"].tolist() == ["000001.SZ", "000003.SZ"]
+    assert filter_b_display(df, min_score=95).empty
+    print("[PASS] B 池展示分数门槛")
 
 
 def test_trade_card_and_freshness():
@@ -74,6 +118,7 @@ def test_portfolio_roundtrip():
 
 if __name__ == "__main__":
     test_split_pools_keeps_theme_fill_out_of_a()
+    test_research_a_quota_is_explicit_and_data_complete()
     test_trade_card_and_freshness()
     test_regime_defense()
     test_portfolio_roundtrip()

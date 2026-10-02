@@ -14,6 +14,7 @@ import {
   ClassificationKey,
   ParameterSpec,
   ProfileActivation,
+  EntryCopyStatus,
   StrategyProfileState,
 } from '../api/client'
 import { RUN_TASK_EVENT } from '../components/GlobalRunProgress'
@@ -24,17 +25,18 @@ import {
 } from '../components/backtestMetricContract'
 import ParameterCheckDialog, { type ParameterCheckResult } from '../components/ParameterCheckDialog'
 import BacktestAccountDetails from '../components/BacktestAccountDetails'
+import BacktestMarketComparison from '../components/BacktestMarketComparison'
+import ReplayCorrectionPanel from '../components/ReplayCorrectionPanel'
+import './ProfessionalBacktest.css'
 
 const ACTIVE_STATUSES: BacktestTask['status'][] = ['pending', 'running', 'cancelling']
-const PRIMARY_KEYS = new Set([
+const PRIMARY_ENTRY_KEYS = new Set([
   'box_min_days',
   'box_max_days',
   'breakout_vol_ratio',
-  'max_hold_days',
-  'exit_window',
-  'strong_reset',
 ])
-const RISK_KEYS = new Set(['stop_pct', 'target_pct'])
+const EXIT_KEYS = new Set(['stop_pct', 'target_pct', 'max_hold_days', 'vol_ratio_min', 'exit_window', 'strong_reset'])
+const ADVANCED_EXIT_KEYS = new Set(['vol_ratio_min', 'exit_window', 'strong_reset'])
 
 const PHASES = [
   ['DATA', '冻结数据'],
@@ -111,11 +113,11 @@ function metricRows(metrics: BacktestMetrics | null | undefined) {
   const totalReturn = portfolioTotalReturn(metrics)
   const maxDrawdown = portfolioMaxDrawdown(metrics)
   return [
+    ['组合净收益', formatPercent(totalReturn)],
+    ['组合最大回撤', formatPercent(maxDrawdown)],
     ['净成交', metrics?.net_n_trades == null ? 'n/a' : `${metrics.net_n_trades} 笔`],
     ['净胜率', formatPercent(metrics?.net_win_rate)],
     ['净 Profit Factor', formatNumber(metrics?.net_profit_factor)],
-    ['组合净收益', formatPercent(totalReturn)],
-    ['组合最大回撤', formatPercent(maxDrawdown)],
   ]
 }
 
@@ -150,7 +152,7 @@ function ParameterEditor({
   const allowedModes = definition.value_type === 'boolean' ? ['fixed', 'values'] : ['fixed', 'range', 'values']
 
   return (
-    <div className="parameter-editor">
+    <div className="parameter-editor" data-parameter={definition.key}>
       <div className="parameter-title">
         <label htmlFor={`mode-${definition.key}`}>{definition.title}</label>
         <select
@@ -164,13 +166,14 @@ function ParameterEditor({
           ))}
         </select>
       </div>
-      <p>{definition.description}</p>
+      <p id={`description-${definition.key}`}>{definition.description}</p>
       {spec.mode === 'fixed' && definition.value_type === 'boolean' && (
         <select
           className="input"
           value={String(spec.value)}
           onChange={(event) => onChange({ mode: 'fixed', value: event.target.value === 'true' })}
           aria-label={definition.title}
+          aria-describedby={`description-${definition.key}`}
         >
           <option value="true">启用</option>
           <option value="false">关闭</option>
@@ -186,6 +189,7 @@ function ParameterEditor({
           value={String(displayValue(spec.value))}
           onChange={(event) => onChange({ mode: 'fixed', value: numberValue(event.target.value) })}
           aria-label={definition.title}
+          aria-describedby={`description-${definition.key}`}
         />
       )}
       {spec.mode === 'range' && (
@@ -199,6 +203,7 @@ function ParameterEditor({
                 step={definition.value_type === 'integer' ? 1 : 'any'}
                 value={String(displayValue(spec[key]))}
                 onChange={(event) => onChange({ ...spec, [key]: numberValue(event.target.value) })}
+                aria-label={`${definition.title}${key === 'start' ? '起点' : key === 'stop' ? '终点' : '步长'}`}
               />
             </label>
           ))}
@@ -229,10 +234,12 @@ function ParameterEditor({
 }
 
 function ResultMetrics({ title, metrics }: { title: string; metrics: BacktestMetrics | null | undefined }) {
+  const [primary, ...supporting] = metricRows(metrics)
   return (
     <section className="metric-compare-block">
       <h4>{title}</h4>
-      {metricRows(metrics).map(([label, value]) => (
+      <div className="research-primary-metric"><span>{primary[0]}</span><strong>{primary[1]}</strong></div>
+      {supporting.map(([label, value]) => (
         <div className="stat" key={label}><span className="k">{label}</span><span className="v">{value}</span></div>
       ))}
     </section>
@@ -241,16 +248,22 @@ function ResultMetrics({ title, metrics }: { title: string; metrics: BacktestMet
 
 function BacktestResultView({
   result,
+  reportIdentity,
   activation,
   activeProfile,
   activating,
   onActivate,
+  entryCopy,
+  onCopyEntry,
 }: {
   result: BacktestResult
+  reportIdentity?: { taskId: string; codeVersion: string }
   activation?: ProfileActivation
   activeProfile: StrategyProfileState | null
   activating: boolean
   onActivate: () => void
+  entryCopy?: EntryCopyStatus
+  onCopyEntry: () => void
 }) {
   const selected = result.selected
   const verdictClass = ['EXPLORATORY_PROMISING', 'HISTORICAL_SUPPORT_ONLY'].includes(result.verdict) ? 'ok' : 'warn'
@@ -270,7 +283,15 @@ function BacktestResultView({
     URL.revokeObjectURL(url)
   }
   return (
-    <div className="backtest-result" aria-live="polite">
+    <div className="backtest-result research-report" aria-live="polite" aria-label="研究回测报告">
+      <header className="research-report-heading">
+        <div><span className="guide-eyebrow">研究结果</span><h2>回测报告</h2></div>
+        <div className="research-report-meta">
+          <span>{result.request.universe.count} 只股票</span>
+          <span>{result.evaluated_combinations ?? result.leaderboard.length} 组参数</span>
+          <span>{formatDate(result.request.windows.is[0])} — {formatDate(result.request.windows.oos[1])}</span>
+        </div>
+      </header>
       <section className={`result-verdict ${verdictClass}`}>
         <div>
           <span className="guide-eyebrow">探索性结论</span>
@@ -279,6 +300,13 @@ function BacktestResultView({
         </div>
         {result.report_markdown && <button className="btn" type="button" onClick={downloadReport}>下载 Markdown 报告</button>}
       </section>
+      {selected && (
+        <div className="metric-compare research-key-metrics" aria-label="回测核心指标">
+          <ResultMetrics title="OOS 样本外" metrics={selected.oos} />
+          <ResultMetrics title="IS 样本内" metrics={selected.is} />
+          <ResultMetrics title="2 倍成本压力" metrics={result.cost_stress?.metrics} />
+        </div>
+      )}
       <div className="result-reasons">
         {(result.verdict_reasons || []).map((reason) => <div key={reason}>检查项：{reason}</div>)}
         {!result.candidate_eligible && <div>晋级状态：未晋级。需要另行预登记后复验。</div>}
@@ -291,6 +319,9 @@ function BacktestResultView({
           </span>
           {entryMechanism.id === 'POST_BREAKOUT_SUPPLY_DRY_UP_V1' && (
             <span>时点：t0 严格突破 → t1 下一交易日收盘确认 → 最早 t2 开盘模拟成交。</span>
+          )}
+          {entryMechanism.id === 'INTERMEDIATE_MOMENTUM_SKIP_MONTH_V1' && (
+            <span>中期动量：跳过最近一个月，在冻结股票池中仅接受中期表现前 30% 的严格突破。固定规则，不按结果再次调参。</span>
           )}
         </div>
       )}
@@ -320,7 +351,7 @@ function BacktestResultView({
             {activation?.boundary.notice
               || '只统一 A 池技术入场参数；资金、基本面和市场环境门禁仍会继续执行。'}
           </p>
-          <small>你也可以在首页独立填写手工研究参数；那条路径不会冒充已通过回测验证。</small>
+          <small>复制只复用入场条件。新筛选配置不会继承这份完整回测的收益与验证状态。</small>
           {!activation?.can_activate && (activation?.reasons || []).slice(0, 3).map((item) => (
             <div className="profile-check-fail" key={item.code}>{item.label}：{item.message}</div>
           ))}
@@ -334,14 +365,11 @@ function BacktestResultView({
           </button>
         )}
       </section>
+      {selected && <section className="research-entry-copy"><div><h3>将入场条件带回每日筛选</h3><p>只复制九项入场条件，退出规则由当前研究档案保留。</p>{!entryCopy?.can_copy && <small>{entryCopy?.reasons?.map(reason => reason.message).join('；') || '此报告尚未提供可复制的每日入场条件。'}</small>}</div><button className="btn" type="button" disabled={!entryCopy?.can_copy || activating || !activeProfile} onClick={onCopyEntry}>{activating ? '正在处理…' : '复制入场条件到每日筛选'}</button></section>}
+      <BacktestMarketComparison comparison={result.market_comparison} />
       {selected ? (
         <>
-          <div className="metric-compare">
-            <ResultMetrics title="IS 样本内" metrics={selected.is} />
-            <ResultMetrics title="OOS 样本外" metrics={selected.oos} />
-            <ResultMetrics title="2 倍成本压力" metrics={result.cost_stress?.metrics} />
-          </div>
-          <BacktestResultCharts result={result} />
+          <BacktestResultCharts result={result} reportIdentity={reportIdentity} />
           <BacktestAccountDetails result={result} />
           <section className="card section-gap">
             <div className="h-sec"><h2>基准与滚动窗口</h2></div>
@@ -407,7 +435,7 @@ function BacktestResultView({
             />
           </section>
         </>
-      ) : <div className="empty section-gap"><strong>没有可入选组合</strong>当前样本没有达到最低成交证据要求。</div>}
+      ) : <div className="research-empty"><span className="guide-eyebrow">样本证据不足</span><strong>没有可入选组合</strong><p>当前样本没有达到最低成交证据要求。可查看下方研究边界，核对股票范围与参数设置。</p></div>}
       <details className="backtest-warnings section-gap">
         <summary>研究边界与数据说明</summary>
         <ul>{result.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
@@ -425,8 +453,9 @@ function Leaderboard({
 }) {
   if (!rows.length) return <div className="empty">暂无排行榜数据</div>
   return (
-    <div className="table-scroll">
+    <div className="table-scroll research-leaderboard" tabIndex={0} role="region" aria-label="参数排行榜，可横向滚动">
       <table className="data">
+        <caption>按样本内结果选择参数，列出前十项的样本外表现。</caption>
         <thead><tr><th>排名</th><th>{hasIndependentPaths ? '等效参数' : '路径证据'}</th><th>横盘最长</th><th>突破量比</th><th>止损</th><th>止盈</th><th>最长持有</th><th>二次出货窗</th><th>IS PF</th><th>OOS PF</th><th>OOS 净收益</th><th>OOS 成交</th></tr></thead>
         <tbody>{rows.map((row, index) => (
           <tr key={row.param_id}>
@@ -479,7 +508,7 @@ export default function ProfessionalBacktest() {
         setUniverse(nextUniverse)
         setParameters(Object.fromEntries(nextCatalog.parameters.map((item) => [item.key, cloneSpec(item.default)])))
         setConditionFlags(Object.fromEntries(nextCatalog.conditions.map((item) => [item.id, item.default_enabled])))
-        setTask(latest.task ? { ...latest.task, profile_activation: latest.profile_activation } : null)
+        setTask(latest.task ? { ...latest.task, profile_activation: latest.profile_activation, entry_copy: latest.entry_copy ?? latest.task.entry_copy } : null)
       })
       .catch((reason) => active && setError(errorMessage(reason)))
       .finally(() => active && setBusy(''))
@@ -618,6 +647,18 @@ export default function ProfessionalBacktest() {
     }
   }
 
+  const handleCopyEntry = async () => {
+    if (!task || !profileState) return
+    setBusy('run'); setError(''); setProfileFeedback('')
+    try {
+      const next = await api.copyBacktestEntry(task.task_id, profileState.active.config_hash)
+      setProfileState(next)
+      setProfileFeedback('已复制入场条件，下一次扫描生效。新配置待验证，不继承原回测收益。')
+      setTask(await api.backtestStatus(task.task_id))
+    } catch (reason) { setError(errorMessage(reason)) }
+    finally { setBusy('') }
+  }
+
   const handleClassificationChange = async (next: ClassificationKey) => {
     if (next === classification) return
     const previous = classification
@@ -656,11 +697,25 @@ export default function ProfessionalBacktest() {
   const groupLabel = universe?.group_label || '板块'
   const activeTask = task && ACTIVE_STATUSES.includes(task.status)
 
-  if (busy === 'load') return <div className="loading">正在读取研究回测契约和本地股票池...</div>
-  if (!catalog || !universe) return <div className="err">研究回测初始化失败：{error || '接口不可用'}</div>
+  if (busy === 'load') return (
+    <div className="research-workspace research-initial-state" role="status" aria-busy="true">
+      <span className="guide-eyebrow">专业回测</span>
+      <h1>正在准备研究工作台</h1>
+      <p>读取参数配置、本地股票池与最近一次研究结果。</p>
+      <div className="research-loading-lines" aria-hidden="true"><i /><i /><i /></div>
+    </div>
+  )
+  if (!catalog || !universe) return (
+    <div className="research-workspace research-initial-state" role="alert">
+      <span className="guide-eyebrow">专业回测</span>
+      <h1>暂时无法载入工作台</h1>
+      <p>{error || '研究接口暂时不可用，请确认本地服务已启动。'}</p>
+      <button className="btn" type="button" onClick={() => window.location.reload()}>重新载入</button>
+    </div>
+  )
 
   return (
-    <div className="backtest-shell fade-up">
+    <div className="backtest-shell research-workspace fade-up">
       {checkDialog && (
         <ParameterCheckDialog
           result={checkDialog}
@@ -677,12 +732,12 @@ export default function ProfessionalBacktest() {
       )}
       <section className="backtest-intro">
         <div>
-          <span className="guide-eyebrow">AB 横盘吸筹突破</span>
+          <span className="guide-eyebrow">研究工作台 / 横盘吸筹突破</span>
           <h1>多参数研究回测</h1>
-          <p>一次冻结参数空间和股票池。只用 IS 选参，再用 OOS、滚动窗口、基线与成本压力核验。</p>
+          <p>定义股票范围与交易规则，比较样本外表现、风险和成本。</p>
         </div>
         <div className="research-boundary">
-          <b>个人研究学习平台</b>
+          <b>探索性研究</b>
           <span>结果不是荐股或买入指令</span>
           <span>不连接券商，不生成订单</span>
         </div>
@@ -691,52 +746,64 @@ export default function ProfessionalBacktest() {
       {error && <div className="guide-feedback error" role="alert"><b>无法继续</b><span>{error}</span></div>}
       {profileFeedback && <div className="guide-feedback success" role="status"><b>参数档案已更新</b><span>{profileFeedback}</span></div>}
 
+      {(profileState || task) && <div className={`research-context-strip ${task?.status === 'done' ? 'is-complete' : ''}`}>
       {profileState && (
-        <section className="active-profile-banner" aria-label="当前今日选股参数">
+        <section className="active-profile-banner" aria-label="当前今日选股参数" title={`参数配置：${profileState.active.config_hash}${profileState.active.source.task_id ? ` · 来源任务：${profileState.active.source.task_id}` : ''}`}>
           <div>
-            <span className="guide-eyebrow">今日选股当前参数</span>
-            <h2>{profileState.active.is_default ? '系统默认参数' : profileState.active.source.kind === 'MANUAL_RESEARCH' ? '用户手工研究参数' : '回测验证后人工启用参数'}</h2>
+            <div className="research-summary-line"><span className="guide-eyebrow">今日选股</span>
+            <h2>{profileState.active.is_default ? '系统默认参数' : profileState.active.source.kind === 'MANUAL_RESEARCH' ? '用户手工研究参数' : profileState.active.source.kind === 'BACKTEST_ENTRY_COPY' ? '复制的入场条件 · 待验证' : '回测验证后人工启用参数'}</h2></div>
             <p>
               横盘 {String(profileState.active.entry.box_min_days)}–{String(profileState.active.entry.box_max_days)} 日 ·
-              突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)} ·
-              配置 <span className="mono">{profileState.active.config_hash}</span>
+              突破量比 ≥ {String(profileState.active.entry.breakout_vol_ratio)}
             </p>
           </div>
           <span className={`pill ${profileState.active.is_default ? '' : 'ok'}`}>
             {profileState.active.is_default
               ? '内置默认'
+              : profileState.active.source.kind === 'BACKTEST_ENTRY_COPY'
+                ? '来源 回测入场条件（待验证）'
               : profileState.active.source.kind === 'MANUAL_RESEARCH'
                 ? '来源 手工输入（未回测验证）'
-                : `来源 ${profileState.active.source.task_id}`}
+                : '来源 回测档案'}
           </span>
         </section>
       )}
 
       {task && (
-        <section className={`task-status ${task.status}`} aria-live="polite">
+        <section className={`task-status ${task.status}`} aria-live="polite" title={task.status === 'done' ? `${task.task_id} · ${task.message}` : undefined}>
           <div className="task-status-head">
             <div>
-              <span className="guide-eyebrow">最近研究任务</span>
-              <h2>{task.status === 'done' ? '回测已完成' : task.status === 'error' ? '回测失败' : task.message || '回测运行中'}</h2>
-              <p className="mono">{task.task_id} · {task.progress}% · {task.message}</p>
+              <div className={task.status === 'done' ? 'research-summary-line' : undefined}><span className="guide-eyebrow">最近研究任务</span>
+              <h2>{task.status === 'done' ? '回测已完成' : task.status === 'error' ? '回测失败' : task.status === 'cancelled' ? '回测已取消' : task.status === 'interrupted' ? '回测已中断' : task.message || '回测运行中'}</h2></div>
+              {task.status === 'done' ? <p>更新于 {task.updated_at.slice(0, 16).replace('T', ' ')}</p> : <><p>{task.message}</p><span className="research-task-id mono">{task.task_id}</span></>}
             </div>
-            {activeTask && <button className="btn danger" type="button" onClick={handleCancel} disabled={busy === 'cancel'}>取消任务</button>}
+            <div className="research-task-actions">
+              {activeTask && <span className="research-task-progress num">{task.progress}<small>%</small></span>}
+              {activeTask && <button className="btn danger" type="button" onClick={handleCancel} disabled={busy === 'cancel'}>取消任务</button>}
+            </div>
           </div>
-          <ol className="stage-strip">
+          {activeTask && <div className="research-progress-track" role="progressbar" aria-label="研究任务进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={task.progress}><span style={{ width: `${Math.max(0, Math.min(100, task.progress))}%` }} /></div>}
+          {activeTask && <ol className="stage-strip">
             {PHASES.map(([phase, label], index) => {
               const currentIndex = PHASES.findIndex(([item]) => item === task.phase)
               const done = task.status === 'done' || currentIndex > index
               const current = currentIndex === index && activeTask
               return <li key={phase} className={done ? 'done' : current ? 'current' : ''}><span>{done ? '✓' : index + 1}</span>{label}</li>
             })}
-          </ol>
+          </ol>}
         </section>
       )}
+      </div>}
 
+      <details className="research-configuration" open={!task?.result}>
+        <summary className="research-configuration-summary">
+          <span><b>研究配置</b><small>股票池与数据 · 入场筛选 · 退出规则</small></span>
+          <span className="research-configuration-hint">{task?.result ? '调整配置，开始新的研究' : '固定值、范围步进或离散值'}</span>
+        </summary>
       <div className="backtest-layout">
         <aside className="backtest-config">
-          <section>
-            <div className="config-heading"><h2>1. 选择股票池</h2><span>{groups.length ? `${groups.length} 个${groupLabel}` : '全市场'}</span></div>
+          <section aria-label="股票池与数据">
+            <div className="config-heading"><h2><span className="research-section-index">01</span> 股票池与数据</h2><span>{groups.length ? `${groups.length} 个${groupLabel}` : '全市场'}</span></div>
             <p className="config-note">选择分类标准后再勾选细分方向。运行前会冻结代码与哈希。</p>
             <div className="field classification-field">
               <label htmlFor="universe-classification">分类标准</label>
@@ -765,7 +832,7 @@ export default function ProfessionalBacktest() {
               <button className="btn btn-sm" type="button" onClick={() => mutate(() => setGroups([]))}>清空</button>
             </div>
             <div className="industry-picker" role="group" aria-label={`回测${groupLabel}`}>
-              {universeBusy ? <div className="empty">正在读取新的分类...</div> : visibleGroups.map((item) => (
+              {universeBusy ? <div className="empty" role="status">正在读取新的分类...</div> : visibleGroups.length === 0 ? <p className="research-filter-empty">没有匹配的{groupLabel}，请调整筛选文字。</p> : visibleGroups.map((item) => (
                 <label key={item.name}>
                   <input
                     type="checkbox"
@@ -789,41 +856,48 @@ export default function ProfessionalBacktest() {
               </div>
             </div>
           </section>
-          <section className="condition-section">
-            <div className="config-heading"><h2>筹码条件扩展口</h2><span>预留</span></div>
+          {catalog.conditions.length > 0 && <details className="condition-section research-disclosure">
+            <summary>研究条件扩展 <span>预留</span></summary>
             {(catalog.conditions || []).map((condition) => (
               <label className="condition-row" key={condition.id}>
                 <input type="checkbox" checked={Boolean(conditionFlags[condition.id])} disabled={!condition.production_ready} onChange={(event) => mutate(() => setConditionFlags((current) => ({ ...current, [condition.id]: event.target.checked })))} />
                 <span><b>{condition.title}</b><small>{condition.status}。数据 {condition.dataset?.available ? `${condition.dataset.rows} 行` : '未就绪'}。</small></span>
               </label>
             ))}
-          </section>
+          </details>}
         </aside>
 
-        <main className="backtest-workspace">
-          <section className="card">
-            <div className="h-sec"><h2>2. 设置参数空间</h2><span className="pill">硬上限 {catalog.max_combinations} 组</span></div>
-            <section className="risk-parameter-panel" aria-label="止盈止损百分比参数">
-              <div className="config-heading">
-                <h3>止损与止盈（百分比）</h3>
-                <span>会真实参与回测退出</span>
-              </div>
-              <p className="config-note">买入后下一交易日起检查；同日同时触及时先按止损，避免乐观偏差。</p>
-              <div className="parameter-grid">
-                {catalog.parameters.filter((item) => RISK_KEYS.has(item.key)).map((definition) => (
-                  <ParameterEditor percentage key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
-                ))}
-              </div>
-            </section>
+        <div className="backtest-workspace">
+          <section className="card research-parameter-section" aria-label="入场筛选参数">
+            <div className="h-sec"><h2><span className="research-section-index">02</span> 入场筛选</h2><span className="research-section-caption">什么条件下入选</span></div>
+            <p className="config-note">设置横盘结构与突破条件。信号在收盘确认，按后续可交易日开盘模拟入场。</p>
             <div className="parameter-grid">
-              {catalog.parameters.filter((item) => PRIMARY_KEYS.has(item.key)).map((definition) => (
+              {catalog.parameters.filter((item) => PRIMARY_ENTRY_KEYS.has(item.key)).map((definition) => (
                 <ParameterEditor key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
               ))}
             </div>
-            <details className="advanced-parameters">
-              <summary>其余信号条件与约束</summary>
+            <details className="advanced-parameters research-disclosure">
+              <summary>更多入场条件 <span>振幅、涨幅与结构约束</span></summary>
               <div className="parameter-grid">
-                {catalog.parameters.filter((item) => !PRIMARY_KEYS.has(item.key) && !RISK_KEYS.has(item.key)).map((definition) => (
+                {catalog.parameters.filter((item) => !PRIMARY_ENTRY_KEYS.has(item.key) && !EXIT_KEYS.has(item.key)).map((definition) => (
+                  <ParameterEditor key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
+                ))}
+              </div>
+            </details>
+          </section>
+
+          <section className="card research-parameter-section research-exit-section" aria-label="退出规则参数">
+            <div className="h-sec"><h2><span className="research-section-index">03</span> 退出规则</h2><span className="research-section-caption">入场后如何离场</span></div>
+            <p className="config-note">止损、止盈与持有期限只影响回测离场，不改变股票入选条件。比例以百分比填写。</p>
+            <div className="parameter-grid research-exit-primary">
+              {catalog.parameters.filter((item) => EXIT_KEYS.has(item.key) && !ADVANCED_EXIT_KEYS.has(item.key)).map((definition) => (
+                <ParameterEditor percentage={PERCENT_PARAMETER_KEYS.has(definition.key)} key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
+              ))}
+            </div>
+            <details className="advanced-parameters research-disclosure" aria-label="高级退出规则">
+              <summary>高级退出规则 <span>标杆量、出货窗口与强势重置</span></summary>
+              <div className="parameter-grid">
+                {catalog.parameters.filter((item) => ADVANCED_EXIT_KEYS.has(item.key)).map((definition) => (
                   <ParameterEditor key={definition.key} definition={definition} spec={parameters[definition.key]} onChange={(next) => mutate(() => setParameters((current) => ({ ...current, [definition.key]: next })))} />
                 ))}
               </div>
@@ -832,7 +906,7 @@ export default function ProfessionalBacktest() {
 
           <section className="run-console section-gap">
             <div>
-              <span className="guide-eyebrow">3. 先核对，再运行</span>
+              <span className="guide-eyebrow">检查与运行 · 最多 {catalog.max_combinations.toLocaleString()} 组</span>
               <h2>{preview ? '回测输入已冻结预览' : '尚未生成运行预览'}</h2>
               <p>{preview ? preview.estimated_work.note : '调整参数或股票池后必须重新预览，防止误跑超大参数空间。'}</p>
             </div>
@@ -859,20 +933,31 @@ export default function ProfessionalBacktest() {
             </section>
           )}
 
+        </div>
+      </div>
+      </details>
+
+          <ReplayCorrectionPanel />
           {task?.result && (
             <BacktestResultView
               result={task.result}
+              reportIdentity={{ taskId: task.task_id, codeVersion: task.code_version }}
               activation={task.profile_activation}
               activeProfile={profileState}
               activating={busy === 'run'}
               onActivate={handleActivateProfile}
+              entryCopy={task.entry_copy}
+              onCopyEntry={handleCopyEntry}
             />
           )}
           {!task?.result && !activeTask && (
-            <div className="empty section-gap"><strong>等待一次研究回测</strong>默认参数会搜索横盘 60 至 200 天，并核验突破量比、止损、止盈、最长持有和二次出货窗口。</div>
+            <section className="research-empty" aria-label="尚无回测报告">
+              <span className="guide-eyebrow">研究报告</span>
+              <strong>{task?.status === 'error' ? '本次研究未生成完整报告' : '等待一次研究回测'}</strong>
+              <p>{task?.status === 'error' ? '请查看上方失败原因，核对配置后再试。未完成的任务不会生成推测结果。' : '完成配置后，先检查参数空间，再启动回测。这里将展示样本外收益、最大回撤、成本压力与逐笔账户复盘。'}</p>
+              <div className="research-empty-steps"><span>01 定义范围</span><span>02 检查配置</span><span>03 阅读证据</span></div>
+            </section>
           )}
-        </main>
-      </div>
     </div>
   )
 }

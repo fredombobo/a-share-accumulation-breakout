@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from ab_screener.api.routers.ai_insight import router as ai_insight_router
 from ab_screener.api.routers.desk import router as desk_router
+from ab_screener.api.routers.forward_observations import router as forward_observations_router
 from ab_screener.api.routers.intelligence import router as intelligence_router
 from ab_screener.api.routers.lhb import router as lhb_router
 from ab_screener.api.routers.monitor import router as monitor_router
@@ -30,6 +31,7 @@ from build_version import build_version
 
 CORE_V2_ROUTERS = (
     professional_backtest_router,
+    forward_observations_router,
     readiness_router,
     system_router,
 )

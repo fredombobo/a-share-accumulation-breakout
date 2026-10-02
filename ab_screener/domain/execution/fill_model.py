@@ -18,6 +18,7 @@ from ab_screener.domain.execution.models import (
     Quote,
     Side,
     require_int_fen,
+    require_int_micro,
 )
 from ab_screener.domain.execution.settlement_rules import (
     available_buy_qty_by_cash,
@@ -37,12 +38,18 @@ class FillRequest:
     position_qty: int | None = None  # 卖出约束（None=不检查）
     requested_qty: int | None = None  # 订单请求数量（None=按参与率上限全额撮合）
     fees: FeeParams = field(default_factory=FeeParams)
+    # A stop/target/close reference never substitutes for the real opening quote.
+    reference_price_micro: int | None = None
 
     def __post_init__(self) -> None:
         if not self.input_hash:
             raise MoneyError("撮合请求必须携带 input_hash（防重复成交）")
         if self.cash_available_fen is not None:
             require_int_fen(self.cash_available_fen, name="cash_available_fen")
+        if self.reference_price_micro is not None:
+            require_int_micro(self.reference_price_micro, name="reference_price_micro")
+            if self.reference_price_micro <= 0:
+                raise MoneyError("reference_price_micro 必须为正")
         if self.requested_qty is not None and (
             not isinstance(self.requested_qty, int) or self.requested_qty < 0
         ):
@@ -62,7 +69,7 @@ def compute_fill(quote: Quote, request: FillRequest) -> FillV2:
         qty=0,
         price_micro=0,
         notional_fen=0,
-        fees=compute_fees(0, request.side, request.fees, slippage_notional_fen=0),
+        fees=FeeBreakdown(0, 0, 0, 0),
         cash_delta_fen=0,
         reason=why,
         participation_bps=request.participation_bps,
@@ -72,7 +79,7 @@ def compute_fill(quote: Quote, request: FillRequest) -> FillV2:
     if not ok:
         return zero(reason)
 
-    ref_micro = quote.open_micro
+    ref_micro = request.reference_price_micro if request.reference_price_micro is not None else quote.open_micro
     px_micro = slipped_price_micro(ref_micro, request.side, quote, request.fees.slippage_bps)
     max_qty = participation_max_qty(quote.vol, request.participation_bps)
     max_qty = floor_to_lot(max_qty, request.lot_size)

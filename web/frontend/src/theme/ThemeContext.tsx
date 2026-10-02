@@ -7,14 +7,14 @@ interface Ctx {
   toggle: () => void
 }
 
-const ThemeCtx = createContext<Ctx>({ theme: 'dark', toggle: () => {} })
+const ThemeCtx = createContext<Ctx>({ theme: 'light', toggle: () => {} })
 
 export const useTheme = () => useContext(ThemeCtx)
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem('ab-theme')
-    return saved === 'light' || saved === 'dark' ? saved : 'dark'
+    return saved === 'light' || saved === 'dark' ? saved : 'light'
   })
 
   useEffect(() => {
@@ -46,29 +46,29 @@ export function useChartColors(): ChartColors {
   return React.useMemo(() => {
     if (theme === 'dark') {
       return {
-        text: '#e9eef7',
-        subtext: '#93a1b8',
-        axis: '#243048',
-        split: '#1b2434',
-        up: '#ff5a5f',
-        down: '#2ebd85',
-        accent: '#3e9dff',
-        accent2: '#2ad4c3',
-        warn: '#f5a623',
-        palette: ['#3e9dff', '#2ad4c3', '#a78bfa', '#f5a623', '#34d399', '#f472b6', '#60a5fa', '#fb923c', '#c084fc'],
+        text: '#e1e7ef',
+        subtext: '#a1adbd',
+        axis: '#435063',
+        split: '#2b3543',
+        up: '#ef8882',
+        down: '#73c0a4',
+        accent: '#91b2dd',
+        accent2: '#83b5ac',
+        warn: '#d1ae75',
+        palette: ['#91b2dd', '#83b5ac', '#d1ae75', '#a8a0c4', '#89a0b3', '#d09b98', '#9ead8a', '#b8c1cf'],
       }
     }
     return {
-      text: '#101828',
-      subtext: '#4a586e',
-      axis: '#cbd5e1',
-      split: '#e6ebf2',
-      up: '#e0453f',
-      down: '#0a8f5c',
-      accent: '#2f6bff',
-      accent2: '#0e9384',
-      warn: '#c77d0b',
-      palette: ['#2f6bff', '#0e9384', '#7c3aed', '#c77d0b', '#0a8f5c', '#db2777', '#4f46e5', '#ea580c', '#9333ea'],
+      text: '#202c3d',
+      subtext: '#647083',
+      axis: '#cbd3de',
+      split: '#e3e7ed',
+      up: '#c95851',
+      down: '#27816b',
+      accent: '#355c88',
+      accent2: '#4a827c',
+      warn: '#b78840',
+      palette: ['#355c88', '#4a827c', '#b78840', '#817798', '#728b9d', '#ba706a', '#81916d', '#a1adbb'],
     }
   }, [theme])
 }

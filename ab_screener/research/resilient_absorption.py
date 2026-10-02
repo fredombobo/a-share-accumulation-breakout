@@ -18,6 +18,10 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 
+from ab_screener.research.intermediate_momentum import (
+    MECHANISM_ID as INTERMEDIATE_MOMENTUM_ID,
+)
+from ab_screener.research.intermediate_momentum import attach_momentum_context, evaluate_momentum
 from ab_screener.research.post_breakout_supply_dry_up import (
     POST_BREAKOUT_SUPPLY_DRY_UP_ID,
     detect_post_breakout_supply_dry_up,
@@ -40,6 +44,19 @@ class ResearchEntryMechanismError(ValueError):
 
 
 _MECHANISMS: dict[str, dict[str, Any]] = {
+    INTERMEDIATE_MOMENTUM_ID: {
+        "id": INTERMEDIATE_MOMENTUM_ID,
+        "version": "intermediate-momentum-skip-month-v1.0.0",
+        "research_only": True,
+        "benchmark_code": BENCHMARK_CODE,
+        "economic_hypothesis": "Slow information diffusion may sustain intermediate winners after a breakout.",
+        "conditions": ["compound t-125 through t-21 daily price returns", "top 30% average rank",
+                       "minimum 50 valid contemporaneous stocks"],
+        "missing_data_policy": "no_fill_no_ranking_without_complete_history",
+        "timing": "prior_returns_only_then_strict_signal_close_then_next_open",
+        "parameter_search": "none",
+        "preregistration": "docs/MARKET-EXCESS-MOMENTUM-PREREGISTRATION-2026-09-05.md",
+    },
     BASE_ENTRY_MECHANISM_ID: {
         "id": BASE_ENTRY_MECHANISM_ID,
         "version": "base-strict-breakout-v1.0.0",
@@ -218,6 +235,11 @@ def prepare_signal_market_context(
 ) -> pd.DataFrame:
     """Attach the frozen benchmark context required by a research mechanism."""
     _detector_kwargs, mechanism_id = split_signal_kwargs(signal_kwargs)
+    if mechanism_id == INTERMEDIATE_MOMENTUM_ID:
+        if research_snapshot is None:
+            raise ResearchEntryMechanismError("中期动量必须绑定冻结 PIT 快照")
+        benchmark = research_snapshot.load_benchmark(start=start, end=end)
+        return attach_momentum_context(daily, benchmark["trade_date"].astype(str).tolist())
     if mechanism_id == BASE_ENTRY_MECHANISM_ID:
         return daily
     if mechanism_id == POST_BREAKOUT_SUPPLY_DRY_UP_ID:
@@ -267,6 +289,8 @@ def evaluate_entry_mechanism(
     bars: pd.DataFrame,
     signal: Mapping[str, Any],
 ) -> dict[str, Any]:
+    if mechanism_id == INTERMEDIATE_MOMENTUM_ID:
+        return {**evaluate_momentum(bars, dict(signal)), "mechanism": entry_mechanism_identity(mechanism_id)}
     if mechanism_id == BASE_ENTRY_MECHANISM_ID:
         return {
             "passed": True,

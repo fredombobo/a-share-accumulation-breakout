@@ -1,4 +1,7 @@
-"""供应商 HTTPS/TLS 独立探针；报告不包含 Token。"""
+"""数据网关 HTTPS/TLS 独立探针：证书元数据 + 一次真实查询。
+
+报告不包含 Token；网关必须是 https://，明文地址在 tushare_init 层即被拒绝。
+"""
 from __future__ import annotations
 
 import argparse

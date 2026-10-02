@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -26,20 +27,25 @@ def _setup(db: Path) -> None:
             "INSERT INTO daily(ts_code,trade_date,open,high,low,close,vol,amount) "
             "VALUES ('000001.SZ','20260807',10,10,10,10,1000,10000)"
         )
+        conn.execute("INSERT INTO moneyflow(ts_code,trade_date) VALUES('000001.SZ','20260807')")
+        conn.execute("INSERT INTO daily_basic(ts_code,trade_date) VALUES('000001.SZ','20260807')")
+        dates = [datetime(2026, 8, 10, tzinfo=_TZ) - timedelta(days=day) for day in range(17)]
         conn.executemany(
             "INSERT OR REPLACE INTO trade_cal(cal_date,is_open,source,updated_at) "
             "VALUES (?,?,'tushare','t')",
-            [("20260807", 1), ("20260808", 0), ("20260809", 0), ("20260810", 1)],
+            [(day.strftime("%Y%m%d"), int(day.weekday() < 5)) for day in dates],
         )
 
 
-def _add_successful_scan(db: Path) -> None:
+def _add_successful_scan(db: Path, *, verified: bool = True) -> None:
+    snapshot = {"_publication": {"version": 2, "state": "READY", "counts": {"A": 0, "B": 0}}} if verified else {}
     with sqlite3.connect(db) as conn:
         conn.execute(
             "INSERT INTO scan_runs(run_id,task_id,as_of,strategy_snapshot_json,config_hash,"
             "git_sha,dataset_version,input_hash,result_hash,research_mode,status,created_at) "
-            "VALUES ('scan-1','task-1','20260807','{}','cfg','code','data','input','result',"
-            "'full','SUCCEEDED','2026-08-07T16:00:00+08:00')"
+            "VALUES ('scan-1','task-1','20260807',?,'cfg','code','data','input','result',"
+            "'full','SUCCEEDED','2026-08-07T16:00:00+08:00')",
+            (json.dumps(snapshot),),
         )
 
 
@@ -100,3 +106,10 @@ def test_today_api_returns_the_server_derived_action(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["next_action"] == "RUN_SCAN"
+
+
+def test_legacy_success_without_verified_publication_requires_rescan(tmp_path: Path) -> None:
+    db = tmp_path / "legacy-success.db"
+    _setup(db)
+    _add_successful_scan(db, verified=False)
+    assert build_today_guide(db, now=datetime(2026, 8, 7, 18, 0, tzinfo=_TZ))["next_action"] == "RUN_SCAN"

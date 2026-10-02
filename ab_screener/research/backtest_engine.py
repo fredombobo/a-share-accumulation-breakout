@@ -224,6 +224,7 @@ def run_single_backtest(
                 "entry_price": t.get("entry"),
                 "exit_price": cost.get("price") if cost.get("filled") else None,
                 "exit": t.get("exit") or "",
+                "exit_phase": t.get("exit_phase"),
                 "ret": round(float(t.get("ret") or 0.0), 6),
                 "net_return": cost.get("net_return"),
                 "filled": bool(cost.get("filled")),

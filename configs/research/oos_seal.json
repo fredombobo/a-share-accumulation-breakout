@@ -1,0 +1,17 @@
+{
+  "policy": "ADR-022",
+  "version": 1,
+  "frozen_at": "2026-09-25T20:45:00+08:00",
+  "seals": [
+    {
+      "hypotheses": [
+        "H-20260925-max-lottery",
+        "H-20260925-abnormal-turnover",
+        "H-20260925-ep-value"
+      ],
+      "sealed_from": "20240101",
+      "sealed_to": "20260925",
+      "in_sample": ["20160101", "20231231"]
+    }
+  ]
+}

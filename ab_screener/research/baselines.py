@@ -64,12 +64,16 @@ def random_baseline_trades(
                 "entry_date": str(row_e["trade_date"]),
                 "exit_date": str(row_x["trade_date"]),
                 "exit": "time",
+                "exit_phase": "OPEN",
                 "exit_price": float(row_x["open"]),
                 "cost": {"filled": True},
             }
         )
         fills.append(
             simulate_round_trip(
+                ts_code=str(row_e["ts_code"]),
+                entry_date=str(row_e["trade_date"]),
+                exit_date=str(row_x["trade_date"]),
                 entry_open=float(row_e["open"]),
                 entry_high=float(row_e["high"]),
                 entry_low=float(row_e["low"]),
@@ -146,12 +150,14 @@ def ma_cross_baseline(
                     "entry_date": entry_date,
                     "exit_date": exit_date,
                     "exit": "time",
+                "exit_phase": "OPEN",
                     "exit_price": float(row_x["open"]),
                     "cost": {"filled": True},
                 }
             )
             fills.append(
                 simulate_round_trip(
+                    ts_code=str(code), entry_date=entry_date, exit_date=exit_date,
                     entry_open=float(row_e["open"]),
                     entry_high=float(row_e["high"]),
                     entry_low=float(row_e["low"]),

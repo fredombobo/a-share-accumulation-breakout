@@ -89,8 +89,21 @@ CHART_DIR = os.path.join(OUT_DIR, "charts")
 TOP_N = 20
 TOP_N_TRADE = 20          # A 池 strict
 TOP_N_WATCH = 30          # B 池观察
+B_DISPLAY_MIN_SCORE = 80.0  # B 池展示门槛；完整资格快照仍保留低分观察证据
 INCLUDE_RELAXED_IN_A = False  # relaxed 默认进 B 池
 BUILD_WATCH_POOL = True      # 是否生成 B 池（theme_fill 仅进 B）
+
+# ── 研究型 A 候选（不改变可交易 A 池语义） ──
+# 防守期或 strict 不足时，给个人盘后研究保留少量高质量候选。
+# 这些行会显示在 A 标签下，但始终标记为研究候选，不生成可交易卡片。
+RESEARCH_A_POOL_ENABLED = True
+RESEARCH_A_POOL_TARGET = 3     # 每次扫描优先给出 3 只，最低 1 只、最多 7 只
+RESEARCH_A_POOL_MIN = 1
+RESEARCH_A_POOL_MAX = 7
+RESEARCH_A_MIN_SCORE = 70.0
+RESEARCH_A_MIN_BOX_DAYS = 20
+RESEARCH_A_MIN_VOL_RATIO = 1.25
+RESEARCH_A_ALLOW_DEFENSE = True
 
 # 多核心并行（0=自动 cpu_count-1，1=单进程调试）
 SCAN_WORKERS = 0

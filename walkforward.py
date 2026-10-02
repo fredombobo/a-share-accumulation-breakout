@@ -417,6 +417,8 @@ def wf_recheck(
                     "train_pf": train.get("net_profit_factor"),
                     "test_pf": test.get("net_profit_factor"),
                     "test_dd": test.get("net_max_drawdown"),
+                    "test_net_total_return": test.get("net_total_return", test.get("net_avg_return")),
+                    "train_net_total_return": train.get("net_total_return", train.get("net_avg_return")),
                     "test_wr": test.get("net_win_rate"),
                     "test_n": test.get("net_n_trades", 0),
                     "train_n": train.get("net_n_trades"),

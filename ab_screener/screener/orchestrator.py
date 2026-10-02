@@ -2,7 +2,7 @@
 扫描内核 —— 编排（进程/取消/进度/排序/聚合）
 ============================================
 职责：run_scan 主体 —— 加载数据 → 预过滤 → 信号检测 → 打分 → 阶梯 →
-观察池 → 拆池 → 交易卡片 → 导出 → 持久化。负责 worker 解析、取消、
+观察池 → 完整资格 → Top 展示 → 导出 → 持久化。负责 worker 解析、取消、
 进度回调、排序与聚合；不直接做单标的的信号/评分计算。
 
 ENTRY、评分公式、阈值、默认参数、结果格式与历史 run_screener 完全一致。
@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -28,7 +31,7 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy"
     os.environ.pop(_k, None)
 
 import config as _cfg
-import data_fetch
+from ab_screener.application.scan_audit import build_qualification_report, candidate_data_missing_fields
 from ab_screener.domain.profile import StrategyProfile, default_profile
 from ab_screener.screener.data_loader import load_market_data
 from ab_screener.screener.evaluator import (
@@ -40,6 +43,8 @@ from ab_screener.screener.evaluator import (
 from ab_screener.screener.prefilter import prefilter
 from charting import plot_top_kline_batch
 from config import (
+    B_DISPLAY_MIN_SCORE,
+    BOX_LADDER_DAYS,
     BUILD_WATCH_POOL,
     FUND_FLOW_DAYS,
     FUND_FLOW_MIN_RATIO,
@@ -47,6 +52,14 @@ from config import (
     INCLUDE_RELAXED_IN_A,
     RELAXED_FUND_FLOW_MIN_RATIO,
     REQUIRED_THEMES,
+    RESEARCH_A_ALLOW_DEFENSE,
+    RESEARCH_A_MIN_BOX_DAYS,
+    RESEARCH_A_MIN_SCORE,
+    RESEARCH_A_MIN_VOL_RATIO,
+    RESEARCH_A_POOL_ENABLED,
+    RESEARCH_A_POOL_MAX,
+    RESEARCH_A_POOL_MIN,
+    RESEARCH_A_POOL_TARGET,
     TARGET_SELECT_COUNT,
     THEME_MIN_PER_SECTOR,
     TOP_N,
@@ -60,10 +73,9 @@ from config import (
     OUT_DIR as OUT_DIR_STR,
 )
 from market_regime import data_freshness, detect_regime
-from parallel_scan import prefilter_volume_parallel, resolve_workers
-from pool_select import split_pools
+from parallel_scan import resolve_workers
+from pool_select import filter_b_display, qualified_pools, select_research_a, split_pools
 from sector_themes import annotate_themes
-from trade_plan import attach_trade_cards
 
 # 兼容旧进程缓存的 config（热更新前无此字段）
 SCAN_WORKERS = int(getattr(_cfg, "SCAN_WORKERS", 0) or 0)
@@ -74,6 +86,51 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _DEFAULT_THEME_MIN = {t: THEME_MIN_PER_SECTOR for t in REQUIRED_THEMES}
+
+
+def _research_week_state(db_path: str | Path, as_of: str) -> dict[str, object]:
+    """Read the current ISO week’s already-published research A codes.
+
+    The query is read-only and intentionally best-effort: a missing legacy
+    audit table leaves the quota available instead of blocking a scan. The
+    state is used only to avoid showing the same research candidate repeatedly
+    and to cap new research A names at seven per week.
+    """
+    try:
+        day = datetime.strptime(str(as_of)[:8], "%Y%m%d").date()
+    except ValueError:
+        return {"week": "unknown", "used_codes": set(), "remaining": int(RESEARCH_A_POOL_MAX)}
+    monday = day - timedelta(days=day.weekday())
+    sunday = monday + timedelta(days=6)
+    week = f"{day.isocalendar().year}-W{day.isocalendar().week:02d}"
+    used: set[str] = set()
+    try:
+        uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=5) as conn:
+            rows = conn.execute(
+                """
+                SELECT c.payload_json
+                FROM scan_run_candidates c
+                JOIN scan_runs r ON r.run_id=c.run_id
+                WHERE c.stage='final' AND r.status='SUCCEEDED'
+                  AND r.as_of>=? AND r.as_of<=? AND c.pool='A'
+                """,
+                (monday.strftime("%Y%m%d"), sunday.strftime("%Y%m%d")),
+            ).fetchall()
+        for (payload,) in rows:
+            try:
+                item = json.loads(payload or "{}")
+            except (TypeError, ValueError):
+                continue
+            if str(item.get("a_pool_mode") or "").upper() == "RESEARCH_GATED" and item.get("ts_code"):
+                used.add(str(item["ts_code"]))
+    except (OSError, sqlite3.Error):
+        pass
+    return {
+        "week": week,
+        "used_codes": used,
+        "remaining": max(0, int(RESEARCH_A_POOL_MAX) - len(used)),
+    }
 
 
 def _resolve_store(store):
@@ -103,6 +160,81 @@ def _concat_candidate_frames(*frames: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(prepared, ignore_index=True).reindex(columns=columns)
 
 
+def _annotate_candidate_data(rows: list[dict], latest_date: str, quote_dates: dict[str, str]) -> list[dict]:
+    """Apply the same quote/basic completeness contract to every candidate tier."""
+    for row in rows:
+        row["quote_as_of"] = quote_dates.get(row["ts_code"], "")
+        row.setdefault("source_tier", row.get("筛选层级") or "unknown")
+        missing = candidate_data_missing_fields(row, latest_date, serialized=False)
+        previous = row.get("data_missing_fields")
+        row["data_missing_fields"] = sorted(set(missing) | (set(previous) if isinstance(previous, list) else set()))
+        if row["data_missing_fields"]:
+            row["筛选层级"] = "data_incomplete"
+            note = "日线日期或基础指标不完整，仅作观察"
+            if note not in str(row.get("入选理由") or ""):
+                row["入选理由"] = str(row.get("入选理由") or "") + "；" + note
+    return rows
+
+
+def _serialize_candidates(parts, latest_date, sig_by_code, quote_dates) -> list[dict]:
+    scan_rows = []
+    for pool_name, part in parts:
+        if part is None or part.empty:
+            continue
+        for _, r in part.iterrows():
+            sig = sig_by_code.get(r["ts_code"]) or {}
+            source_tier = str(r.get("source_tier") or r.get("筛选层级") or "unknown")
+            evidence = _annotate_candidate_data([r.to_dict()], latest_date, quote_dates)[0]
+            tier = str(evidence.get("筛选层级") or "unknown")
+            qualified_pool = str(r.get("qualified_pool") or pool_name)
+            a_pool_mode = r.get("a_pool_mode")
+            if not a_pool_mode and qualified_pool == "A" and tier == "strict":
+                # A strict candidate may be displayed in B when the daily
+                # slot limit is exhausted; preserve its qualification lineage
+                # across the final and complete snapshots.
+                a_pool_mode = "TRADEABLE"
+            fund_window = r.get("fund_window")
+            missing = evidence["data_missing_fields"]
+            incomplete = tier == "data_incomplete" or bool(missing) or not isinstance(fund_window, dict) or fund_window.get("complete") is not True
+            scan_rows.append({
+                "pool": pool_name, "tier": tier, "source_tier": source_tier, "qualified_pool": qualified_pool,
+                "a_pool_mode": a_pool_mode,
+                "research_candidate": bool(r.get("研究候选") or r.get("research_candidate") or a_pool_mode == "RESEARCH_GATED"),
+                "observation_group": "DATA_INCOMPLETE" if incomplete else qualified_pool,
+                "trade_date": latest_date,
+                "ts_code": r["ts_code"],
+                "name": r["名称"],
+                "industry": r["行业"],
+                "price": r["最新价"],
+                "mv_yi": r.get("总市值(亿)"),
+                "pe": r.get("PE(TTM)"),
+                "pb": r.get("PB"),
+                "turnover": r.get("换手率%"),
+                "box_days": r.get("箱体天数"),
+                "box_amp": r.get("箱体振幅%"),
+                "vol_ratio": r.get("量比"),
+                "fund_net_wan": r.get("主力净流入(万)"),
+                "fund_ratio": r.get("净流入/成交额%"),
+                "signal_score": r.get("信号强度分"),
+                "fund_score": r.get("资金流分"),
+                "basic_score": r.get("基本面分"),
+                "total_score": r.get("综合分"),
+                "reasons": f"[池{pool_name}|{tier}|{r.get('主题板块','')}] {evidence.get('入选理由','')}",
+                "breakout_date": r.get("突破日"),
+                # 信号字段持久化：总览直接读表，避免每次请求重算 detect（30 只 ~4s）
+                "box_high": sig.get("box_high"),
+                "box_low": sig.get("box_low"),
+                "ma5": sig.get("ma5"),
+                "ma20": sig.get("ma20"),
+                "sig_calculated": 1,
+                "fund_window": r.get("fund_window"),
+                "quote_as_of": quote_dates.get(r['ts_code'], ''),
+                "data_missing_fields": missing,
+            })
+    scan_rows = json.loads(pd.DataFrame(scan_rows).to_json(orient="records", force_ascii=False)) if scan_rows else []
+    return scan_rows
+
+
 def run_scan(
     top: int = TOP_N,
     days: int = HORIZON_DAYS,
@@ -117,14 +249,16 @@ def run_scan(
     store=None,
     as_of: str = "",
     profile: StrategyProfile | None = None,
+    persist: bool = True,
 ) -> dict:
-    """主扫描：A 池(strict 可交易) + B 池(观察，可选 theme_fill)。
+    """主扫描：A 池(strict 可交易及明确标注的研究候选) + B 池观察。
 
     默认 top = A 池数量（15）。theme_fill 永不混入 A 池。
     cancel_check：返回 True 时在阶段间停止扫描（在不可中断的并行阶段内于分片粒度生效）。
     store：LocalStore 兼容只读/持久化注入（None=默认生产库）。
     as_of：钉死扫描基准日（YYYYMMDD）；空串=由数据自动推导。
     """
+    started_at = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(timespec="seconds")
     active_profile = profile or default_profile()
     requested_days = int(days)
     days = max(requested_days, active_profile.required_scan_days())
@@ -184,6 +318,27 @@ def run_scan(
     build_watch = BUILD_WATCH_POOL if build_watch is None else build_watch
     include_relaxed_in_a = INCLUDE_RELAXED_IN_A if include_relaxed_in_a is None else include_relaxed_in_a
     top_a = top or TOP_N_TRADE
+    profile_ladder = tuple(BOX_LADDER_DAYS) if active_profile.is_default else (active_profile.box_min_days,)
+    qualification_semantics = {
+        "target_count": TARGET_SELECT_COUNT, "box_ladder_days": list(profile_ladder),
+        "build_watch": bool(build_watch), "fund_flow_days": FUND_FLOW_DAYS,
+        "fund_flow_min_ratio": FUND_FLOW_MIN_RATIO,
+        "relaxed_fund_flow_min_ratio": RELAXED_FUND_FLOW_MIN_RATIO,
+        "required_themes": list(REQUIRED_THEMES),
+        "theme_selection": "ALL_ELIGIBLE_THEME_OBSERVATIONS", "theme_qualification_quota": None,
+        "theme_trigger": {"requires_nonempty_post_ladder": True, "shortfall_count_lt": 3},
+        "research_a_pool": {
+            "enabled": bool(RESEARCH_A_POOL_ENABLED),
+            "target": int(RESEARCH_A_POOL_TARGET),
+            "min": int(RESEARCH_A_POOL_MIN),
+            "max": int(RESEARCH_A_POOL_MAX),
+            "min_score": float(RESEARCH_A_MIN_SCORE),
+            "min_box_days": int(RESEARCH_A_MIN_BOX_DAYS),
+            "min_vol_ratio": float(RESEARCH_A_MIN_VOL_RATIO),
+            "allow_defense": bool(RESEARCH_A_ALLOW_DEFENSE),
+            "tradeable": False,
+        },
+    }
     n_workers = resolve_workers(SCAN_WORKERS if workers is None else workers)
 
     t0 = time.time()
@@ -196,9 +351,15 @@ def run_scan(
         f"{active_profile.name} / {active_profile.version} / {profile_hash}",
     )
     _prog("数据准备", 6, "加载本地行情…")
+    from ab_screener.application.scan_audit import read_dataset_version
+    scan_store = _resolve_store(store)
+    # 数据集指纹不能在这里读：load_market_data → load_daily_cached 会为缺失交易日
+    # 补写 dataset_partitions（parquet 缓存预热），若提前快照，扫描自己提交的
+    # manifest 会在 complete_scan_run 复核时被判成“扫描期间数据变化”而误杀
+    # （2026-09-14 生产故障）。真实快照点见下方 load/截断之后。
     try:
         basic, trade_dates, daily, dbbasic, _ = load_market_data(
-            days, force, db_path=store.db_path if store is not None else None,
+            days, force, db_path=scan_store.db_path,
         )
     except Exception as e:
         _prog("数据准备", 6, f"加载失败: {str(e)[:80]}")
@@ -208,17 +369,15 @@ def run_scan(
 
     if daily is None or getattr(daily, "empty", True):
         _prog("数据准备", 6, "日线为空，无法扫描")
-        return {
-            **_cancelled_result(),
-            "cancelled": False,
-            "msg": "empty_daily",
-        }
+        raise ValueError("日线为空，不能发布成功的扫描名单")
 
     # as_of 钉死：截断日线/trade_dates，防止未来数据进入确定性回归
     if as_of:
         _a = str(as_of)[:8]
         daily = daily[daily["trade_date"].astype(str) <= _a] if daily is not None and not daily.empty else daily
-        trade_dates = [d for d in trade_dates if str(d) <= _a] or trade_dates
+        trade_dates = [d for d in trade_dates if str(d) <= _a]
+        if daily.empty:
+            raise ValueError("扫描基准日前没有日线数据")
 
     if daily is not None and not daily.empty and "trade_date" in daily.columns:
         max_d = str(pd.to_numeric(daily["trade_date"], errors="coerce").max()).split(".")[0]
@@ -228,17 +387,25 @@ def run_scan(
     latest_date = trade_dates[-1] if trade_dates else ""
     if daily is not None and not daily.empty:
         latest_date = str(max(daily["trade_date"].astype(str).unique()))
+    if as_of:
+        dbbasic = scan_store.load_daily_basic(start=latest_date, end=latest_date)
     if dbbasic is None or getattr(dbbasic, "empty", True) or "ts_code" not in getattr(dbbasic, "columns", []):
         try:
-            if store is not None:
-                dbbasic = store.load_daily_basic(start=latest_date, end=latest_date)
-            else:
-                dbbasic = data_fetch.get_daily_basic_by_dates([latest_date], sleep=0.2)
+            dbbasic = scan_store.load_daily_basic(start=latest_date, end=latest_date)
         except Exception:  # noqa: BLE001
             pass
 
+    # 数据集指纹快照点：必须在 load_market_data（含 parquet 分区补登记）与 as_of
+    # 截断之后。这样 complete_scan_run 复核的是“扫描真正读取的数据 + 已提交分区”
+    # 的联合身份；扫描期间任何并发写入仍会被审计拒绝，守卫不放宽。
+    input_dataset_version = read_dataset_version(scan_store.db_path, as_of or '99991231')
+
+
     # 市场环境（优先 000300.SH）
-    if store is not None:
+    if as_of:
+        _store_ref = scan_store
+        regime = detect_regime(daily=daily)
+    elif store is not None:
         _store_ref = store
         regime = detect_regime(store=_store_ref, daily=daily)
     else:
@@ -252,8 +419,8 @@ def run_scan(
 
     fresh = data_freshness(
         latest_date,
-        trade_dates=trade_dates if trade_dates else None,
         store=_store_ref,
+        historical=bool(as_of),
     )
     _prog(
         "数据准备",
@@ -264,7 +431,7 @@ def run_scan(
 
     if _stop_if_cancelled("预过滤"):
         return _cancelled_result(regime)
-    cand = prefilter(basic, dbbasic)
+    cand = prefilter(basic, dbbasic, as_of=latest_date)
     _prog("数据准备", 15, f"预过滤后候选 {len(cand)} 只")
     if max_check and max_check < len(cand):
         cand = cand.head(max_check)
@@ -283,7 +450,25 @@ def run_scan(
     all_codes = set(cand["ts_code"].tolist()) if cand is not None and not cand.empty else set()
     if not all_codes:
         _prog("数据准备", 17, "候选为空")
+        qualification_report = build_qualification_report([], {
+            "version": "daily-qualification-v1", "target_count": TARGET_SELECT_COUNT,
+            "semantics": qualification_semantics,
+            "box_ladder": {"step": "empty"}, "build_watch": bool(build_watch),
+        })
+        run_id = None
+        if persist:
+            from ab_screener.application.scan_publication import publish_standalone_scan
+            run_id = publish_standalone_scan(
+                _resolve_store(store).db_path, as_of=latest_date, days=days,
+                profile=active_profile, candidates=[], freshness=fresh, regime=regime.to_dict(),
+                qualified_candidates=[], qualification_report=qualification_report, started_at=started_at,
+                input_dataset_version=input_dataset_version,
+            )
         return {
+            "run_id": run_id,
+            "scan_candidates": [],
+            "qualified_candidates": [], "qualification_report": qualification_report,
+            "input_dataset_version": input_dataset_version,
             "cancelled": False,
             "latest_date": latest_date,
             "total_candidates": 0,
@@ -307,25 +492,14 @@ def run_scan(
             "effective_days": days,
         }
 
-    # 量能预筛：多进程粗筛，加速 strict 全市场扫描（可取消，不再卡死）
-    _prog("预筛", 18, f"量能/近高点粗筛 {len(all_codes)} 只（workers={n_workers}）…")
+    # Fixed coarse thresholds are not a proven superset of the selected profile.
+    # Preserve the complete eligible universe until such a proof is available.
+    _prog("预筛", 18, f"按当前参数完整检测 {len(all_codes)} 只（workers={n_workers}）…")
     if _stop_if_cancelled("预筛"):
         return _cancelled_result(regime)
-    fast_codes = prefilter_volume_parallel(
-        daily_sorted,
-        all_codes,
-        workers=n_workers,
-        cancel_check=cancel_check,
-        progress_cb=progress_cb,
-    )
+    fast_codes = all_codes
     if _stop_if_cancelled("预筛"):
         return _cancelled_result(regime)
-    if len(fast_codes) < 50:
-        # 预筛过狠则回退全量
-        fast_codes = all_codes
-        _prog("预筛", 19, "预筛过少，回退全量扫描")
-    else:
-        _prog("预筛", 20, f"预筛保留 {len(fast_codes)} 只（砍掉 {len(all_codes)-len(fast_codes)}）")
 
     _prog("信号检测", 22, f"严格参数扫描 {len(fast_codes)} 只 ×{n_workers} 核…")
     hit_codes = _detect_on_codes(
@@ -339,10 +513,7 @@ def run_scan(
 
     hit_dates = trade_dates[-FUND_FLOW_DAYS:] if trade_dates else []
     _prog("资金流", 55, f"拉取近 {FUND_FLOW_DAYS} 日资金流…")
-    if store is not None:
-        mf = store.load_moneyflow(start=hit_dates[0], end=hit_dates[-1]) if hit_dates else pd.DataFrame()
-    else:
-        mf = data_fetch.get_moneyflow_by_dates(hit_dates, sleep=0.2) if hit_dates else pd.DataFrame()
+    mf = scan_store.load_moneyflow(start=hit_dates[0], end=hit_dates[-1]) if hit_dates else pd.DataFrame()
     if _stop_if_cancelled("资金流"):
         return _cancelled_result(regime)
     mf_by_code = {code: g for code, g in mf.groupby("ts_code")} if not mf.empty else {}
@@ -359,12 +530,17 @@ def run_scan(
         fund_min_ratio=FUND_FLOW_MIN_RATIO, tier="strict",
         latest_date=latest_date, require_breakout=True, require_fund_quality=True,
         trade_dates=trade_dates,
+        expected_fund_dates=fresh.get("required_moneyflow_dates", []),
+        daily_sorted=daily_sorted,
     )
 
+    quote_dates = daily_sorted.groupby('ts_code')['trade_date'].last().astype(str).to_dict()
+    rows = _annotate_candidate_data(rows, latest_date, quote_dates)
+
     # 横盘阶梯：先只要 ~6 个月，不够再 5→4→… 直到凑满 TARGET_SELECT_COUNT
-    target_n = max(top_a, TARGET_SELECT_COUNT)
-    profile_ladder = None if active_profile.is_default else (active_profile.box_min_days,)
-    rows, ladder_rep = apply_box_ladder(rows, target=target_n, ladder=profile_ladder)
+    target_n = TARGET_SELECT_COUNT
+    observations = [row for row in rows if row.get('筛选层级') != 'strict']
+    rows, ladder_rep = apply_box_ladder([row for row in rows if row.get('筛选层级') == 'strict'], target=target_n, ladder=profile_ladder)
     _prog(
         "箱体阶梯",
         65,
@@ -372,7 +548,7 @@ def run_scan(
         f"≈{ladder_rep.get('months_approx')}月 保留 {ladder_rep.get('kept')}/{target_n} "
         f"tried={ladder_rep.get('tried')}",
     )
-    df_all = pd.DataFrame(rows)
+    df_all = pd.DataFrame(rows + observations)
 
     # B 池：若 strict 阶梯后仍不足目标，用 relaxed 补量再跑阶梯；theme_fill 仅观察
     if build_watch:
@@ -393,12 +569,13 @@ def run_scan(
             fund_min_ratio=RELAXED_FUND_FLOW_MIN_RATIO, tier="relaxed",
             latest_date=latest_date, require_breakout=True, require_fund_quality=False,
             trade_dates=trade_dates,
+            expected_fund_dates=fresh.get("required_moneyflow_dates", []),
+            daily_sorted=daily_sorted,
         )
         if need_more and extra:
-            # 不足目标：strict+relaxed 合并后再阶梯，优先长横盘
-            merged_rows = (df_all.to_dict("records") if not df_all.empty else []) + extra
-            merged_rows, ladder_rep2 = apply_box_ladder(
-                merged_rows, target=target_n, ladder=profile_ladder
+            # Observation fill must never re-filter or remove strict candidates.
+            extra, ladder_rep2 = apply_box_ladder(
+                extra, target=max(1, target_n - len(df_all)), ladder=profile_ladder
             )
             _prog(
                 "箱体阶梯",
@@ -407,7 +584,7 @@ def run_scan(
                 f"保留 {ladder_rep2.get('kept')}/{target_n}",
             )
             ladder_rep = {**ladder_rep, "after_relaxed": ladder_rep2}
-            df_all = pd.DataFrame(merged_rows)
+            df_all = _concat_candidate_frames(df_all, pd.DataFrame(extra)).drop_duplicates("ts_code", keep="first")
         elif extra:
             df_all = (
                 _concat_candidate_frames(df_all, pd.DataFrame(extra))
@@ -429,7 +606,8 @@ def run_scan(
             _prog("观察池", 80, f"theme_fill 补观察主题 {shortfall}…")
             fill_rows = _theme_soft_fill(
                 shortfall_themes=shortfall,
-                need_total=TOP_N_WATCH,
+                need_total=None,
+                full_qualification=True,
                 theme_min=theme_min,
                 cand=cand,
                 daily_sorted=daily_sorted,
@@ -438,25 +616,174 @@ def run_scan(
                 mf_dates=hit_dates,
                 already=set(df_all["ts_code"].tolist()) if not df_all.empty else set(),
                 sig_by_code=sig_by_code,
+                expected_fund_dates=fresh.get("required_moneyflow_dates", []),
             )
             if fill_rows:
                 df_all = _concat_candidate_frames(
                     df_all, pd.DataFrame(fill_rows)
                 ).drop_duplicates("ts_code", keep="first")
 
+    if not df_all.empty:
+        df_all = pd.DataFrame(_annotate_candidate_data(df_all.to_dict("records"), latest_date, quote_dates))
+
     # 拆池：A 池目标 top_a（默认 20）；防守期仍清空可交易名额
     slots = regime.max_trade_slots if regime.allow_new_entries else 0
+    if not fresh.get("can_publish_a"):
+        slots = 0
+        _prog("数据门槛", 84, "数据或独立交易日历未核实：仅发布观察名单")
     if _stop_if_cancelled("拆池"):
         return _cancelled_result(regime)
     if not regime.allow_new_entries:
-        _prog("环境", 85, "防守环境：A 池清空（禁止新开仓）；结果仍写入 B/观察供回看")
+        _prog("环境", 85, "防守环境：关闭新开仓名额；保留少量 A 研究候选供盘后复核")
+    eligibility_allowed = bool(fresh.get("can_publish_a") and regime.allow_new_entries)
+    qualified_a, qualified_b = qualified_pools(df_all, can_publish_a=eligibility_allowed)
     a_df, b_df, pool_report = split_pools(
         df_all if not df_all.empty else pd.DataFrame(),
         top_a=top_a,
         top_b=TOP_N_WATCH,
-        include_relaxed_in_a=include_relaxed_in_a,
-        regime_max_slots=slots if regime.allow_new_entries else 0,
+        include_relaxed_in_a=False,
+        regime_max_slots=slots,
+        can_publish_a=eligibility_allowed,
     )
+
+    # 研究型 A 候选：当 strict A 为空（最常见于防守期）或数量低于
+    # 最低配额时，从完整 B 资格名单中选出 1~7 只高质量 relaxed/strict
+    # 形态。它们仍保留 B 的原始 tier 和证据，但以 A 标签展示，且永远
+    # 标记为 RESEARCH_GATED，不进入交易卡片或自动下单。
+    research_week = _research_week_state(scan_store.db_path, latest_date)
+    research_used_codes = set(research_week.get("used_codes") or set())
+    research_week_remaining = int(research_week.get("remaining") or 0)
+    research_report = {
+        "enabled": bool(RESEARCH_A_POOL_ENABLED),
+        "selected": 0,
+        "target": int(RESEARCH_A_POOL_TARGET),
+        "min_count": int(RESEARCH_A_POOL_MIN),
+        "max_count": int(RESEARCH_A_POOL_MAX),
+        "week": research_week.get("week"),
+        "weekly_used_count": len(research_used_codes),
+        "weekly_remaining": research_week_remaining,
+        "reason": "disabled",
+    }
+    research_enabled = bool(
+        RESEARCH_A_POOL_ENABLED
+        and fresh.get("can_publish_a") is True
+        and (not regime.allow_new_entries and RESEARCH_A_ALLOW_DEFENSE or len(a_df) < RESEARCH_A_POOL_MIN)
+    )
+    if research_enabled and not qualified_b.empty:
+        # Repeated runs in the same ISO week should not keep recycling the
+        # same names as *new* candidates.  Once a name has been published in
+        # this week's research A, it may be retained on a later scan if its
+        # current evidence still passes; that keeps the page useful after the
+        # seven-name weekly cap is reached without inflating the quota.
+        unused_pool = qualified_b.loc[
+            ~qualified_b["ts_code"].astype(str).isin(research_used_codes)
+        ].copy()
+        used_pool = qualified_b.loc[
+            qualified_b["ts_code"].astype(str).isin(research_used_codes)
+        ].copy()
+        new_selected = pd.DataFrame(columns=qualified_b.columns)
+        reused_selected = pd.DataFrame(columns=qualified_b.columns)
+        new_report: dict[str, object] = {}
+        if research_week_remaining > 0 and not unused_pool.empty:
+            effective_target = min(int(RESEARCH_A_POOL_TARGET), research_week_remaining)
+            effective_max = min(int(RESEARCH_A_POOL_MAX), research_week_remaining)
+            effective_min = min(int(RESEARCH_A_POOL_MIN), effective_max)
+            new_selected, _new_remaining, new_report = select_research_a(
+                unused_pool,
+                target=effective_target,
+                min_count=effective_min,
+                max_count=effective_max,
+                min_score=RESEARCH_A_MIN_SCORE,
+                min_box_days=RESEARCH_A_MIN_BOX_DAYS,
+                min_vol_ratio=RESEARCH_A_MIN_VOL_RATIO,
+            )
+        refill_n = max(0, int(RESEARCH_A_POOL_TARGET) - len(new_selected))
+        if refill_n and not used_pool.empty:
+            reused_selected, _reused_remaining, _reused_report = select_research_a(
+                used_pool,
+                target=refill_n,
+                min_count=0,
+                max_count=refill_n,
+                min_score=RESEARCH_A_MIN_SCORE,
+                min_box_days=RESEARCH_A_MIN_BOX_DAYS,
+                min_vol_ratio=RESEARCH_A_MIN_VOL_RATIO,
+            )
+        research_a = _concat_candidate_frames(new_selected, reused_selected)
+        research_report = {
+            "enabled": True,
+            "target": int(RESEARCH_A_POOL_TARGET),
+            "min_count": int(RESEARCH_A_POOL_MIN),
+            "max_count": int(RESEARCH_A_POOL_MAX),
+            "week": research_week.get("week"),
+            "weekly_used_count": len(research_used_codes),
+            "weekly_remaining": research_week_remaining,
+            "selected": int(len(research_a)),
+            "new_selected": int(len(new_selected)),
+            "reused_selected": int(len(reused_selected)),
+            "selected_codes": sorted(research_a["ts_code"].astype(str).tolist()) if not research_a.empty else [],
+            "selected_tiers": research_a["筛选层级"].value_counts().to_dict() if not research_a.empty and "筛选层级" in research_a.columns else {},
+            "reason": "research_quota_filled" if not research_a.empty else str(new_report.get("reason") or "no_eligible_candidates"),
+        }
+        new_codes = set(new_selected["ts_code"].astype(str)) if not new_selected.empty else set()
+        weekly_used_after = len(research_used_codes | new_codes)
+        research_report["weekly_used_count"] = weekly_used_after
+        research_report["weekly_remaining"] = max(0, int(RESEARCH_A_POOL_MAX) - weekly_used_after)
+        research_report["weekly_used_before"] = len(research_used_codes)
+        if not research_a.empty:
+            selected_codes = set(research_a["ts_code"].astype(str))
+            # A/B 展示名单必须互斥；完整资格快照也同步移除已提升的行。
+            qualified_b = qualified_b.loc[
+                ~qualified_b["ts_code"].astype(str).isin(selected_codes)
+            ].reset_index(drop=True)
+            if not b_df.empty and "ts_code" in b_df.columns:
+                b_df = b_df.loc[~b_df["ts_code"].astype(str).isin(selected_codes)].reset_index(drop=True)
+            # 移出研究 A 后用下一顺位观察行补回 B 展示额度，保持 B 池
+            # 的 top_n_watch 语义和历史分页稳定性。
+            if len(b_df) < TOP_N_WATCH and "ts_code" in qualified_b.columns:
+                existing_b = set(b_df["ts_code"].astype(str)) if not b_df.empty else set()
+                refill = qualified_b.loc[
+                    ~qualified_b["ts_code"].astype(str).isin(existing_b | selected_codes)
+                ].head(max(0, TOP_N_WATCH - len(b_df)))
+                b_df = _concat_candidate_frames(b_df, refill).head(TOP_N_WATCH).reset_index(drop=True)
+            a_df = _concat_candidate_frames(a_df, research_a).drop_duplicates("ts_code", keep="first")
+            qualified_a = _concat_candidate_frames(qualified_a, research_a).drop_duplicates("ts_code", keep="first")
+            research_report["mode"] = "防守研究" if not regime.allow_new_entries else "放宽研究"
+        else:
+            research_report["mode"] = "无合格研究候选"
+    elif research_enabled and research_week_remaining <= 0:
+        research_report["reason"] = "weekly_quota_reached_and_no_reusable_candidate"
+        research_report["mode"] = "本周配额已满"
+    elif RESEARCH_A_POOL_ENABLED:
+        research_report["reason"] = "freshness_or_regime_gate"
+
+    # B 池的展示名单只保留综合分达到门槛的观察对象。完整 qualified_b
+    # 快照不做这个裁剪，便于审计、前瞻观察和回测闭环复核。
+    b_df = filter_b_display(b_df, min_score=B_DISPLAY_MIN_SCORE, limit=TOP_N_WATCH)
+    if len(b_df) < TOP_N_WATCH and not qualified_b.empty:
+        existing_b = set(b_df["ts_code"].astype(str)) if not b_df.empty else set()
+        refill = filter_b_display(
+            qualified_b.loc[~qualified_b["ts_code"].astype(str).isin(existing_b)],
+            min_score=B_DISPLAY_MIN_SCORE,
+            limit=TOP_N_WATCH - len(b_df),
+        )
+        b_df = _concat_candidate_frames(b_df, refill).head(TOP_N_WATCH).reset_index(drop=True)
+
+    pool_report["research_a"] = research_report
+    pool_report["research_a_count"] = int(research_report.get("selected") or 0)
+    if a_df is not None and not a_df.empty:
+        tier_column = "筛选层级" if "筛选层级" in a_df.columns else "tier"
+        if tier_column in a_df.columns:
+            pool_report["a_tiers"] = a_df[tier_column].value_counts().to_dict()
+    pool_report["tradeable_a_count"] = int(sum(
+        1 for _, row in a_df.iterrows()
+        if str(row.get("a_pool_mode") or "TRADEABLE") == "TRADEABLE"
+    )) if a_df is not None and not a_df.empty else 0
+    pool_report["a_count"] = int(len(a_df))
+    pool_report["b_count"] = int(len(b_df))
+    pool_report["b_display_min_score"] = float(B_DISPLAY_MIN_SCORE)
+    pool_report["b_display_filtered_count"] = max(0, int(len(qualified_b) - len(b_df)))
+    pool_report["qualified_counts"] = {"A": int(len(qualified_a)), "B": int(len(qualified_b))}
+    pool_report["total_candidates"] = int(len(qualified_a) + len(qualified_b))
     pool_report["box_ladder"] = ladder_rep
     pool_report["strategy_profile"] = {
         "profile_id": active_profile.profile_id,
@@ -465,29 +792,23 @@ def run_scan(
         "a_pool_uses_profile": True,
         "b_pool_uses_profile": False,
         "daily_extra_gates": ["market_regime", "fund_flow", "fundamentals", "liquidity", "score"],
+        "research_a_pool": {
+            "enabled": bool(RESEARCH_A_POOL_ENABLED),
+            "target": int(RESEARCH_A_POOL_TARGET),
+            "min": int(RESEARCH_A_POOL_MIN),
+            "max": int(RESEARCH_A_POOL_MAX),
+            "tradeable": False,
+        },
     }
-
-    # 交易卡片
-    a_df = attach_trade_cards(
-        a_df,
-        regime=regime.regime,
-        sig_by_code=sig_by_code,
-        stop_pct=active_profile.stop_pct,
-        target_pct=active_profile.target_pct,
-    )
-    b_df = attach_trade_cards(
-        b_df,
-        regime=regime.regime,
-        sig_by_code=sig_by_code,
-        stop_pct=active_profile.stop_pct,
-        target_pct=active_profile.target_pct,
-    )
 
     # 默认输出 A 池；合并导出时 A 在前
     top_df = a_df.copy() if a_df is not None and not a_df.empty else pd.DataFrame()
     export_df = pd.concat([a_df, b_df], ignore_index=True) if build_watch else a_df
 
-    print(f"\nA池(可交易)={len(a_df)}  B池(观察)={len(b_df)}  环境={regime.label}")
+    print(
+        f"\nA池(含研究)={len(a_df)}  可交易strict={pool_report.get('tradeable_a_count', 0)} "
+        f" B池(观察)={len(b_df)}  环境={regime.label}"
+    )
     print(f"池报告: {pool_report}")
 
     # K 线仅 A 池
@@ -505,70 +826,14 @@ def run_scan(
         top_df = top_df.copy()
         top_df["K线图"] = top_df["ts_code"].map(chart_paths)
 
-    # 写 SQLite：A+B，reasons 带池标记
-    try:
-        write_store = _resolve_store(store)
-        scan_rows = []
-        for pool_name, part in (("A", a_df), ("B", b_df)):
-            if part is None or part.empty:
-                continue
-            for _, r in part.iterrows():
-                sig = sig_by_code.get(r["ts_code"]) or {}
-                scan_rows.append({
-                    "trade_date": latest_date,
-                    "ts_code": r["ts_code"],
-                    "name": r["名称"],
-                    "industry": r["行业"],
-                    "price": r["最新价"],
-                    "mv_yi": r.get("总市值(亿)"),
-                    "pe": r.get("PE(TTM)"),
-                    "pb": r.get("PB"),
-                    "turnover": r.get("换手率%"),
-                    "box_days": r.get("箱体天数"),
-                    "box_amp": r.get("箱体振幅%"),
-                    "vol_ratio": r.get("量比"),
-                    "fund_net_wan": r.get("主力净流入(万)"),
-                    "fund_ratio": r.get("净流入/成交额%"),
-                    "signal_score": r.get("信号强度分"),
-                    "fund_score": r.get("资金流分"),
-                    "basic_score": r.get("基本面分"),
-                    "total_score": r.get("综合分"),
-                    "reasons": f"[池{pool_name}|{r.get('筛选层级','')}|{r.get('主题板块','')}] {r.get('入选理由','')}",
-                    "breakout_date": r.get("突破日"),
-                    # 信号字段持久化：总览直接读表，避免每次请求重算 detect（30 只 ~4s）
-                    "box_high": sig.get("box_high"),
-                    "box_low": sig.get("box_low"),
-                    "ma5": sig.get("ma5"),
-                    "ma20": sig.get("ma20"),
-                    "sig_calculated": 1,
-                })
-        if scan_rows:
-            # 先清当日再写，避免旧 theme_fill 残留主导排序
-            try:
-                with write_store._connect() as conn:
-                    conn.execute("DELETE FROM scan_result WHERE trade_date=?", (latest_date,))
-            except Exception:  # noqa: BLE001
-                pass
-            write_store.upsert_scan_result(pd.DataFrame(scan_rows))
-            # 快照清理：仅保留最近 10 个交易日的扫描快照（历史快照用于审计，避免无限积累）
-            try:
-                with write_store._connect() as conn:
-                    keep = conn.execute(
-                        "SELECT DISTINCT trade_date FROM scan_result ORDER BY trade_date DESC LIMIT 10"
-                    ).fetchall()
-                    keep_dates = [str(r[0]) for r in keep]
-                    if keep_dates:
-                        ph = ",".join("?" * len(keep_dates))
-                        conn.execute(
-                            f"DELETE FROM scan_result WHERE trade_date NOT IN ({ph})",
-                            keep_dates,
-                        )
-            except Exception:  # noqa: BLE001
-                pass
-            print(f"✅ 已写入 SQLite scan_result: {len(scan_rows)} 条 (A={len(a_df)} B={len(b_df)})")
-    except Exception as e:  # noqa: BLE001
-        print(f"  [warn] scan_result 写入失败: {str(e)[:100]}")
-
+    # Both stages originate from this exact scan; no parent-side reconstruction.
+    scan_rows = _serialize_candidates((("A", a_df), ("B", b_df)), latest_date, sig_by_code, quote_dates)
+    qualified_rows = _serialize_candidates((("A", qualified_a), ("B", qualified_b)), latest_date, sig_by_code, quote_dates)
+    qualification_report = build_qualification_report(qualified_rows, {
+        "version": "daily-qualification-v1", "target_count": TARGET_SELECT_COUNT,
+        "semantics": qualification_semantics,
+        "box_ladder": ladder_rep, "build_watch": bool(build_watch),
+    })
     out_xlsx = OUT_DIR / f"accumulation_breakout_A{len(a_df)}_B{len(b_df)}_{latest_date}.xlsx"
     if export_df is not None and not export_df.empty:
         # 去掉不可序列化列
@@ -592,10 +857,24 @@ def run_scan(
     except Exception:  # noqa: BLE001
         pass
 
+    run_id = None
+    if persist:
+        from ab_screener.application.scan_publication import publish_standalone_scan
+        run_id = publish_standalone_scan(
+            _resolve_store(store).db_path, as_of=latest_date, days=days,
+            profile=active_profile, candidates=scan_rows, freshness=fresh, regime=regime.to_dict(),
+            qualified_candidates=qualified_rows, qualification_report=qualification_report, started_at=started_at,
+            input_dataset_version=input_dataset_version, pool_report=pool_report,
+        )
+
     _prog("完成", 100, f"A={len(a_df)} B={len(b_df)} 环境={regime.label}")
     print(f"\n✅ 已导出: {out_xlsx}")
 
     return {
+        "run_id": run_id,
+        "scan_candidates": scan_rows,
+        "qualified_candidates": qualified_rows, "qualification_report": qualification_report,
+        "input_dataset_version": input_dataset_version,
         "latest_date": latest_date,
         "total_candidates": len(df_all) if df_all is not None else 0,
         "hits": hit_codes,
